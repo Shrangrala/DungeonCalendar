@@ -467,22 +467,60 @@ export default function DungeonCalendarApp() {
       return;
     }
 
+    const existingPlayer = players.find((player) => player.email?.toLowerCase() === trimmedEmail);
 
-    import { createUserWithEmailAndPassword } from "firebase/auth";
+    if (authMode === "login") {
+      if (!existingPlayer) {
+        setLoginError("No account found. Use Create Account first.");
+        return;
+      }
 
-    async function handleCreateAccount() {
-     try {
-      const result = await createUserWithEmailAndPassword(
-       auth,
-       loginEmail,
-       loginPassword
-      );
+      if (existingPlayer.password !== loginPassword) {
+        setLoginError("Incorrect password.");
+        return;
+      }
 
-      setCurrentUserId(result.user.uid);
-    } catch (error) {
-      alert(error.message);
+      if (rememberMe) {
+        safeSetStorageText("dnd-calendar-current-user", existingPlayer.id);
+        safeSetStorageText("dnd-calendar-active-player", existingPlayer.id);
+      }
+
+      setCurrentUserId(existingPlayer.id);
+      setActivePlayerId(existingPlayer.id);
+      setPage("calendar");
+      setLoginError("");
+      return;
     }
-   }
+
+    if (existingPlayer) {
+      setLoginError("An account already exists for that email. Switch to Log In.");
+      return;
+    }
+
+    const player = {
+      id: crypto.randomUUID(),
+      role: "Player",
+      username: trimmedName.toLowerCase().replace(/\s+/g, ""),
+      name: trimmedName,
+      email: trimmedEmail,
+      password: loginPassword,
+      campaignCharacterNames: activeCampaign?.id ? { [activeCampaign.id]: "" } : {},
+      campaignIds: activeCampaign?.id ? [activeCampaign.id] : [],
+      color: playerColors.find((color) => !players.some((player) => player.color === color)) ?? playerColors[0]
+    };
+
+    setPlayers((current) => [...current, player]);
+
+    if (rememberMe) {
+      safeSetStorageText("dnd-calendar-current-user", player.id);
+      safeSetStorageText("dnd-calendar-active-player", player.id);
+    }
+
+    setCurrentUserId(player.id);
+    setActivePlayerId(player.id);
+    setPage("calendar");
+    setLoginError("");
+  }
 
   function logout() {
     safeRemoveStorage("dnd-calendar-remember-me");

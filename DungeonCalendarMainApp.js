@@ -467,22 +467,6 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    import { signInWithEmailAndPassword } from "firebase/auth";
-    import { auth } from "./firebase";
-
-    async function handleLogin() {
-     try {
-      const result = await signInWithEmailAndPassword(
-        auth,
-        loginEmail,
-        loginPassword
-       );
-
-       setCurrentUserId(result.user.uid);
-     } catch (error) {
-       alert(error.message);
-     }
-	}
 
     import { createUserWithEmailAndPassword } from "firebase/auth";
 

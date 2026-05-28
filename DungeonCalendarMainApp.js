@@ -2304,9 +2304,9 @@ export default function DungeonCalendarApp() {
   return (
     <div className="relative min-h-screen overflow-x-hidden overflow-y-auto text-zinc-100">
       <AppBackground />
-      <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] gap-6 overflow-visible p-4 lg:grid-cols-[300px_1fr] lg:p-6">
+      <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] justify-center gap-6 overflow-visible px-6 py-8 lg:grid-cols-[300px_minmax(0,1200px)]">
         {Sidebar}
-        <section className="space-y-5">
+        
           {Header}
           {PageContent()}
         </section>

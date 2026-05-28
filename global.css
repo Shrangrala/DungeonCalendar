@@ -13,3 +13,12 @@ body,
   overflow-x: hidden;
   background: #070504;
 }
+
+body {
+  display: flex;
+  justify-content: center;
+}
+
+#root {
+  width: 100%;
+}

@@ -87,54 +87,6 @@ function classNames(...parts) {
   return parts.filter(Boolean).join(" ");
 }
 
-const MAIN_STORAGE_KEY = "dungeon-calendar-main-state";
-
-function safeReadStorage(key, fallback = null) {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return fallback;
-    const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function safeWriteStorage(key, value) {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return;
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // localStorage can be blocked in some private/incognito browser modes.
-  }
-}
-
-function safeGetStorageText(key, fallback = "") {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return fallback;
-    return window.localStorage.getItem(key) || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function safeSetStorageText(key, value) {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return;
-    window.localStorage.setItem(key, value);
-  } catch {
-    // localStorage can be blocked in some private/incognito browser modes.
-  }
-}
-
-function safeRemoveStorage(key) {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return;
-    window.localStorage.removeItem(key);
-  } catch {
-    // localStorage can be blocked in some private/incognito browser modes.
-  }
-}
-
 function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isDungeonMaster = false }) {
   if (isChosenDate) return "bg-emerald-500 text-black ring-4 ring-emerald-200 shadow-[0_0_28px_rgba(52,211,153,0.75)]";
   if (hasDungeonMasterAvailable) return "bg-emerald-500 text-black ring-2 ring-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.65)]";
@@ -192,22 +144,27 @@ function PlayerToken({ player, campaignId = "", size = "sm", className = "" }) {
 
 export default function DungeonCalendarApp() {
   const today = new Date();
-  const savedAppState = useMemo(() => safeReadStorage(MAIN_STORAGE_KEY, {}), []);
-  const [page, setPage] = useState(savedAppState.page || "dashboard");
+  const [page, setPage] = useState("dashboard");
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
-  const [players, setPlayers] = useState(() => savedAppState.players || safeReadStorage("dnd-calendar-players", defaultPlayers));
-  const [currentUserId, setCurrentUserId] = useState(() => savedAppState.currentUserId || safeGetStorageText("dnd-calendar-current-user", ""));
-  const [activePlayerId, setActivePlayerId] = useState(() => savedAppState.activePlayerId || safeGetStorageText("dnd-calendar-active-player", ""));
-  const [loginEmail, setLoginEmail] = useState(savedAppState.loginEmail || "");
-  const [loginPassword, setLoginPassword] = useState(savedAppState.loginPassword || "");
+  const [players, setPlayers] = useState(() => {
+    const savedPlayers = localStorage.getItem("dnd-calendar-players");
+    return savedPlayers ? JSON.parse(savedPlayers) : defaultPlayers;
+  });
+  const [currentUserId, setCurrentUserId] = useState(() => localStorage.getItem("dnd-calendar-current-user") || "");
+  const [activePlayerId, setActivePlayerId] = useState(() => localStorage.getItem("dnd-calendar-active-player") || "");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
   const [loginName, setLoginName] = useState("");
   const [campaignCharacterNames, setCampaignCharacterNames] = useState({});
   const [loginError, setLoginError] = useState("");
-  const [rememberMe, setRememberMe] = useState(() => savedAppState.rememberMe ?? safeGetStorageText("dnd-calendar-remember-me", "") === "true");
+  const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("dnd-calendar-remember-me") === "true");
   const [authMode, setAuthMode] = useState("login");
   const [availabilityMode, setAvailabilityMode] = useState("available");
-  const [campaigns, setCampaigns] = useState(() => savedAppState.campaigns || safeReadStorage("dnd-calendar-campaigns", [createCampaign()]));
-  const [activeCampaignId, setActiveCampaignId] = useState(() => savedAppState.activeCampaignId || safeGetStorageText("dnd-calendar-active-campaign", ""));
+  const [campaigns, setCampaigns] = useState(() => {
+    const savedCampaigns = localStorage.getItem("dnd-calendar-campaigns");
+    return savedCampaigns ? JSON.parse(savedCampaigns) : [createCampaign()];
+  });
+  const [activeCampaignId, setActiveCampaignId] = useState(() => localStorage.getItem("dnd-calendar-active-campaign") || "");
   const [newPlayer, setNewPlayer] = useState("");
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
   const [newPlayerPhone, setNewPlayerPhone] = useState("");
@@ -224,7 +181,7 @@ export default function DungeonCalendarApp() {
   const [editingField, setEditingField] = useState("");
   const [showPasswordVerify, setShowPasswordVerify] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
-  const [plan, setPlan] = useState(savedAppState.plan || safeGetStorageText("dnd-calendar-plan", "free"));
+  const [plan, setPlan] = useState("free");
   const [billingMessage, setBillingMessage] = useState("");
   const [selectedPaymentPlan, setSelectedPaymentPlan] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("card");
@@ -384,43 +341,24 @@ export default function DungeonCalendarApp() {
   }
 
   useEffect(() => {
-    safeWriteStorage("dnd-calendar-players", players);
+    localStorage.setItem("dnd-calendar-players", JSON.stringify(players));
   }, [players]);
 
   useEffect(() => {
-    safeWriteStorage("dnd-calendar-campaigns", campaigns);
+    localStorage.setItem("dnd-calendar-campaigns", JSON.stringify(campaigns));
   }, [campaigns]);
 
   useEffect(() => {
-    safeSetStorageText("dnd-calendar-current-user", currentUserId);
+    localStorage.setItem("dnd-calendar-current-user", currentUserId);
   }, [currentUserId]);
 
   useEffect(() => {
-    safeSetStorageText("dnd-calendar-active-player", activePlayerId);
+    localStorage.setItem("dnd-calendar-active-player", activePlayerId);
   }, [activePlayerId]);
 
   useEffect(() => {
-    safeSetStorageText("dnd-calendar-active-campaign", activeCampaignId);
+    localStorage.setItem("dnd-calendar-active-campaign", activeCampaignId);
   }, [activeCampaignId]);
-
-  useEffect(() => {
-    safeSetStorageText("dnd-calendar-plan", plan);
-  }, [plan]);
-
-  useEffect(() => {
-    safeWriteStorage(MAIN_STORAGE_KEY, {
-      page,
-      players,
-      campaigns,
-      currentUserId,
-      activePlayerId,
-      activeCampaignId,
-      plan,
-      rememberMe,
-      loginEmail: rememberMe ? loginEmail : "",
-      loginPassword: rememberMe ? loginPassword : ""
-    });
-  }, [page, players, campaigns, currentUserId, activePlayerId, activeCampaignId, plan, rememberMe, loginEmail, loginPassword]);
 
   useEffect(() => {
     if (!activeCampaignId && campaigns[0]) {
@@ -453,7 +391,7 @@ export default function DungeonCalendarApp() {
   }
 
   function login() {
-    safeSetStorageText("dnd-calendar-remember-me", rememberMe ? "true" : "false");
+    localStorage.setItem("dnd-calendar-remember-me", rememberMe ? "true" : "false");
     const trimmedName = loginName.trim();
     const trimmedEmail = loginEmail.trim().toLowerCase();
 
@@ -481,8 +419,8 @@ export default function DungeonCalendarApp() {
       }
 
       if (rememberMe) {
-        safeSetStorageText("dnd-calendar-current-user", existingPlayer.id);
-        safeSetStorageText("dnd-calendar-active-player", existingPlayer.id);
+        localStorage.setItem("dnd-calendar-current-user", existingPlayer.id);
+        localStorage.setItem("dnd-calendar-active-player", existingPlayer.id);
       }
 
       setCurrentUserId(existingPlayer.id);
@@ -512,8 +450,8 @@ export default function DungeonCalendarApp() {
     setPlayers((current) => [...current, player]);
 
     if (rememberMe) {
-      safeSetStorageText("dnd-calendar-current-user", player.id);
-      safeSetStorageText("dnd-calendar-active-player", player.id);
+      localStorage.setItem("dnd-calendar-current-user", player.id);
+      localStorage.setItem("dnd-calendar-active-player", player.id);
     }
 
     setCurrentUserId(player.id);
@@ -523,23 +461,11 @@ export default function DungeonCalendarApp() {
   }
 
   function logout() {
-    safeRemoveStorage("dnd-calendar-remember-me");
+    localStorage.removeItem("dnd-calendar-remember-me");
     setCurrentUserId("");
     setActivePlayerId("");
-    safeRemoveStorage("dnd-calendar-current-user");
-    safeRemoveStorage("dnd-calendar-active-player");
-    safeWriteStorage(MAIN_STORAGE_KEY, {
-      page: "dashboard",
-      players,
-      campaigns,
-      currentUserId: "",
-      activePlayerId: "",
-      activeCampaignId,
-      plan,
-      rememberMe: false,
-      loginEmail: "",
-      loginPassword: ""
-    });
+    localStorage.removeItem("dnd-calendar-current-user");
+    localStorage.removeItem("dnd-calendar-active-player");
     setLoginEmail("");
     setLoginPassword("");
     setLoginName("");
@@ -2298,15 +2224,15 @@ export default function DungeonCalendarApp() {
   }
 
   if (!currentUser) {
-    return <div className="relative min-h-screen overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen max-w-2xl items-center justify-center p-6"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
+    return <div className="relative min-h-screen overflow-hidden text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen max-w-2xl items-center justify-center p-6"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
   }
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden overflow-y-auto text-zinc-100">
+    <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100">
       <AppBackground />
       <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] justify-center gap-6 overflow-visible px-6 py-8 lg:grid-cols-[300px_minmax(0,1200px)]">
         {Sidebar}
-        
+        <section className="mx-auto w-full max-w-[1200px] space-y-5">
           {Header}
           {PageContent()}
         </section>

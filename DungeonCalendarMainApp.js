@@ -152,12 +152,35 @@ function normalizeEmail(email = "") {
 }
 
 async function loadUserProfile(uid) {
-  const snap = await getDoc(doc(db, "users", uid));
-  return snap.exists() ? snap.data() : null;
+  try {
+    const snap = await getDoc(doc(db, "users", uid));
+    return snap.exists() ? snap.data() : null;
+  } catch (error) {
+    console.warn("Firestore profile load failed; continuing with Firebase Auth only:", error);
+    return null;
+  }
 }
 
 async function saveUserProfile(uid, profile) {
-  await setDoc(doc(db, "users", uid), profile, { merge: true });
+  try {
+    await setDoc(doc(db, "users", uid), profile, { merge: true });
+    return true;
+  } catch (error) {
+    console.warn("Firestore profile save failed; login will still continue:", error);
+    return false;
+  }
+}
+
+function authErrorMessage(error) {
+  const code = error?.code || "";
+  if (code === "auth/configuration-not-found") return "Firebase Email/Password sign-in is not enabled. Open Firebase Console > Authentication > Sign-in method and enable Email/Password.";
+  if (code === "auth/email-already-in-use") return "An account already exists for that email. Switch to Log In.";
+  if (code === "auth/invalid-credential" || code === "auth/wrong-password") return "Incorrect email or password.";
+  if (code === "auth/user-not-found") return "No account found. Use Create Account first.";
+  if (code === "auth/invalid-email") return "Enter a valid email address.";
+  if (code === "auth/weak-password") return "Password must be at least 6 characters.";
+  if (code === "auth/network-request-failed") return "Network error. Check your connection and try again.";
+  return error?.message || "Authentication failed.";
 }
 
 function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
@@ -194,6 +217,7 @@ export default function DungeonCalendarApp() {
   const [loginName, setLoginName] = useState("");
   const [campaignCharacterNames, setCampaignCharacterNames] = useState({});
   const [loginError, setLoginError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("dnd-calendar-remember-me") === "true");
   const [authMode, setAuthMode] = useState("login");
   const [availabilityMode, setAvailabilityMode] = useState("available");
@@ -471,80 +495,67 @@ export default function DungeonCalendarApp() {
   }
 
   async function login() {
+    if (authBusy) return;
+    setAuthBusy(true);
+    setLoginError("");
     localStorage.setItem("dnd-calendar-remember-me", rememberMe ? "true" : "false");
     const trimmedName = loginName.trim();
     const trimmedEmail = normalizeEmail(loginEmail);
 
     if (!trimmedEmail || !loginPassword.trim()) {
       setLoginError("Enter your email and password.");
+      setAuthBusy(false);
       return;
     }
 
     if (authMode === "create" && !trimmedName) {
       setLoginError("Enter your name before creating an account.");
+      setAuthBusy(false);
       return;
     }
 
     try {
+      let uid = "";
+      let player;
+
       if (authMode === "login") {
         const credential = await signInWithEmailAndPassword(auth, trimmedEmail, loginPassword);
-        const uid = credential.user.uid;
+        uid = credential.user.uid;
         const profile = await loadUserProfile(uid);
-        const existingLocal = players.find((player) =>
-          player.id === uid || normalizeEmail(player.email) === trimmedEmail
-        );
+        const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === trimmedEmail);
 
-        const player = {
+        player = {
           ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, trimmedEmail),
-          color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((player) => player.color === color)) || playerColors[0],
+          color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
           campaignIds: profile?.campaignIds || existingLocal?.campaignIds || []
         };
+      } else {
+        const credential = await createUserWithEmailAndPassword(auth, trimmedEmail, loginPassword);
+        uid = credential.user.uid;
+        const existingInvite = players.find((item) => normalizeEmail(item.email) === trimmedEmail);
 
-        setPlayers((current) => {
-          const withoutDuplicate = current.filter((item) =>
-            item.id !== uid && normalizeEmail(item.email) !== trimmedEmail
-          );
-          return [...withoutDuplicate, player];
-        });
+        player = {
+          id: uid,
+          role: "Player",
+          username: existingInvite?.username || trimmedName.toLowerCase().replace(/\s+/g, ""),
+          name: trimmedName,
+          email: trimmedEmail,
+          password: "",
+          phone: existingInvite?.phone || "",
+          campaignCharacterNames: existingInvite?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {}),
+          campaignIds: existingInvite?.campaignIds?.length ? existingInvite.campaignIds : (activeCampaign?.id ? [activeCampaign.id] : []),
+          color: existingInvite?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
+          campaignTokenImages: existingInvite?.campaignTokenImages || {},
+          lockedColorCampaignIds: existingInvite?.lockedColorCampaignIds || []
+        };
 
-        if (rememberMe) {
-          localStorage.setItem("dnd-calendar-current-user", uid);
-          localStorage.setItem("dnd-calendar-active-player", uid);
-        }
-
-        setCurrentUserId(uid);
-        setActivePlayerId(uid);
-        if (player.campaignIds?.[0]) setActiveCampaignId(player.campaignIds[0]);
-        setPage("calendar");
-        setLoginError("");
-        return;
+        await saveUserProfile(uid, player);
       }
 
-      const credential = await createUserWithEmailAndPassword(auth, trimmedEmail, loginPassword);
-      const uid = credential.user.uid;
-      const existingInvite = players.find((player) => normalizeEmail(player.email) === trimmedEmail);
-
-      const player = {
-        id: uid,
-        role: "Player",
-        username: existingInvite?.username || trimmedName.toLowerCase().replace(/\s+/g, ""),
-        name: trimmedName,
-        email: trimmedEmail,
-        password: "",
-        phone: existingInvite?.phone || "",
-        campaignCharacterNames: existingInvite?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {}),
-        campaignIds: existingInvite?.campaignIds?.length ? existingInvite.campaignIds : (activeCampaign?.id ? [activeCampaign.id] : []),
-        color: existingInvite?.color || playerColors.find((color) => !players.some((player) => player.color === color)) || playerColors[0],
-        campaignTokenImages: existingInvite?.campaignTokenImages || {},
-        lockedColorCampaignIds: existingInvite?.lockedColorCampaignIds || []
-      };
-
       setPlayers((current) => {
-        const withoutInvite = current.filter((item) => normalizeEmail(item.email) !== trimmedEmail);
-        return [...withoutInvite, player];
+        const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== trimmedEmail);
+        return [...withoutDuplicate, player];
       });
-
-      await saveUserProfile(uid, player);
 
       if (rememberMe) {
         localStorage.setItem("dnd-calendar-current-user", uid);
@@ -557,11 +568,9 @@ export default function DungeonCalendarApp() {
       setPage("calendar");
       setLoginError("");
     } catch (error) {
-      const code = error?.code || "";
-      if (code === "auth/email-already-in-use") setLoginError("An account already exists for that email. Switch to Log In.");
-      else if (code === "auth/invalid-credential" || code === "auth/wrong-password") setLoginError("Incorrect email or password.");
-      else if (code === "auth/user-not-found") setLoginError("No account found. Use Create Account first.");
-      else setLoginError(error?.message || "Authentication failed.");
+      setLoginError(authErrorMessage(error));
+    } finally {
+      setAuthBusy(false);
     }
   }
 
@@ -1046,9 +1055,9 @@ export default function DungeonCalendarApp() {
             <span className="text-xs text-zinc-500">Stay logged in on this device</span>
           </div>
 
-          <Button onClick={login} className="w-full rounded-xl bg-gradient-to-r from-red-800 to-red-600 py-6 text-lg font-bold hover:from-red-700 hover:to-red-500">
+          <Button onClick={login} disabled={authBusy} className="w-full rounded-xl bg-gradient-to-r from-red-800 to-red-600 py-6 text-lg font-bold hover:from-red-700 hover:to-red-500">
             <LogIn className="mr-2 h-5 w-5" />
-            {authMode === "login" ? "Log In" : "Create Account"}
+            {authBusy ? "Working..." : authMode === "login" ? "Log In" : "Create Account"}
           </Button>
         </div>
       ) : (

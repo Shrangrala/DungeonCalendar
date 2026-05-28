@@ -2224,15 +2224,15 @@ export default function DungeonCalendarApp() {
   }
 
   if (!currentUser) {
-    return <div className="relative min-h-screen overflow-hidden text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen max-w-2xl items-center justify-center p-6"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
+    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center box-border px-6 py-8"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden text-zinc-100">
+    <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100">
       <AppBackground />
-      <main className="relative z-10 mx-auto grid max-w-[1600px] gap-6 p-4 lg:grid-cols-[300px_1fr] lg:p-6">
+      <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] items-start justify-center gap-6 box-border px-4 py-8 lg:grid-cols-[300px_minmax(0,1fr)] lg:px-6">
         {Sidebar}
-        <section className="space-y-5">
+        <section className="mx-auto w-full max-w-[1240px] space-y-5">
           {Header}
           {PageContent()}
         </section>

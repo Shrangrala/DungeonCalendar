@@ -1,5 +1,33 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { initializeApp, getApps } from "firebase/app";
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, getAuth } from "firebase/auth";
+import { doc, getDoc, getFirestore, setDoc } from "firebase/firestore";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBicOKeYfYzGEm39YovlBzySDy2m5GpvWk",
+  authDomain: "dnd-scheduling-calendar.firebaseapp.com",
+  projectId: "dnd-scheduling-calendar",
+  storageBucket: "dnd-scheduling-calendar.firebasestorage.app",
+  messagingSenderId: "575544890085",
+  appId: "1:575544890085:web:1d9bfcbcb8a3cc6e46ba0c"
+};
+
+const firebaseApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+const firebaseAuth = getAuth(firebaseApp);
+const firebaseDb = getFirestore(firebaseApp);
+
+async function loadUserProfileFromFirestore(uid) {
+  const ref = doc(firebaseDb, "users", uid);
+  const snap = await getDoc(ref);
+  return snap.exists() ? snap.data() : null;
+}
+
+async function saveUserProfileToFirestore(uid, profile) {
+  const ref = doc(firebaseDb, "users", uid);
+  await setDoc(ref, profile, { merge: true });
+}
+
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
     <button
@@ -87,54 +115,6 @@ function classNames(...parts) {
   return parts.filter(Boolean).join(" ");
 }
 
-const MAIN_STORAGE_KEY = "dungeon-calendar-main-state";
-
-function safeReadStorage(key, fallback = null) {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return fallback;
-    const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function safeWriteStorage(key, value) {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return;
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // localStorage can be blocked in some private/incognito browser modes.
-  }
-}
-
-function safeGetStorageText(key, fallback = "") {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return fallback;
-    return window.localStorage.getItem(key) || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function safeSetStorageText(key, value) {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return;
-    window.localStorage.setItem(key, value);
-  } catch {
-    // localStorage can be blocked in some private/incognito browser modes.
-  }
-}
-
-function safeRemoveStorage(key) {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return;
-    window.localStorage.removeItem(key);
-  } catch {
-    // localStorage can be blocked in some private/incognito browser modes.
-  }
-}
-
 function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isDungeonMaster = false }) {
   if (isChosenDate) return "bg-emerald-500 text-black ring-4 ring-emerald-200 shadow-[0_0_28px_rgba(52,211,153,0.75)]";
   if (hasDungeonMasterAvailable) return "bg-emerald-500 text-black ring-2 ring-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.65)]";
@@ -192,22 +172,27 @@ function PlayerToken({ player, campaignId = "", size = "sm", className = "" }) {
 
 export default function DungeonCalendarApp() {
   const today = new Date();
-  const savedAppState = useMemo(() => safeReadStorage(MAIN_STORAGE_KEY, {}), []);
-  const [page, setPage] = useState(savedAppState.page || "dashboard");
+  const [page, setPage] = useState("dashboard");
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
-  const [players, setPlayers] = useState(() => savedAppState.players || safeReadStorage("dnd-calendar-players", defaultPlayers));
-  const [currentUserId, setCurrentUserId] = useState(() => savedAppState.currentUserId || safeGetStorageText("dnd-calendar-current-user", ""));
-  const [activePlayerId, setActivePlayerId] = useState(() => savedAppState.activePlayerId || safeGetStorageText("dnd-calendar-active-player", ""));
-  const [loginEmail, setLoginEmail] = useState(savedAppState.loginEmail || "");
-  const [loginPassword, setLoginPassword] = useState(savedAppState.loginPassword || "");
+  const [players, setPlayers] = useState(() => {
+    const savedPlayers = localStorage.getItem("dnd-calendar-players");
+    return savedPlayers ? JSON.parse(savedPlayers) : defaultPlayers;
+  });
+  const [currentUserId, setCurrentUserId] = useState(() => localStorage.getItem("dnd-calendar-current-user") || "");
+  const [activePlayerId, setActivePlayerId] = useState(() => localStorage.getItem("dnd-calendar-active-player") || "");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
   const [loginName, setLoginName] = useState("");
   const [campaignCharacterNames, setCampaignCharacterNames] = useState({});
   const [loginError, setLoginError] = useState("");
-  const [rememberMe, setRememberMe] = useState(() => savedAppState.rememberMe ?? safeGetStorageText("dnd-calendar-remember-me", "") === "true");
+  const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("dnd-calendar-remember-me") === "true");
   const [authMode, setAuthMode] = useState("login");
   const [availabilityMode, setAvailabilityMode] = useState("available");
-  const [campaigns, setCampaigns] = useState(() => savedAppState.campaigns || safeReadStorage("dnd-calendar-campaigns", [createCampaign()]));
-  const [activeCampaignId, setActiveCampaignId] = useState(() => savedAppState.activeCampaignId || safeGetStorageText("dnd-calendar-active-campaign", ""));
+  const [campaigns, setCampaigns] = useState(() => {
+    const savedCampaigns = localStorage.getItem("dnd-calendar-campaigns");
+    return savedCampaigns ? JSON.parse(savedCampaigns) : [createCampaign()];
+  });
+  const [activeCampaignId, setActiveCampaignId] = useState(() => localStorage.getItem("dnd-calendar-active-campaign") || "");
   const [newPlayer, setNewPlayer] = useState("");
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
   const [newPlayerPhone, setNewPlayerPhone] = useState("");
@@ -224,7 +209,7 @@ export default function DungeonCalendarApp() {
   const [editingField, setEditingField] = useState("");
   const [showPasswordVerify, setShowPasswordVerify] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
-  const [plan, setPlan] = useState(savedAppState.plan || safeGetStorageText("dnd-calendar-plan", "free"));
+  const [plan, setPlan] = useState("free");
   const [billingMessage, setBillingMessage] = useState("");
   const [selectedPaymentPlan, setSelectedPaymentPlan] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("card");
@@ -233,6 +218,7 @@ export default function DungeonCalendarApp() {
   const [paymentCardNumber, setPaymentCardNumber] = useState("");
   const [paymentExpiry, setPaymentExpiry] = useState("");
   const [paymentCvc, setPaymentCvc] = useState("");
+  const [authReady, setAuthReady] = useState(false);
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -370,6 +356,53 @@ export default function DungeonCalendarApp() {
     });
   }, [players, activeCampaign]);
 
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+      if (!user) {
+        setAuthReady(true);
+        return;
+      }
+
+      try {
+        const savedProfile = await loadUserProfileFromFirestore(user.uid);
+
+        if (savedProfile) {
+          setPlayers((current) => {
+            const exists = current.some((player) => player.id === user.uid);
+            const firebasePlayer = {
+              id: user.uid,
+              role: savedProfile.role || "Player",
+              username: savedProfile.username || savedProfile.name?.toLowerCase?.().replace(/\s+/g, "") || "",
+              name: savedProfile.name || user.displayName || user.email || "Player",
+              email: savedProfile.email || user.email || "",
+              password: "",
+              phone: savedProfile.phone || "",
+              campaignIds: savedProfile.campaignIds || [],
+              campaignCharacterNames: savedProfile.campaignCharacterNames || {},
+              color: savedProfile.color || playerColors[current.length % playerColors.length],
+              lockedColorCampaignIds: savedProfile.lockedColorCampaignIds || [],
+              campaignTokenImages: savedProfile.campaignTokenImages || {}
+            };
+
+            return exists
+              ? current.map((player) => player.id === user.uid ? { ...player, ...firebasePlayer } : player)
+              : [...current, firebasePlayer];
+          });
+        }
+
+        setCurrentUserId(user.uid);
+        setActivePlayerId(user.uid);
+      } catch (error) {
+        console.error("Failed to load Firebase profile:", error);
+      } finally {
+        setAuthReady(true);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   function canViewPlayerResponses() {
     return isDungeonMaster;
   }
@@ -384,43 +417,44 @@ export default function DungeonCalendarApp() {
   }
 
   useEffect(() => {
-    safeWriteStorage("dnd-calendar-players", players);
+    localStorage.setItem("dnd-calendar-players", JSON.stringify(players));
   }, [players]);
 
   useEffect(() => {
-    safeWriteStorage("dnd-calendar-campaigns", campaigns);
+    localStorage.setItem("dnd-calendar-campaigns", JSON.stringify(campaigns));
   }, [campaigns]);
 
   useEffect(() => {
-    safeSetStorageText("dnd-calendar-current-user", currentUserId);
+    localStorage.setItem("dnd-calendar-current-user", currentUserId);
   }, [currentUserId]);
 
   useEffect(() => {
-    safeSetStorageText("dnd-calendar-active-player", activePlayerId);
+    localStorage.setItem("dnd-calendar-active-player", activePlayerId);
   }, [activePlayerId]);
 
   useEffect(() => {
-    safeSetStorageText("dnd-calendar-active-campaign", activeCampaignId);
+    localStorage.setItem("dnd-calendar-active-campaign", activeCampaignId);
   }, [activeCampaignId]);
 
-  useEffect(() => {
-    safeSetStorageText("dnd-calendar-plan", plan);
-  }, [plan]);
 
   useEffect(() => {
-    safeWriteStorage(MAIN_STORAGE_KEY, {
-      page,
-      players,
-      campaigns,
-      currentUserId,
-      activePlayerId,
-      activeCampaignId,
-      plan,
-      rememberMe,
-      loginEmail: rememberMe ? loginEmail : "",
-      loginPassword: rememberMe ? loginPassword : ""
-    });
-  }, [page, players, campaigns, currentUserId, activePlayerId, activeCampaignId, plan, rememberMe, loginEmail, loginPassword]);
+    if (!currentUserId) return;
+    const player = players.find((item) => item.id === currentUserId);
+    if (!player) return;
+
+    saveUserProfileToFirestore(currentUserId, {
+      username: player.username || "",
+      name: player.name || "",
+      phone: player.phone || "",
+      email: player.email || "",
+      role: player.role || "Player",
+      campaignIds: player.campaignIds || [],
+      campaignCharacterNames: player.campaignCharacterNames || {},
+      color: player.color || "",
+      lockedColorCampaignIds: player.lockedColorCampaignIds || [],
+      campaignTokenImages: player.campaignTokenImages || {}
+    }).catch((error) => console.error("Failed to sync user profile:", error));
+  }, [players, currentUserId]);
 
   useEffect(() => {
     if (!activeCampaignId && campaigns[0]) {
@@ -452,12 +486,12 @@ export default function DungeonCalendarApp() {
     setCampaigns((current) => current.map((campaign) => campaign.id === activeCampaign.id ? { ...campaign, ...updater(campaign) } : campaign));
   }
 
-  function login() {
-    safeSetStorageText("dnd-calendar-remember-me", rememberMe ? "true" : "false");
+  async function login() {
+    localStorage.setItem("dnd-calendar-remember-me", rememberMe ? "true" : "false");
     const trimmedName = loginName.trim();
     const trimmedEmail = loginEmail.trim().toLowerCase();
 
-    if (!loginEmail.trim() || !loginPassword.trim()) {
+    if (!trimmedEmail || !loginPassword.trim()) {
       setLoginError("Enter your email and password.");
       return;
     }
@@ -467,79 +501,100 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const existingPlayer = players.find((player) => player.email?.toLowerCase() === trimmedEmail);
+    try {
+      if (authMode === "login") {
+        const credential = await signInWithEmailAndPassword(firebaseAuth, trimmedEmail, loginPassword);
+        const uid = credential.user.uid;
+        const existingPlayer = players.find((player) => player.id === uid || player.email?.toLowerCase() === trimmedEmail);
 
-    if (authMode === "login") {
-      if (!existingPlayer) {
-        setLoginError("No account found. Use Create Account first.");
+        if (existingPlayer && existingPlayer.id !== uid) {
+          setPlayers((current) => current.map((player) => player.id === existingPlayer.id ? { ...player, id: uid, email: trimmedEmail, password: "" } : player));
+        }
+
+        if (!existingPlayer) {
+          const profile = await loadUserProfileFromFirestore(uid);
+          const player = {
+            id: uid,
+            role: profile?.role || "Player",
+            username: profile?.username || trimmedEmail.split("@")[0],
+            name: profile?.name || credential.user.displayName || trimmedEmail,
+            email: profile?.email || trimmedEmail,
+            password: "",
+            phone: profile?.phone || "",
+            campaignIds: profile?.campaignIds || (activeCampaign?.id ? [activeCampaign.id] : []),
+            campaignCharacterNames: profile?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {}),
+            color: profile?.color || playerColors[players.length % playerColors.length],
+            lockedColorCampaignIds: profile?.lockedColorCampaignIds || [],
+            campaignTokenImages: profile?.campaignTokenImages || {}
+          };
+
+          setPlayers((current) => [...current, player]);
+        }
+
+        if (rememberMe) {
+          localStorage.setItem("dnd-calendar-current-user", uid);
+          localStorage.setItem("dnd-calendar-active-player", uid);
+        }
+
+        setCurrentUserId(uid);
+        setActivePlayerId(uid);
+        setPage("calendar");
+        setLoginError("");
         return;
       }
 
-      if (existingPlayer.password !== loginPassword) {
-        setLoginError("Incorrect password.");
-        return;
-      }
+      const credential = await createUserWithEmailAndPassword(firebaseAuth, trimmedEmail, loginPassword);
+      const uid = credential.user.uid;
+
+      const existingInvitedPlayer = players.find((player) => player.email?.toLowerCase() === trimmedEmail);
+      const player = {
+        id: uid,
+        role: "Player",
+        username: trimmedName.toLowerCase().replace(/\s+/g, ""),
+        name: trimmedName,
+        email: trimmedEmail,
+        password: "",
+        campaignCharacterNames: existingInvitedPlayer?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {}),
+        campaignIds: existingInvitedPlayer?.campaignIds || (activeCampaign?.id ? [activeCampaign.id] : []),
+        color: existingInvitedPlayer?.color || playerColors.find((color) => !players.some((player) => player.color === color)) || playerColors[0],
+        phone: existingInvitedPlayer?.phone || "",
+        lockedColorCampaignIds: existingInvitedPlayer?.lockedColorCampaignIds || [],
+        campaignTokenImages: existingInvitedPlayer?.campaignTokenImages || {}
+      };
+
+      setPlayers((current) => {
+        const withoutInvite = current.filter((item) => item.email?.toLowerCase() !== trimmedEmail);
+        return [...withoutInvite, player];
+      });
+
+      await saveUserProfileToFirestore(uid, player);
 
       if (rememberMe) {
-        safeSetStorageText("dnd-calendar-current-user", existingPlayer.id);
-        safeSetStorageText("dnd-calendar-active-player", existingPlayer.id);
+        localStorage.setItem("dnd-calendar-current-user", uid);
+        localStorage.setItem("dnd-calendar-active-player", uid);
       }
 
-      setCurrentUserId(existingPlayer.id);
-      setActivePlayerId(existingPlayer.id);
+      setCurrentUserId(uid);
+      setActivePlayerId(uid);
       setPage("calendar");
       setLoginError("");
-      return;
+    } catch (error) {
+      setLoginError(error?.message || "Authentication failed.");
     }
-
-    if (existingPlayer) {
-      setLoginError("An account already exists for that email. Switch to Log In.");
-      return;
-    }
-
-    const player = {
-      id: crypto.randomUUID(),
-      role: "Player",
-      username: trimmedName.toLowerCase().replace(/\s+/g, ""),
-      name: trimmedName,
-      email: trimmedEmail,
-      password: loginPassword,
-      campaignCharacterNames: activeCampaign?.id ? { [activeCampaign.id]: "" } : {},
-      campaignIds: activeCampaign?.id ? [activeCampaign.id] : [],
-      color: playerColors.find((color) => !players.some((player) => player.color === color)) ?? playerColors[0]
-    };
-
-    setPlayers((current) => [...current, player]);
-
-    if (rememberMe) {
-      safeSetStorageText("dnd-calendar-current-user", player.id);
-      safeSetStorageText("dnd-calendar-active-player", player.id);
-    }
-
-    setCurrentUserId(player.id);
-    setActivePlayerId(player.id);
-    setPage("calendar");
-    setLoginError("");
   }
 
-  function logout() {
-    safeRemoveStorage("dnd-calendar-remember-me");
+  async function logout() {
+    try {
+      await signOut(firebaseAuth);
+    } catch (error) {
+      console.error("Firebase sign out failed:", error);
+    }
+
+    localStorage.removeItem("dnd-calendar-remember-me");
     setCurrentUserId("");
     setActivePlayerId("");
-    safeRemoveStorage("dnd-calendar-current-user");
-    safeRemoveStorage("dnd-calendar-active-player");
-    safeWriteStorage(MAIN_STORAGE_KEY, {
-      page: "dashboard",
-      players,
-      campaigns,
-      currentUserId: "",
-      activePlayerId: "",
-      activeCampaignId,
-      plan,
-      rememberMe: false,
-      loginEmail: "",
-      loginPassword: ""
-    });
+    localStorage.removeItem("dnd-calendar-current-user");
+    localStorage.removeItem("dnd-calendar-active-player");
     setLoginEmail("");
     setLoginPassword("");
     setLoginName("");
@@ -750,7 +805,7 @@ export default function DungeonCalendarApp() {
     setAccountMessage("");
   }
 
-  function saveAccountSettings() {
+  async function saveAccountSettings() {
     if (!currentUser) return;
 
     if (!accountUsername.trim() || !accountName.trim() || !accountEmail.trim() || !accountPassword.trim()) {
@@ -773,8 +828,25 @@ export default function DungeonCalendarApp() {
       password: accountPassword
     } : player));
 
+    try {
+      await saveUserProfileToFirestore(currentUser.id, {
+        username: accountUsername.trim(),
+        name: accountName.trim(),
+        phone: accountPhone.trim(),
+        email: accountEmail.trim(),
+        campaignIds: currentUser.campaignIds || [],
+        campaignCharacterNames: currentUser.campaignCharacterNames || {},
+        color: currentUser.color || "",
+        lockedColorCampaignIds: currentUser.lockedColorCampaignIds || [],
+        campaignTokenImages: currentUser.campaignTokenImages || {}
+      });
+    } catch (error) {
+      setAccountMessage("Saved locally, but cloud sync failed. Check Firebase rules.");
+      return;
+    }
+
     setEditingField("");
-    setAccountMessage("Account settings saved.");
+    setAccountMessage("Account settings saved and synced.");
   }
 
   function deleteCurrentAccount() {
@@ -2295,6 +2367,10 @@ export default function DungeonCalendarApp() {
     if (page === "account") return AccountSettingsPage();
     if (page === "billing") return BillingPage();
     return DashboardPage();
+  }
+
+  if (!authReady) {
+    return <div className="relative min-h-screen overflow-hidden text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen max-w-2xl items-center justify-center p-6"><div className="rounded-2xl border border-zinc-700 bg-black/70 p-6 text-center text-zinc-100">Checking saved login...</div></main></div>;
   }
 
   if (!currentUser) {

@@ -14,5 +14,10 @@
     "react-dom": "19.1.0",
     "react-native": "0.81.4",
     "react-native-web": "^0.21.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.5.0",
+    "postcss": "^8.5.15",
+    "tailwindcss": "^4.3.0"
   }
 }

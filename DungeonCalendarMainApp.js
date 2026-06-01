@@ -851,13 +851,26 @@ export default function DungeonCalendarApp() {
     setBillingMessage("");
   }
 
+
+  const stripePaymentLinks = {
+    adventurer: {
+      monthly: "https://buy.stripe.com/9B68wPb7s55jcGn7XE6Ri01",
+      yearly: "https://buy.stripe.com/9B6cN53F0fJXayfcdU6Ri03"
+    },
+    guildmaster: {
+      monthly: "https://buy.stripe.com/8x28wP0sO8hvbCja5M6Ri00",
+      yearly: "https://buy.stripe.com/cNi5kDfnI2Xb9ub2Dk6Ri02"
+    }
+  };
+
+  function getStripePaymentLink(planId, interval = selectedBillingInterval) {
+    const safePlan = normalizePlan(planId);
+    const safeInterval = normalizeBillingInterval(interval);
+    return stripePaymentLinks[safePlan]?.[safeInterval] || "";
+  }
+
   async function completePayment() {
     if (!selectedPaymentPlan || checkoutLoading) return;
-
-    if (!currentUser?.id || !auth.currentUser?.uid) {
-      setBillingMessage("Log in before starting Stripe Checkout.");
-      return;
-    }
 
     const activatedPlan = normalizePlan(selectedPaymentPlan);
     const activatedInterval = normalizeBillingInterval(selectedBillingInterval);
@@ -869,49 +882,28 @@ export default function DungeonCalendarApp() {
       return;
     }
 
+    const paymentLink = getStripePaymentLink(activatedPlan, activatedInterval);
+
+    if (!paymentLink) {
+      setBillingMessage("No Stripe payment link is configured for that plan and billing cycle.");
+      return;
+    }
+
     setCheckoutLoading(true);
     setBillingMessage("Opening Stripe Checkout...");
 
-    const checkoutWindow = typeof window !== "undefined" ? window.open("about:blank", "_blank") : null;
-    if (checkoutWindow) {
-      checkoutWindow.document.write("<p style=\"font-family:system-ui;padding:24px;\">Opening Stripe Checkout...</p>");
-    }
-
     try {
-      const response = await fetch("/api/create-checkout-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          planId: activatedPlan,
-          billingInterval: activatedInterval,
-          userId: currentUser.id,
-          email: paymentEmail.trim() || currentUser.email || auth.currentUser.email || "",
-          name: paymentName.trim() || currentUser.name || auth.currentUser.displayName || ""
-        })
-      });
+      const checkoutUrl = new URL(paymentLink);
+      const email = paymentEmail.trim() || currentUser?.email || auth.currentUser?.email || "";
+      if (email) checkoutUrl.searchParams.set("prefilled_email", email);
+      checkoutUrl.searchParams.set("client_reference_id", currentUser?.id || auth.currentUser?.uid || "guest");
 
-      const responseText = await response.text();
-      let data = {};
-      try {
-        data = responseText ? JSON.parse(responseText) : {};
-      } catch {
-        throw new Error("Stripe Checkout API did not return JSON. Check that /api/create-checkout-session is deployed and not being rewritten to the web app.");
-      }
-
-      if (!response.ok || !data.url) {
-        throw new Error(data?.error || "Unable to start Stripe Checkout.");
-      }
-
-      if (checkoutWindow && !checkoutWindow.closed) {
-        checkoutWindow.location.href = data.url;
-        checkoutWindow.focus();
-      } else {
-        window.location.assign(data.url);
+      if (typeof window !== "undefined") {
+        window.location.assign(checkoutUrl.toString());
       }
     } catch (error) {
-      if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.close();
       setCheckoutLoading(false);
-      setBillingMessage(error.message || "Unable to start Stripe Checkout.");
+      setBillingMessage(error.message || "Unable to open Stripe Checkout.");
     }
   }
 
@@ -2627,12 +2619,12 @@ export default function DungeonCalendarApp() {
 
               <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-zinc-400">
-                  You will be redirected to Stripe to complete your subscription securely.
+                  Choose a billing cycle, then continue to the matching Stripe payment page.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {paymentMethod === "stripe" && (
                     <div className="rounded-xl border border-violet-700 bg-violet-950/40 px-3 py-2 text-xs font-semibold text-violet-200">
-                      Stripe Secure Checkout Enabled
+                      Stripe Payment Link Enabled
                     </div>
                   )}
 

@@ -1,5 +1,11 @@
 {
   "installCommand": "yarn install --ignore-engines --network-timeout 100000 --non-interactive",
   "buildCommand": "yarn build",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/((?!api/.*).*)",
+      "destination": "/index.html"
+    }
+  ]
 }

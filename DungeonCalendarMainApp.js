@@ -872,6 +872,11 @@ export default function DungeonCalendarApp() {
     setCheckoutLoading(true);
     setBillingMessage("Opening Stripe Checkout...");
 
+    const checkoutWindow = typeof window !== "undefined" ? window.open("about:blank", "_blank") : null;
+    if (checkoutWindow) {
+      checkoutWindow.document.write("<p style=\"font-family:system-ui;padding:24px;\">Opening Stripe Checkout...</p>");
+    }
+
     try {
       const response = await fetch("/api/create-checkout-session", {
         method: "POST",
@@ -885,14 +890,26 @@ export default function DungeonCalendarApp() {
         })
       });
 
-      const data = await response.json();
+      const responseText = await response.text();
+      let data = {};
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new Error("Stripe Checkout API did not return JSON. Check that /api/create-checkout-session is deployed and not being rewritten to the web app.");
+      }
 
       if (!response.ok || !data.url) {
         throw new Error(data?.error || "Unable to start Stripe Checkout.");
       }
 
-      window.location.assign(data.url);
+      if (checkoutWindow && !checkoutWindow.closed) {
+        checkoutWindow.location.href = data.url;
+        checkoutWindow.focus();
+      } else {
+        window.location.assign(data.url);
+      }
     } catch (error) {
+      if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.close();
       setCheckoutLoading(false);
       setBillingMessage(error.message || "Unable to start Stripe Checkout.");
     }

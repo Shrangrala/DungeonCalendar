@@ -575,15 +575,15 @@ export default function DungeonCalendarApp() {
   }, [campaigns, loginName]);
 
   useEffect(() => {
-    if (currentUser) {
+    if (currentUser && !editingField && !showPasswordVerify) {
       setAccountUsername(currentUser.username ?? "");
       setAccountName(currentUser.name ?? "");
       setAccountPhone(currentUser.phone ?? "");
-      setAccountEmail(currentUser.email ?? "");
+      setAccountEmail(currentUser.email ?? auth.currentUser?.email ?? "");
       setAccountPassword("");
       setAccountMessage("");
     }
-  }, [currentUser]);
+  }, [currentUser, editingField, showPasswordVerify]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1044,9 +1044,25 @@ export default function DungeonCalendarApp() {
     }));
   }
 
+  function userUsesPasswordLogin() {
+    return !!auth.currentUser?.providerData?.some((provider) => provider.providerId === "password");
+  }
+
   async function verifyCurrentPassword() {
-    if (!auth.currentUser?.email) {
+    if (!auth.currentUser) {
       setAccountMessage("Sign in again before changing your password.");
+      return;
+    }
+
+    if (!userUsesPasswordLogin()) {
+      setShowPasswordVerify(false);
+      setCurrentPasswordInput("");
+      setAccountMessage("This account signs in with Google. Change the password from your Google account settings.");
+      return;
+    }
+
+    if (!auth.currentUser.email) {
+      setAccountMessage("Your account does not have an email/password login to verify.");
       return;
     }
 
@@ -1071,23 +1087,32 @@ export default function DungeonCalendarApp() {
   async function saveAccountSettings() {
     if (!currentUser) return;
 
-    const nextUsername = accountUsername.trim();
-    const nextName = accountName.trim();
-    const nextEmail = normalizeEmail(accountEmail);
+    const nextUsername = accountUsername.trim() || currentUser.username || currentUser.name || "player";
+    const nextName = accountName.trim() || currentUser.name || accountUsername.trim() || "Player";
+    const currentAuthEmail = normalizeEmail(auth.currentUser?.email || "");
+    const existingEmail = normalizeEmail(currentUser.email || currentAuthEmail || "");
+    const nextEmail = normalizeEmail(accountEmail || existingEmail);
+    const emailChanged = !!nextEmail && nextEmail !== currentAuthEmail && nextEmail !== existingEmail;
 
-    if (!nextUsername || !nextName || !nextEmail) {
-      setAccountMessage("Username, name, and email are required.");
+    if (!nextUsername || !nextName) {
+      setAccountMessage("Username and name are required.");
       return;
     }
 
-    const emailUsed = players.some((player) => player.id !== currentUser.id && normalizeEmail(player.email) === nextEmail);
-    if (emailUsed) {
-      setAccountMessage("That email is already used by another account.");
-      return;
+    if (nextEmail) {
+      const emailUsed = players.some((player) => player.id !== currentUser.id && normalizeEmail(player.email) === nextEmail);
+      if (emailUsed) {
+        setAccountMessage("That email is already used by another account.");
+        return;
+      }
     }
 
     try {
       if (editingField === "password") {
+        if (!userUsesPasswordLogin()) {
+          setAccountMessage("This account signs in with Google. Change the password from your Google account settings.");
+          return;
+        }
         if (!accountPassword.trim()) {
           setAccountMessage("Enter a new password before saving.");
           return;
@@ -1095,7 +1120,7 @@ export default function DungeonCalendarApp() {
         await updatePassword(auth.currentUser, accountPassword);
       }
 
-      if (auth.currentUser && nextEmail !== normalizeEmail(auth.currentUser.email || "")) {
+      if (auth.currentUser && editingField === "email" && nextEmail && nextEmail !== currentAuthEmail) {
         await updateEmail(auth.currentUser, nextEmail);
       }
 
@@ -1104,8 +1129,9 @@ export default function DungeonCalendarApp() {
         username: nextUsername,
         name: nextName,
         phone: accountPhone.trim(),
-        email: nextEmail,
+        email: nextEmail || existingEmail,
         plan: normalizePlan(plan),
+        billingInterval: normalizeBillingInterval(billingInterval),
         password: ""
       };
 
@@ -1116,6 +1142,7 @@ export default function DungeonCalendarApp() {
         email: normalizeEmail(updatedProfile.email || ""),
         phone: updatedProfile.phone || "",
         plan: normalizePlan(plan),
+        billingInterval: normalizeBillingInterval(billingInterval),
         campaignIds: updatedProfile.campaignIds || [],
         campaignCharacterNames: updatedProfile.campaignCharacterNames || {},
         lockedColorCampaignIds: updatedProfile.lockedColorCampaignIds || [],
@@ -1124,7 +1151,10 @@ export default function DungeonCalendarApp() {
       });
 
       setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedProfile : player));
-
+      setAccountUsername(updatedProfile.username || "");
+      setAccountName(updatedProfile.name || "");
+      setAccountPhone(updatedProfile.phone || "");
+      setAccountEmail(updatedProfile.email || "");
       setEditingField("");
       setAccountPassword("");
       setAccountMessage(editingField === "password" ? "Password changed and account settings saved." : "Account settings saved.");
@@ -1144,6 +1174,11 @@ export default function DungeonCalendarApp() {
         setAccountMessage("That email is already used by another account.");
         return;
       }
+      if (code === "auth/provider-already-linked" || code === "auth/operation-not-allowed") {
+        setAccountMessage("This account provider does not allow that change from Dungeon Calendar.");
+        return;
+      }
+      console.error("Account settings save failed:", error);
       setAccountMessage("Account settings could not be saved. Please try again.");
     }
   }

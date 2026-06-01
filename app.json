@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Dungeon Calendar",
+    "slug": "dungeon-calendar",
+    "scheme": "dungeoncalendar",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/app-icon.png",
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    }
+  }
+}

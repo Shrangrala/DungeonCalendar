@@ -356,7 +356,18 @@ export default function DungeonCalendarApp() {
     }));
   }
 
-  const activeCampaign = campaigns.find((campaign) => campaign.id === activeCampaignId) ?? campaigns[0];
+  const dates = useMemo(() => buildMonth(viewDate.getFullYear(), viewDate.getMonth()), [viewDate]);
+  const currentUser = players.find((player) => player.id === currentUserId);
+  const activePlayer = players.find((player) => player.id === activePlayerId);
+  const visibleCampaigns = useMemo(() => {
+    if (!currentUser) return [];
+    return campaigns.filter((campaign) =>
+      (currentUser.campaignIds ?? []).includes(campaign.id) ||
+      (campaign.dungeonMasterIds ?? []).includes(currentUser.id) ||
+      campaign.ownerId === currentUser.id
+    );
+  }, [campaigns, currentUser]);
+  const activeCampaign = visibleCampaigns.find((campaign) => campaign.id === activeCampaignId) ?? visibleCampaigns[0];
   const availability = activeCampaign?.availability ?? {};
   const unavailable = activeCampaign?.unavailable ?? {};
   const dungeonMasterIds = activeCampaign?.dungeonMasterIds ?? [];
@@ -366,9 +377,6 @@ export default function DungeonCalendarApp() {
   const sessionTime = activeCampaign?.sessionTime ?? "18:00";
   const sessionDuration = activeCampaign?.sessionDuration ?? 4;
   const reminderHours = activeCampaign?.reminderHours ?? 24;
-  const dates = useMemo(() => buildMonth(viewDate.getFullYear(), viewDate.getMonth()), [viewDate]);
-  const currentUser = players.find((player) => player.id === currentUserId);
-  const activePlayer = players.find((player) => player.id === activePlayerId);
   const isDungeonMaster = !!currentUser && !!activeCampaign?.dungeonMasterIds?.includes(currentUser.id);
   const activeCampaignRole = isDungeonMaster ? "Dungeon Master" : "Player";
   const activeCampaignPlayers = useMemo(() => {
@@ -477,10 +485,15 @@ export default function DungeonCalendarApp() {
   }, [activeCampaignId]);
 
   useEffect(() => {
-    if (!activeCampaignId && campaigns[0]) {
-      setActiveCampaignId(campaigns[0].id);
+    if (!currentUser) return;
+    if (visibleCampaigns.length === 0) {
+      if (activeCampaignId) setActiveCampaignId("");
+      return;
     }
-  }, [activeCampaignId, campaigns]);
+    if (!activeCampaignId || !visibleCampaigns.some((campaign) => campaign.id === activeCampaignId)) {
+      setActiveCampaignId(visibleCampaigns[0].id);
+    }
+  }, [activeCampaignId, currentUser, visibleCampaigns]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -801,15 +814,55 @@ export default function DungeonCalendarApp() {
   function leaveCampaign(campaignId) {
     if (!currentUser) return;
 
-    setPlayers((current) => current.map((player) => {
-      if (player.id !== currentUser.id) return player;
-      return { ...player, campaignIds: (player.campaignIds ?? []).filter((id) => id !== campaignId) };
+    const nextCharacterNames = { ...(currentUser.campaignCharacterNames || {}) };
+    delete nextCharacterNames[campaignId];
+
+    const nextTokenImages = { ...(currentUser.campaignTokenImages || {}) };
+    delete nextTokenImages[campaignId];
+
+    const updatedUser = {
+      ...currentUser,
+      campaignIds: (currentUser.campaignIds ?? []).filter((id) => id !== campaignId),
+      campaignCharacterNames: nextCharacterNames,
+      campaignTokenImages: nextTokenImages,
+      lockedColorCampaignIds: (currentUser.lockedColorCampaignIds ?? []).filter((id) => id !== campaignId)
+    };
+
+    setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedUser : player));
+
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== campaignId) return campaign;
+      const removeId = (ids = []) => ids.filter((id) => id !== currentUser.id);
+      const removeFromDateMap = (dateMap = {}) => Object.fromEntries(
+        Object.entries(dateMap).map(([key, ids]) => [key, removeId(ids)])
+      );
+
+      return {
+        ...campaign,
+        ownerId: campaign.ownerId === currentUser.id ? "" : campaign.ownerId,
+        dungeonMasterIds: removeId(campaign.dungeonMasterIds),
+        availability: removeFromDateMap(campaign.availability),
+        unavailable: removeFromDateMap(campaign.unavailable)
+      };
     }));
 
-    if (activeCampaignId === campaignId) {
-      const nextCampaign = campaigns.find((campaign) => campaign.id !== campaignId);
-      if (nextCampaign) setActiveCampaignId(nextCampaign.id);
+    if (auth.currentUser?.uid === currentUser.id) {
+      saveUserProfile(currentUser.id, {
+        role: updatedUser.role || "Player",
+        username: updatedUser.username || "",
+        name: updatedUser.name || "",
+        email: normalizeEmail(updatedUser.email || ""),
+        phone: updatedUser.phone || "",
+        campaignIds: updatedUser.campaignIds || [],
+        campaignCharacterNames: updatedUser.campaignCharacterNames || {},
+        lockedColorCampaignIds: updatedUser.lockedColorCampaignIds || [],
+        color: updatedUser.color || "",
+        campaignTokenImages: updatedUser.campaignTokenImages || {}
+      });
     }
+
+    const nextCampaign = visibleCampaigns.find((campaign) => campaign.id !== campaignId);
+    setActiveCampaignId(nextCampaign?.id || "");
   }
 
   function addPlayer() {
@@ -1212,9 +1265,9 @@ export default function DungeonCalendarApp() {
                 onChange={(event) => joinCampaign(event.target.value)}
                 className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-3 outline-none ring-red-600/40 focus:ring-2"
               >
-                {campaigns.map((campaign, index) => (
+                {visibleCampaigns.map((campaign, index) => (
                   <option key={campaign.id} value={campaign.id}>
-                    {campaign.name || `Campaign ${index + 1}`}{!isDungeonMaster && !(currentUser.campaignIds ?? []).includes(campaign.id) ? " - Join" : ""}
+                    {campaign.name || `Campaign ${index + 1}`}
                   </option>
                 ))}
               </select>
@@ -1417,9 +1470,9 @@ export default function DungeonCalendarApp() {
               onChange={(event) => joinCampaign(event.target.value)}
               className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-3 outline-none ring-red-600/40 focus:ring-2"
             >
-              {campaigns.map((campaign, index) => (
+              {visibleCampaigns.map((campaign, index) => (
                 <option key={campaign.id} value={campaign.id}>
-                  {campaign.name || `Campaign ${index + 1}`}{!(currentUser?.campaignIds ?? []).includes(campaign.id) ? " - Join" : ""}
+                  {campaign.name || `Campaign ${index + 1}`}
                 </option>
               ))}
             </select>
@@ -1869,7 +1922,7 @@ export default function DungeonCalendarApp() {
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              {campaigns.map((campaign, index) => {
+              {visibleCampaigns.map((campaign, index) => {
                 const isMember = (currentUser?.campaignIds ?? []).includes(campaign.id);
                 const isDmForCampaign = campaign.dungeonMasterIds?.includes(currentUser?.id);
                 return (
@@ -2487,7 +2540,7 @@ export default function DungeonCalendarApp() {
   }
 
   if (!currentUser) {
-    return <div className="relative min-h-screen overflow-hidden text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen max-w-2xl items-center justify-center p-6"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
+    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-6 py-10"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
   }
 
   return (

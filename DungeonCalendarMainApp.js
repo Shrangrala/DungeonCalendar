@@ -156,6 +156,10 @@ function normalizePlan(planId = "free") {
   return ["free", "adventurer", "guildmaster"].includes(planId) ? planId : "free";
 }
 
+function normalizeBillingInterval(interval = "monthly") {
+  return ["monthly", "yearly"].includes(interval) ? interval : "monthly";
+}
+
 async function loadUserProfile(uid) {
   try {
     const snap = await getDoc(doc(db, "users", uid));
@@ -204,6 +208,7 @@ function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
     password: "",
     phone: profile.phone || "",
     plan: normalizePlan(profile.plan || "free"),
+    billingInterval: normalizeBillingInterval(profile.billingInterval || "monthly"),
     campaignIds: profile.campaignIds || [],
     campaignCharacterNames: profile.campaignCharacterNames || {},
     lockedColorCampaignIds: profile.lockedColorCampaignIds || [],
@@ -254,8 +259,10 @@ export default function DungeonCalendarApp() {
   const [showPasswordVerify, setShowPasswordVerify] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [plan, setPlan] = useState("free");
+  const [billingInterval, setBillingInterval] = useState("monthly");
   const [billingMessage, setBillingMessage] = useState("");
   const [selectedPaymentPlan, setSelectedPaymentPlan] = useState("");
+  const [selectedBillingInterval, setSelectedBillingInterval] = useState("monthly");
   const [paymentMethod, setPaymentMethod] = useState("card");
   const [paymentName, setPaymentName] = useState("");
   const [paymentEmail, setPaymentEmail] = useState("");
@@ -280,19 +287,42 @@ export default function DungeonCalendarApp() {
     free: {
       name: "Free",
       campaigns: 1,
-      price: "$0"
+      price: "$0",
+      monthlyPrice: 0,
+      yearlyPrice: 0
     },
     adventurer: {
       name: "Adventurer",
       campaigns: 5,
-      price: "$2.99"
+      price: "$2.99",
+      monthlyPrice: 2.99,
+      yearlyPrice: 29.99
     },
     guildmaster: {
       name: "Guildmaster",
       campaigns: Infinity,
-      price: "$4.99"
+      price: "$4.99",
+      monthlyPrice: 4.99,
+      yearlyPrice: 49.99
     }
   };
+
+
+  function formatPlanPrice(planId, interval = billingInterval) {
+    const planInfo = planLimits[planId] ?? planLimits.free;
+    if (planId === "free") return "$0";
+    const amount = interval === "yearly" ? planInfo.yearlyPrice : planInfo.monthlyPrice;
+    const suffix = interval === "yearly" ? "/year" : "/month";
+    return `$${Number(amount).toFixed(2)}${suffix}`;
+  }
+
+  function yearlySavingsLabel(planId) {
+    const planInfo = planLimits[planId] ?? planLimits.free;
+    if (planId === "free") return "";
+    const monthlyAnnualTotal = planInfo.monthlyPrice * 12;
+    const savings = monthlyAnnualTotal - planInfo.yearlyPrice;
+    return savings > 0 ? `Save $${savings.toFixed(2)} yearly` : "";
+  }
 
   const planFeatures = {
     free: {
@@ -432,6 +462,7 @@ export default function DungeonCalendarApp() {
         );
         const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
         setPlan(normalizePlan(profile?.plan || localMatch?.plan || firebasePlayer.plan || "free"));
+        setBillingInterval(normalizeBillingInterval(profile?.billingInterval || localMatch?.billingInterval || firebasePlayer.billingInterval || "monthly"));
 
         setPlayers((current) => {
           const withoutDuplicate = current.filter((player) =>
@@ -464,6 +495,7 @@ export default function DungeonCalendarApp() {
       const syncedPlayer = firebaseProfileToPlayer(currentUserId, profile, auth.currentUser?.email || "");
 
       setPlan(normalizePlan(profile?.plan || syncedPlayer.plan || "free"));
+      setBillingInterval(normalizeBillingInterval(profile?.billingInterval || syncedPlayer.billingInterval || "monthly"));
       setPlayers((current) => {
         const withoutDuplicate = current.filter((player) =>
           player.id !== currentUserId && normalizeEmail(player.email) !== normalizeEmail(syncedPlayer.email)
@@ -487,13 +519,14 @@ export default function DungeonCalendarApp() {
       email: normalizeEmail(currentUser.email || ""),
       phone: currentUser.phone || "",
       plan: normalizePlan(plan),
+      billingInterval: normalizeBillingInterval(billingInterval),
       campaignIds: currentUser.campaignIds || [],
       campaignCharacterNames: currentUser.campaignCharacterNames || {},
       lockedColorCampaignIds: currentUser.lockedColorCampaignIds || [],
       color: currentUser.color || "",
       campaignTokenImages: currentUser.campaignTokenImages || {}
     }).catch((error) => console.error("Failed to sync web profile:", error));
-  }, [authProfileLoaded, currentUserId, currentUser, plan]);
+  }, [authProfileLoaded, currentUserId, currentUser, plan, billingInterval]);
 
   useEffect(() => {
     localStorage.setItem("dnd-calendar-players", JSON.stringify(players));
@@ -718,29 +751,34 @@ export default function DungeonCalendarApp() {
     setCampaignCharacterNames({});
   }
 
-  async function persistPlan(nextPlan) {
+  async function persistPlan(nextPlan, nextBillingInterval = billingInterval) {
     const safePlan = normalizePlan(nextPlan);
+    const safeBillingInterval = safePlan === "free" ? "monthly" : normalizeBillingInterval(nextBillingInterval);
     setPlan(safePlan);
+    setBillingInterval(safeBillingInterval);
 
     if (currentUser?.id && auth.currentUser?.uid === currentUser.id) {
       await saveUserProfile(currentUser.id, {
         plan: safePlan,
+        billingInterval: safeBillingInterval,
         updatedAt: new Date().toISOString()
       });
     }
 
-    setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan } : player));
+    setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan, billingInterval: safeBillingInterval } : player));
   }
 
   async function startPlanCheckout(planId) {
     if (planId === "free") {
-      await persistPlan("free");
+      await persistPlan("free", "monthly");
       setSelectedPaymentPlan("");
+      setSelectedBillingInterval("monthly");
       setBillingMessage("Free plan selected.");
       return;
     }
 
     setSelectedPaymentPlan(planId);
+    setSelectedBillingInterval(planId === plan ? billingInterval : "monthly");
     setPaymentName(currentUser?.name ?? "");
     setPaymentEmail(currentUser?.email ?? "");
     setBillingMessage("");
@@ -760,12 +798,13 @@ export default function DungeonCalendarApp() {
     }
 
     const activatedPlan = selectedPaymentPlan;
-    await persistPlan(activatedPlan);
+    const activatedInterval = normalizeBillingInterval(selectedBillingInterval);
+    await persistPlan(activatedPlan, activatedInterval);
     setSelectedPaymentPlan("");
     setPaymentCardNumber("");
     setPaymentExpiry("");
     setPaymentCvc("");
-    setBillingMessage(`${planLimits[activatedPlan].name} plan activated. Replace this demo payment form with Stripe Checkout before accepting real payments.`);
+    setBillingMessage(`${planLimits[activatedPlan].name} ${activatedInterval === "yearly" ? "yearly" : "monthly"} plan activated. Replace this demo payment form with Stripe Checkout before accepting real payments.`);
   }
 
   async function cancelCurrentPlan() {
@@ -777,7 +816,7 @@ export default function DungeonCalendarApp() {
     const confirmed = window.confirm("Cancel your current paid membership and switch to the Free plan?");
     if (!confirmed) return;
 
-    await persistPlan("free");
+    await persistPlan("free", "monthly");
     setSelectedPaymentPlan("");
     setBillingMessage("Membership cancelled. Free plan is now active.");
     setAccountMessage("Membership cancelled. You are now on the Free plan.");
@@ -1796,8 +1835,8 @@ export default function DungeonCalendarApp() {
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-3xl font-black">{currentPlan.price}</p>
-                    {plan !== "free" && <p className="text-sm text-zinc-400">per month</p>}
+                    <p className="text-3xl font-black">{formatPlanPrice(plan)}</p>
+                    {plan !== "free" && <p className="text-sm text-zinc-400">{billingInterval === "yearly" ? "billed yearly" : "billed monthly"}</p>}
                   </div>
                 </div>
 
@@ -2362,10 +2401,11 @@ export default function DungeonCalendarApp() {
                 <li>• Calendar export support</li>
               </ul>
               <p className="mt-4 text-3xl font-black">$2.99/month</p>
+              <p className="mt-1 text-sm font-semibold text-emerald-300">or $29.99/year — save $5.89</p>
 
               <Button
-                onClick={() => plan !== "adventurer" && startPlanCheckout("adventurer")}
-                disabled={plan === "adventurer"}
+                onClick={() => startPlanCheckout("adventurer")}
+                disabled={false}
                 className={classNames(
                   "mt-5 w-full rounded-xl",
                   plan === "adventurer" ? "bg-blue-900 text-blue-200" : "bg-blue-700 hover:bg-blue-600"
@@ -2395,10 +2435,11 @@ export default function DungeonCalendarApp() {
                 <li>• Priority access to future premium features</li>
               </ul>
               <p className="mt-4 text-3xl font-black">$4.99/month</p>
+              <p className="mt-1 text-sm font-semibold text-emerald-300">or $49.99/year — save $9.89</p>
 
               <Button
-                onClick={() => plan !== "guildmaster" && startPlanCheckout("guildmaster")}
-                disabled={plan === "guildmaster"}
+                onClick={() => startPlanCheckout("guildmaster")}
+                disabled={false}
                 className={classNames(
                   "mt-5 w-full rounded-xl",
                   plan === "guildmaster" ? "bg-red-900 text-red-200" : "bg-red-700 hover:bg-red-600"
@@ -2415,7 +2456,7 @@ export default function DungeonCalendarApp() {
                 <div>
                   <h3 className="text-xl font-bold text-amber-300">Checkout</h3>
                   <p className="mt-1 text-sm text-zinc-300">
-                    {planLimits[selectedPaymentPlan].name} Plan — {planLimits[selectedPaymentPlan].price}/month
+                    {planLimits[selectedPaymentPlan].name} Plan — {formatPlanPrice(selectedPaymentPlan, selectedBillingInterval)}
                   </p>
                 </div>
                 <Button onClick={() => setSelectedPaymentPlan("")} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">
@@ -2441,6 +2482,33 @@ export default function DungeonCalendarApp() {
                     type="email"
                     className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
                   />
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <label className="text-sm text-zinc-300">Billing Cycle</label>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBillingInterval("monthly")}
+                    className={classNames(
+                      "rounded-xl border px-4 py-3 text-sm font-bold transition",
+                      selectedBillingInterval === "monthly" ? "border-amber-400 bg-amber-900/40 text-white" : "border-zinc-700 bg-black/40 text-zinc-300 hover:bg-zinc-900"
+                    )}
+                  >
+                    Monthly — {formatPlanPrice(selectedPaymentPlan, "monthly")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBillingInterval("yearly")}
+                    className={classNames(
+                      "rounded-xl border px-4 py-3 text-sm font-bold transition",
+                      selectedBillingInterval === "yearly" ? "border-emerald-400 bg-emerald-900/40 text-white" : "border-zinc-700 bg-black/40 text-zinc-300 hover:bg-zinc-900"
+                    )}
+                  >
+                    Yearly — {formatPlanPrice(selectedPaymentPlan, "yearly")}
+                    <span className="mt-1 block text-xs text-emerald-300">{yearlySavingsLabel(selectedPaymentPlan)}</span>
+                  </button>
                 </div>
               </div>
 
@@ -2571,7 +2639,7 @@ export default function DungeonCalendarApp() {
                   )}
 
                   <Button onClick={completePayment} className="rounded-xl bg-amber-600 hover:bg-amber-500">
-                    Pay {planLimits[selectedPaymentPlan].price}/month
+                    Pay {formatPlanPrice(selectedPaymentPlan, selectedBillingInterval)}
                   </Button>
                 </div>
               </div>

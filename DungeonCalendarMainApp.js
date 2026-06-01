@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { EmailAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { doc, getDoc, getFirestore, setDoc } from "firebase/firestore";
 import app, { auth } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -476,10 +476,10 @@ export default function DungeonCalendarApp() {
       setAccountName(currentUser.name ?? "");
       setAccountPhone(currentUser.phone ?? "");
       setAccountEmail(currentUser.email ?? "");
-      setAccountPassword(currentUser.password ?? "");
+      setAccountPassword("");
       setAccountMessage("");
     }
-  }, [currentUserId]);
+  }, [currentUser]);
 
   const bestDates = useMemo(() => {
     return Object.entries(availability)
@@ -784,43 +784,90 @@ export default function DungeonCalendarApp() {
     }));
   }
 
-  function verifyCurrentPassword() {
-    if (currentPasswordInput !== currentUser?.password) {
-      setAccountMessage("Current password is incorrect.");
+  async function verifyCurrentPassword() {
+    if (!auth.currentUser?.email) {
+      setAccountMessage("Sign in again before changing your password.");
       return;
     }
 
-    setShowPasswordVerify(false);
-    setCurrentPasswordInput("");
-    setEditingField("password");
-    setAccountMessage("");
+    if (!currentPasswordInput.trim()) {
+      setAccountMessage("Enter your current password.");
+      return;
+    }
+
+    try {
+      const credential = EmailAuthProvider.credential(auth.currentUser.email, currentPasswordInput);
+      await reauthenticateWithCredential(auth.currentUser, credential);
+      setShowPasswordVerify(false);
+      setCurrentPasswordInput("");
+      setAccountPassword("");
+      setEditingField("password");
+      setAccountMessage("Current password verified. Enter your new password, then click Save Changes.");
+    } catch (error) {
+      setAccountMessage("Current password is incorrect.");
+    }
   }
 
-  function saveAccountSettings() {
+  async function saveAccountSettings() {
     if (!currentUser) return;
 
-    if (!accountUsername.trim() || !accountName.trim() || !accountEmail.trim() || !accountPassword.trim()) {
-      setAccountMessage("Email and password are required.");
+    const nextUsername = accountUsername.trim();
+    const nextName = accountName.trim();
+    const nextEmail = normalizeEmail(accountEmail);
+
+    if (!nextUsername || !nextName || !nextEmail) {
+      setAccountMessage("Username, name, and email are required.");
       return;
     }
 
-    const emailUsed = players.some((player) => player.id !== currentUser.id && player.email?.toLowerCase() === accountEmail.trim().toLowerCase());
+    const emailUsed = players.some((player) => player.id !== currentUser.id && normalizeEmail(player.email) === nextEmail);
     if (emailUsed) {
       setAccountMessage("That email is already used by another account.");
       return;
     }
 
-    setPlayers((current) => current.map((player) => player.id === currentUser.id ? {
-      ...player,
-      username: accountUsername.trim(),
-      name: accountName.trim(),
-      phone: accountPhone.trim(),
-      email: accountEmail.trim(),
-      password: accountPassword
-    } : player));
+    try {
+      if (editingField === "password") {
+        if (!accountPassword.trim()) {
+          setAccountMessage("Enter a new password before saving.");
+          return;
+        }
+        await updatePassword(auth.currentUser, accountPassword);
+      }
 
-    setEditingField("");
-    setAccountMessage("Account settings saved.");
+      if (auth.currentUser && nextEmail !== normalizeEmail(auth.currentUser.email || "")) {
+        await updateEmail(auth.currentUser, nextEmail);
+      }
+
+      setPlayers((current) => current.map((player) => player.id === currentUser.id ? {
+        ...player,
+        username: nextUsername,
+        name: nextName,
+        phone: accountPhone.trim(),
+        email: nextEmail
+      } : player));
+
+      setEditingField("");
+      setAccountPassword("");
+      setAccountMessage(editingField === "password" ? "Password changed and account settings saved." : "Account settings saved.");
+    } catch (error) {
+      const code = error?.code || "";
+      if (code === "auth/requires-recent-login") {
+        setShowPasswordVerify(true);
+        setEditingField("");
+        setAccountMessage("For security, enter your current password before changing your email or password.");
+        return;
+      }
+      if (code === "auth/weak-password") {
+        setAccountMessage("New password must be at least 6 characters.");
+        return;
+      }
+      if (code === "auth/email-already-in-use") {
+        setAccountMessage("That email is already used by another account.");
+        return;
+      }
+      setAccountMessage("Account settings could not be saved. Please try again.");
+    }
   }
 
   function deleteCurrentAccount() {

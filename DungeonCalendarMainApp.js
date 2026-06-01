@@ -513,21 +513,22 @@ export default function DungeonCalendarApp() {
   useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
 
+    // Keep campaign/plan membership fields synced without overwriting profile settings.
+    // Username, name, email, and phone are only written by saveAccountSettings(), login account creation,
+    // or Google profile creation. This prevents a stale phone/browser localStorage profile from wiping
+    // the user's saved desktop settings during login or live sync.
     saveUserProfile(currentUserId, {
       role: currentUser.role || "Player",
-      username: currentUser.username || "",
-      name: currentUser.name || "",
-      email: normalizeEmail(currentUser.email || ""),
-      phone: currentUser.phone || "",
       plan: normalizePlan(plan),
       billingInterval: normalizeBillingInterval(billingInterval),
       campaignIds: currentUser.campaignIds || [],
       campaignCharacterNames: currentUser.campaignCharacterNames || {},
       lockedColorCampaignIds: currentUser.lockedColorCampaignIds || [],
       color: currentUser.color || "",
-      campaignTokenImages: currentUser.campaignTokenImages || {}
+      campaignTokenImages: currentUser.campaignTokenImages || {},
+      updatedAt: new Date().toISOString()
     }).catch((error) => console.error("Failed to sync web profile:", error));
-  }, [authProfileLoaded, currentUserId, currentUser, plan, billingInterval]);
+  }, [authProfileLoaded, currentUserId, currentUser?.campaignIds, currentUser?.campaignCharacterNames, currentUser?.lockedColorCampaignIds, currentUser?.color, currentUser?.campaignTokenImages, currentUser?.role, plan, billingInterval]);
 
   useEffect(() => {
     localStorage.setItem("dnd-calendar-players", JSON.stringify(players));
@@ -590,10 +591,42 @@ export default function DungeonCalendarApp() {
     const stripeCancelled = params.get("stripe_cancelled") === "true";
 
     if (stripeCancelled) {
+      localStorage.removeItem("dnd-calendar-pending-stripe-plan");
       setBillingMessage("Stripe Checkout was cancelled. No plan changes were made.");
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
+
+  useEffect(() => {
+    if (!currentUser || auth.currentUser?.uid !== currentUser.id) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const stripeSuccess = params.get("stripe_success") === "true" || params.get("payment_success") === "true" || params.get("stripe_sync") === "true";
+    if (!stripeSuccess) return;
+
+    try {
+      const pendingRaw = localStorage.getItem("dnd-calendar-pending-stripe-plan");
+      const pending = pendingRaw ? JSON.parse(pendingRaw) : null;
+      const pendingUserMatches = !pending?.uid || pending.uid === currentUser.id;
+      const pendingPlan = normalizePlan(pending?.plan || "free");
+      const pendingInterval = normalizeBillingInterval(pending?.billingInterval || "monthly");
+
+      if (pending && pendingUserMatches && pendingPlan !== "free") {
+        persistPlan(pendingPlan, pendingInterval, {
+          stripePaymentLinkActivatedAt: new Date().toISOString()
+        });
+        setBillingMessage(`${planLimits[pendingPlan]?.name || "Paid"} plan activated. Stripe Payment Link checkout completed.`);
+        localStorage.removeItem("dnd-calendar-pending-stripe-plan");
+      } else if (pending && !pendingUserMatches) {
+        setBillingMessage("Stripe checkout completed, but it was started by a different signed-in account. Sign in with the checkout account and reload this page.");
+      }
+    } catch (error) {
+      console.warn("Unable to apply pending Stripe plan:", error);
+      setBillingMessage("Stripe checkout completed. If your plan does not update, choose the plan again or contact support.");
+    } finally {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, [currentUser?.id]);
 
   const bestDates = useMemo(() => {
     return Object.entries(availability)
@@ -719,7 +752,9 @@ export default function DungeonCalendarApp() {
         campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {})
       };
 
-      await saveUserProfile(uid, player);
+      if (!profile) {
+        await saveUserProfile(uid, player);
+      }
 
       setPlayers((current) => {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
@@ -842,6 +877,12 @@ export default function DungeonCalendarApp() {
       const email = paymentEmail.trim() || currentUser?.email || auth.currentUser?.email || "";
       if (email) checkoutUrl.searchParams.set("prefilled_email", email);
       checkoutUrl.searchParams.set("client_reference_id", currentUser?.id || auth.currentUser?.uid || "guest");
+      localStorage.setItem("dnd-calendar-pending-stripe-plan", JSON.stringify({
+        uid: currentUser?.id || auth.currentUser?.uid || "",
+        plan: activatedPlan,
+        billingInterval: activatedInterval,
+        startedAt: new Date().toISOString()
+      }));
 
       if (typeof window !== "undefined") {
         window.location.assign(checkoutUrl.toString());
@@ -1121,6 +1162,10 @@ export default function DungeonCalendarApp() {
       }
 
       if (auth.currentUser && editingField === "email" && nextEmail && nextEmail !== currentAuthEmail) {
+        if (!userUsesPasswordLogin()) {
+          setAccountMessage("This account signs in with Google. Change the login email from your Google account settings.");
+          return;
+        }
         await updateEmail(auth.currentUser, nextEmail);
       }
 
@@ -1147,7 +1192,8 @@ export default function DungeonCalendarApp() {
         campaignCharacterNames: updatedProfile.campaignCharacterNames || {},
         lockedColorCampaignIds: updatedProfile.lockedColorCampaignIds || [],
         color: updatedProfile.color || "",
-        campaignTokenImages: updatedProfile.campaignTokenImages || {}
+        campaignTokenImages: updatedProfile.campaignTokenImages || {},
+        updatedAt: new Date().toISOString()
       });
 
       setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedProfile : player));

@@ -1,15 +1,16 @@
-Dungeon Calendar Stripe Payment Links
+Dungeon Calendar now uses direct Stripe Payment Links.
 
-The Billing page now redirects directly to Stripe Payment Links instead of calling the checkout-session API.
+The app no longer calls /api/create-checkout-session or any Vercel API route for checkout.
+Plan buttons open the matching Stripe-hosted payment page directly:
+- Adventurer monthly
+- Adventurer yearly
+- Guildmaster monthly
+- Guildmaster yearly
 
-Configured links:
-- Adventurer Monthly: https://buy.stripe.com/9B68wPb7s55jcGn7XE6Ri01
-- Adventurer Yearly: https://buy.stripe.com/9B6cN53F0fJXayfcdU6Ri03
-- Guildmaster Monthly: https://buy.stripe.com/8x28wP0sO8hvbCja5M6Ri00
-- Guildmaster Yearly: https://buy.stripe.com/cNi5kDfnI2Xb9ub2Dk6Ri02
+Because Payment Links are used directly, these backend env vars are not required for checkout:
+- STRIPE_SECRET_KEY
+- STRIPE_WEBHOOK_SECRET
+- STRIPE_PRICE_*
 
-Notes:
-- The user chooses Adventurer or Guildmaster, then Monthly or Yearly.
-- Continue to Stripe opens the corresponding payment link.
-- Stripe receives prefilled_email and client_reference_id when available.
-- Because Payment Links are hosted by Stripe, no STRIPE_SECRET_KEY is needed for this redirect flow.
+Important:
+Stripe Payment Links by themselves do not automatically update Firestore after payment unless you later add a webhook or Stripe customer portal integration. The current frontend sends users to the correct Stripe payment page and includes prefilled_email and client_reference_id query values where Stripe accepts them.

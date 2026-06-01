@@ -587,68 +587,13 @@ export default function DungeonCalendarApp() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const sessionId = params.get("session_id");
-    const stripeSuccess = params.get("stripe_success") === "true";
     const stripeCancelled = params.get("stripe_cancelled") === "true";
 
     if (stripeCancelled) {
       setBillingMessage("Stripe Checkout was cancelled. No plan changes were made.");
       window.history.replaceState({}, document.title, window.location.pathname);
-      return;
     }
-
-    if (!stripeSuccess || !sessionId || !currentUserId) return;
-
-    let cancelled = false;
-
-    async function confirmStripeCheckout() {
-      setCheckoutLoading(true);
-      setBillingMessage("Confirming Stripe payment...");
-
-      try {
-        const response = await fetch(`/api/confirm-checkout-session?session_id=${encodeURIComponent(sessionId)}`);
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data?.error || "Unable to confirm Stripe Checkout.");
-        }
-
-        if (data.userId && data.userId !== currentUserId) {
-          throw new Error("This Stripe Checkout session belongs to a different signed-in user.");
-        }
-
-        const confirmedPlan = normalizePlan(data.planId);
-        const confirmedInterval = normalizeBillingInterval(data.billingInterval);
-
-        if (confirmedPlan === "free") {
-          throw new Error("Stripe did not return a paid Dungeon Calendar plan.");
-        }
-
-        await persistPlan(confirmedPlan, confirmedInterval, {
-          stripeCustomerId: data.stripeCustomerId || "",
-          stripeSubscriptionId: data.stripeSubscriptionId || "",
-          stripeSubscriptionStatus: data.stripeSubscriptionStatus || "active",
-          stripeCheckoutSessionId: data.stripeCheckoutSessionId || sessionId
-        });
-
-        if (!cancelled) {
-          setSelectedPaymentPlan("");
-          setBillingMessage(`${planLimits[confirmedPlan].name} ${confirmedInterval === "yearly" ? "yearly" : "monthly"} subscription activated through Stripe.`);
-          window.history.replaceState({}, document.title, window.location.pathname);
-        }
-      } catch (error) {
-        if (!cancelled) setBillingMessage(error.message || "Stripe Checkout confirmation failed.");
-      } finally {
-        if (!cancelled) setCheckoutLoading(false);
-      }
-    }
-
-    confirmStripeCheckout();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentUserId]);
+  }, []);
 
   const bestDates = useMemo(() => {
     return Object.entries(availability)

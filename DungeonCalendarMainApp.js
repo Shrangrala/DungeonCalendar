@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { EmailAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signOut, updateEmail, updatePassword } from "firebase/auth";
+import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { doc, getDoc, getFirestore, setDoc } from "firebase/firestore";
 import app, { auth } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -180,6 +180,10 @@ function authErrorMessage(error) {
   if (code === "auth/invalid-email") return "Enter a valid email address.";
   if (code === "auth/weak-password") return "Password must be at least 6 characters.";
   if (code === "auth/network-request-failed") return "Network error. Check your connection and try again.";
+  if (code === "auth/popup-closed-by-user") return "Google sign-in was cancelled before it finished.";
+  if (code === "auth/popup-blocked") return "Your browser blocked the Google sign-in popup. Allow popups for this site and try again.";
+  if (code === "auth/unauthorized-domain") return "This domain is not authorized for Firebase login. Add dungeoncalendar.com and www.dungeoncalendar.com in Firebase Authentication > Settings > Authorized domains.";
+  if (code === "auth/operation-not-allowed") return "Google sign-in is not enabled. Open Firebase Console > Authentication > Sign-in method and enable Google.";
   return error?.message || "Authentication failed.";
 }
 
@@ -554,6 +558,57 @@ export default function DungeonCalendarApp() {
 
       setPlayers((current) => {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== trimmedEmail);
+        return [...withoutDuplicate, player];
+      });
+
+      if (rememberMe) {
+        localStorage.setItem("dnd-calendar-current-user", uid);
+        localStorage.setItem("dnd-calendar-active-player", uid);
+      }
+
+      setCurrentUserId(uid);
+      setActivePlayerId(uid);
+      if (player.campaignIds?.[0]) setActiveCampaignId(player.campaignIds[0]);
+      setPage("calendar");
+      setLoginError("");
+    } catch (error) {
+      setLoginError(authErrorMessage(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function loginWithGoogle() {
+    if (authBusy) return;
+    setAuthBusy(true);
+    setLoginError("");
+    localStorage.setItem("dnd-calendar-remember-me", rememberMe ? "true" : "false");
+
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
+      const credential = await signInWithPopup(auth, provider);
+      const user = credential.user;
+      const uid = user.uid;
+      const email = normalizeEmail(user.email || "");
+      const displayName = user.displayName || email.split("@")[0] || "Player";
+      const profile = await loadUserProfile(uid);
+      const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === email);
+
+      const player = {
+        ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, email),
+        username: profile?.username || existingLocal?.username || displayName.toLowerCase().replace(/\s+/g, "") || email.split("@")[0] || "player",
+        name: profile?.name || existingLocal?.name || displayName,
+        email,
+        color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
+        campaignIds: profile?.campaignIds || existingLocal?.campaignIds || (activeCampaign?.id ? [activeCampaign.id] : []),
+        campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {})
+      };
+
+      await saveUserProfile(uid, player);
+
+      setPlayers((current) => {
+        const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
         return [...withoutDuplicate, player];
       });
 
@@ -1098,13 +1153,16 @@ export default function DungeonCalendarApp() {
               />
               Remember Me
             </label>
-
-            <span className="text-xs text-zinc-500">Stay logged in on this device</span>
           </div>
 
           <Button onClick={login} disabled={authBusy} className="w-full rounded-xl bg-gradient-to-r from-red-800 to-red-600 py-6 text-lg font-bold hover:from-red-700 hover:to-red-500">
             <LogIn className="mr-2 h-5 w-5" />
             {authBusy ? "Working..." : authMode === "login" ? "Log In" : "Create Account"}
+          </Button>
+
+          <Button onClick={loginWithGoogle} disabled={authBusy} variant="ghost" className="w-full rounded-xl border border-zinc-700 bg-white py-5 text-zinc-950 hover:bg-zinc-100">
+            <span className="mr-2 text-lg font-black">G</span>
+            {authBusy ? "Working..." : "Continue with Google"}
           </Button>
         </div>
       ) : (

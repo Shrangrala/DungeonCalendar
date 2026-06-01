@@ -56,9 +56,10 @@ const playerColors = [
 const defaultPlayers = [];
 
 
-function createCampaign(name = "", dungeonMasterIds = []) {
+function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
   return {
     id: crypto.randomUUID(),
+    ownerId,
     dungeonMasterIds,
     name,
     isEditingName: true,
@@ -273,19 +274,16 @@ export default function DungeonCalendarApp() {
     free: {
       name: "Free",
       campaigns: 1,
-      characters: 1,
       price: "$0"
     },
     adventurer: {
       name: "Adventurer",
       campaigns: 5,
-      characters: 5,
       price: "$2.99"
     },
     guildmaster: {
       name: "Guildmaster",
       campaigns: Infinity,
-      characters: Infinity,
       price: "$4.99"
     }
   };
@@ -711,30 +709,33 @@ export default function DungeonCalendarApp() {
     setAccountMessage("Membership cancelled. You are now on the Free plan.");
   }
 
+  function ownedCampaignsForUser(userId = currentUser?.id) {
+    if (!userId) return [];
+    return campaigns.filter((campaign) =>
+      campaign.ownerId === userId ||
+      (!campaign.ownerId && (campaign.dungeonMasterIds ?? []).includes(userId))
+    );
+  }
+
   function canUseMoreCampaigns() {
     const limit = planLimits[plan]?.campaigns ?? 1;
     if (limit === Infinity) return true;
-    return campaigns.length < limit;
+    return ownedCampaignsForUser().length < limit;
   }
 
   function canUseMoreCharacters() {
-    if (!currentUser) return false;
-
-    const limit = planLimits[plan]?.characters ?? 1;
-    if (limit === Infinity) return true;
-
-    return Object.values(currentUser.campaignCharacterNames || {}).filter(Boolean).length < limit;
+    return !!currentUser;
   }
 
   function addCampaign() {
     if (!currentUser) return;
 
     if (!canUseMoreCampaigns()) {
-      setBillingMessage("Your current plan limit has been reached. Upgrade your subscription for more campaigns.");
+      setBillingMessage("Your created campaign limit has been reached. Invited campaigns are free, but creating more campaigns requires an upgraded plan.");
       setPage("billing");
       return;
     }
-    const campaign = createCampaign("", [currentUser.id]);
+    const campaign = createCampaign("", [currentUser.id], currentUser.id);
     setCampaigns((current) => [...current, campaign]);
     setPlayers((current) => current.map((player) => {
       if (player.id !== currentUser.id) return player;
@@ -750,15 +751,6 @@ export default function DungeonCalendarApp() {
 
   function joinCampaign(campaignId) {
     if (!currentUser) return;
-
-    const planCampaignLimit = planLimits[plan]?.campaigns ?? 1;
-    const joiningNewCampaign = !(currentUser.campaignIds ?? []).includes(campaignId);
-
-    if (joiningNewCampaign && planCampaignLimit !== Infinity && (currentUser.campaignIds ?? []).length >= planCampaignLimit) {
-      setBillingMessage("Your current plan limit has been reached. Upgrade your subscription for more campaigns.");
-      setPage("billing");
-      return;
-    }
 
     setPlayers((current) => current.map((player) => {
       if (player.id !== currentUser.id) return player;
@@ -1586,7 +1578,8 @@ export default function DungeonCalendarApp() {
 
   function AccountSettingsPage() {
     const currentPlan = planLimits[plan] ?? planLimits.free;
-    const campaignCount = currentUser?.campaignIds?.length ?? 0;
+    const campaignCount = ownedCampaignsForUser().length;
+    const invitedCampaignCount = Math.max((currentUser?.campaignIds?.length ?? 0) - campaignCount, 0);
     const characterCount = Object.values(currentUser?.campaignCharacterNames || {}).filter(Boolean).length;
     const accountCompletionItems = [accountUsername, accountName, accountEmail, accountPassword].filter(Boolean).length;
     const accountCompletion = Math.round((accountCompletionItems / 4) * 100);
@@ -1666,7 +1659,7 @@ export default function DungeonCalendarApp() {
                     <p className="text-xs uppercase tracking-[0.25em] text-amber-400">Membership</p>
                     <h3 className="mt-2 text-2xl font-black text-amber-100">{currentPlan.name} Plan</h3>
                     <p className="mt-1 text-sm text-zinc-300">
-                      {plan === "guildmaster" ? "Unlimited campaigns and characters for dedicated Dungeon Masters." : plan === "adventurer" ? "Room for up to 5 campaigns and 5 characters." : "Start with 1 campaign and 1 character."}
+                      {plan === "guildmaster" ? "Unlimited campaign creation for dedicated Dungeon Masters. Invited campaigns and character roles are always included." : plan === "adventurer" ? "Create up to 5 campaigns. Invited campaigns and character roles are always included." : "Create 1 campaign. Invited campaigns and character roles are always included."}
                     </p>
                   </div>
                   <div className="text-right">
@@ -1677,12 +1670,14 @@ export default function DungeonCalendarApp() {
 
                 <div className="mt-5 grid gap-3 sm:grid-cols-2">
                   <div className="rounded-xl border border-zinc-800 bg-black/35 p-4">
-                    <p className="text-sm text-zinc-400">Campaign Usage</p>
+                    <p className="text-sm text-zinc-400">Created Campaigns</p>
                     <p className="mt-1 text-xl font-bold">{campaignCount}/{currentPlan.campaigns === Infinity ? "∞" : currentPlan.campaigns}</p>
+                    <p className="mt-1 text-xs text-zinc-500">Invited campaigns do not count.</p>
                   </div>
                   <div className="rounded-xl border border-zinc-800 bg-black/35 p-4">
-                    <p className="text-sm text-zinc-400">Character Usage</p>
-                    <p className="mt-1 text-xl font-bold">{characterCount}/{currentPlan.characters === Infinity ? "∞" : currentPlan.characters}</p>
+                    <p className="text-sm text-zinc-400">Invited Campaigns / Characters</p>
+                    <p className="mt-1 text-xl font-bold">Included</p>
+                    <p className="mt-1 text-xs text-zinc-500">{invitedCampaignCount} invited campaign(s), {characterCount} character role(s).</p>
                   </div>
                 </div>
 
@@ -1868,12 +1863,6 @@ export default function DungeonCalendarApp() {
                         value={currentUser?.campaignCharacterNames?.[campaign.id] || ""}
                         onChange={(event) => {
                           const value = event.target.value;
-                          const existingCharacters = Object.entries(currentUser?.campaignCharacterNames || {}).filter(([id, name]) => id !== campaign.id && name).length;
-                          if (plan === "free" && value && existingCharacters >= 1) {
-                            setBillingMessage("Your current plan limit has been reached. Upgrade your subscription for more characters.");
-                            setPage("billing");
-                            return;
-                          }
                           setPlayers((current) => current.map((player) => player.id === currentUser.id ? {
                             ...player,
                             campaignCharacterNames: {
@@ -2203,8 +2192,9 @@ export default function DungeonCalendarApp() {
               <p className="mt-2 text-sm text-zinc-300">Perfect for casual adventurers trying out the app for their first campaign.</p>
 
               <ul className="mt-4 space-y-2 text-sm text-zinc-200">
-                <li>• 1 active campaign</li>
-                <li>• 1 playable character</li>
+                <li>• Create 1 campaign</li>
+                <li>• Unlimited invited campaigns</li>
+                <li>• Unlimited invited character roles</li>
                 <li>• Shared scheduling calendar</li>
                 <li>• Session reminders</li>
                 <li>• Player invite tools</li>
@@ -2228,8 +2218,9 @@ export default function DungeonCalendarApp() {
               <p className="mt-2 text-sm text-zinc-300">Built for active players juggling multiple parties, characters, and weekly sessions.</p>
 
               <ul className="mt-4 space-y-2 text-sm text-zinc-200">
-                <li>• Up to 5 campaigns</li>
-                <li>• Up to 5 unique characters</li>
+                <li>• Create up to 5 campaigns</li>
+                <li>• Unlimited invited campaigns</li>
+                <li>• Unlimited invited character roles</li>
                 <li>• Shared scheduling calendar</li>
                 <li>• Session reminders</li>
                 <li>• Player invite tools</li>
@@ -2256,8 +2247,9 @@ export default function DungeonCalendarApp() {
               <p className="mt-2 text-sm text-zinc-300">The ultimate toolkit for dedicated Dungeon Masters and large gaming groups.</p>
 
               <ul className="mt-4 space-y-2 text-sm text-zinc-200">
-                <li>• Unlimited campaigns</li>
-                <li>• Unlimited characters</li>
+                <li>• Unlimited campaign creation</li>
+                <li>• Unlimited invited campaigns</li>
+                <li>• Unlimited invited character roles</li>
                 <li>• Shared scheduling calendar</li>
                 <li>• Session reminders</li>
                 <li>• Player invite tools</li>

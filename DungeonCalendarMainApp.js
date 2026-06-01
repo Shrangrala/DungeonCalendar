@@ -152,6 +152,10 @@ function normalizeEmail(email = "") {
   return email.trim().toLowerCase();
 }
 
+function normalizePlan(planId = "free") {
+  return ["free", "adventurer", "guildmaster"].includes(planId) ? planId : "free";
+}
+
 async function loadUserProfile(uid) {
   try {
     const snap = await getDoc(doc(db, "users", uid));
@@ -199,6 +203,7 @@ function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
     email,
     password: "",
     phone: profile.phone || "",
+    plan: normalizePlan(profile.plan || "free"),
     campaignIds: profile.campaignIds || [],
     campaignCharacterNames: profile.campaignCharacterNames || {},
     lockedColorCampaignIds: profile.lockedColorCampaignIds || [],
@@ -426,6 +431,7 @@ export default function DungeonCalendarApp() {
           player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
         );
         const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
+        setPlan(normalizePlan(profile?.plan || localMatch?.plan || firebasePlayer.plan || "free"));
 
         setPlayers((current) => {
           const withoutDuplicate = current.filter((player) =>
@@ -456,13 +462,14 @@ export default function DungeonCalendarApp() {
       name: currentUser.name || "",
       email: normalizeEmail(currentUser.email || ""),
       phone: currentUser.phone || "",
+      plan: normalizePlan(plan),
       campaignIds: currentUser.campaignIds || [],
       campaignCharacterNames: currentUser.campaignCharacterNames || {},
       lockedColorCampaignIds: currentUser.lockedColorCampaignIds || [],
       color: currentUser.color || "",
       campaignTokenImages: currentUser.campaignTokenImages || {}
     }).catch((error) => console.error("Failed to sync web profile:", error));
-  }, [authProfileLoaded, currentUserId, currentUser]);
+  }, [authProfileLoaded, currentUserId, currentUser, plan]);
 
   useEffect(() => {
     localStorage.setItem("dnd-calendar-players", JSON.stringify(players));
@@ -566,6 +573,7 @@ export default function DungeonCalendarApp() {
         player = {
           ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, trimmedEmail),
           color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
+          plan: normalizePlan(profile?.plan || existingLocal?.plan || "free"),
           campaignIds: profile?.campaignIds || existingLocal?.campaignIds || []
         };
       } else {
@@ -584,6 +592,7 @@ export default function DungeonCalendarApp() {
           campaignCharacterNames: existingInvite?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {}),
           campaignIds: existingInvite?.campaignIds?.length ? existingInvite.campaignIds : (activeCampaign?.id ? [activeCampaign.id] : []),
           color: existingInvite?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
+          plan: normalizePlan(existingInvite?.plan || "free"),
           campaignTokenImages: existingInvite?.campaignTokenImages || {},
           lockedColorCampaignIds: existingInvite?.lockedColorCampaignIds || []
         };
@@ -601,6 +610,7 @@ export default function DungeonCalendarApp() {
         localStorage.setItem("dnd-calendar-active-player", uid);
       }
 
+      setPlan(normalizePlan(player.plan || "free"));
       setCurrentUserId(uid);
       setActivePlayerId(uid);
       if (player.campaignIds?.[0]) setActiveCampaignId(player.campaignIds[0]);
@@ -636,6 +646,7 @@ export default function DungeonCalendarApp() {
         name: profile?.name || existingLocal?.name || displayName,
         email,
         color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
+        plan: normalizePlan(profile?.plan || existingLocal?.plan || "free"),
         campaignIds: profile?.campaignIds || existingLocal?.campaignIds || (activeCampaign?.id ? [activeCampaign.id] : []),
         campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {})
       };
@@ -652,6 +663,7 @@ export default function DungeonCalendarApp() {
         localStorage.setItem("dnd-calendar-active-player", uid);
       }
 
+      setPlan(normalizePlan(player.plan || "free"));
       setCurrentUserId(uid);
       setActivePlayerId(uid);
       if (player.campaignIds?.[0]) setActiveCampaignId(player.campaignIds[0]);
@@ -682,9 +694,23 @@ export default function DungeonCalendarApp() {
     setCampaignCharacterNames({});
   }
 
-  function startPlanCheckout(planId) {
+  async function persistPlan(nextPlan) {
+    const safePlan = normalizePlan(nextPlan);
+    setPlan(safePlan);
+
+    if (currentUser?.id && auth.currentUser?.uid === currentUser.id) {
+      await saveUserProfile(currentUser.id, {
+        plan: safePlan,
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan } : player));
+  }
+
+  async function startPlanCheckout(planId) {
     if (planId === "free") {
-      setPlan("free");
+      await persistPlan("free");
       setSelectedPaymentPlan("");
       setBillingMessage("Free plan selected.");
       return;
@@ -696,7 +722,7 @@ export default function DungeonCalendarApp() {
     setBillingMessage("");
   }
 
-  function completePayment() {
+  async function completePayment() {
     if (!selectedPaymentPlan) return;
 
     if (!paymentName.trim() || !paymentEmail.trim()) {
@@ -709,15 +735,16 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    setPlan(selectedPaymentPlan);
+    const activatedPlan = selectedPaymentPlan;
+    await persistPlan(activatedPlan);
     setSelectedPaymentPlan("");
     setPaymentCardNumber("");
     setPaymentExpiry("");
     setPaymentCvc("");
-    setBillingMessage(`${planLimits[selectedPaymentPlan].name} plan activated. Replace this demo payment form with Stripe Checkout before accepting real payments.`);
+    setBillingMessage(`${planLimits[activatedPlan].name} plan activated. Replace this demo payment form with Stripe Checkout before accepting real payments.`);
   }
 
-  function cancelCurrentPlan() {
+  async function cancelCurrentPlan() {
     if (plan === "free") {
       setAccountMessage("You are already on the Free plan.");
       return;
@@ -726,7 +753,7 @@ export default function DungeonCalendarApp() {
     const confirmed = window.confirm("Cancel your current paid membership and switch to the Free plan?");
     if (!confirmed) return;
 
-    setPlan("free");
+    await persistPlan("free");
     setSelectedPaymentPlan("");
     setBillingMessage("Membership cancelled. Free plan is now active.");
     setAccountMessage("Membership cancelled. You are now on the Free plan.");
@@ -853,6 +880,7 @@ export default function DungeonCalendarApp() {
         name: updatedUser.name || "",
         email: normalizeEmail(updatedUser.email || ""),
         phone: updatedUser.phone || "",
+        plan: normalizePlan(plan),
         campaignIds: updatedUser.campaignIds || [],
         campaignCharacterNames: updatedUser.campaignCharacterNames || {},
         lockedColorCampaignIds: updatedUser.lockedColorCampaignIds || [],
@@ -969,6 +997,7 @@ export default function DungeonCalendarApp() {
         name: nextName,
         phone: accountPhone.trim(),
         email: nextEmail,
+        plan: normalizePlan(plan),
         password: ""
       };
 
@@ -978,6 +1007,7 @@ export default function DungeonCalendarApp() {
         name: updatedProfile.name || "",
         email: normalizeEmail(updatedProfile.email || ""),
         phone: updatedProfile.phone || "",
+        plan: normalizePlan(plan),
         campaignIds: updatedProfile.campaignIds || [],
         campaignCharacterNames: updatedProfile.campaignCharacterNames || {},
         lockedColorCampaignIds: updatedProfile.lockedColorCampaignIds || [],

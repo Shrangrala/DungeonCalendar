@@ -475,6 +475,20 @@ export default function DungeonCalendarApp() {
   }, [activeCampaignId, campaigns]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const inviteCampaignId = params.get("campaign");
+    const inviteName = params.get("name");
+
+    if (inviteName && !loginName) {
+      setLoginName(inviteName);
+    }
+
+    if (inviteCampaignId && campaigns.some((campaign) => campaign.id === inviteCampaignId)) {
+      setActiveCampaignId(inviteCampaignId);
+    }
+  }, [campaigns, loginName]);
+
+  useEffect(() => {
     if (currentUser) {
       setAccountUsername(currentUser.username ?? "");
       setAccountName(currentUser.name ?? "");
@@ -1036,8 +1050,14 @@ export default function DungeonCalendarApp() {
   }
 
   function getLoginLink(playerName = "") {
-    const campaignSlug = (campaignName || "campaign").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    return `https://your-table-calendar.example/${campaignSlug}?role=Player&name=${encodeURIComponent(playerName)}`;
+    const baseUrl = "https://dungeoncalendar.com";
+    const params = new URLSearchParams({
+      role: "Player",
+      name: playerName,
+      campaign: activeCampaign?.id || ""
+    });
+
+    return `${baseUrl}/?${params.toString()}`;
   }
 
   function getInviteMessage(playerName) {

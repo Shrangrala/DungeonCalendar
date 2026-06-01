@@ -263,12 +263,13 @@ export default function DungeonCalendarApp() {
   const [billingMessage, setBillingMessage] = useState("");
   const [selectedPaymentPlan, setSelectedPaymentPlan] = useState("");
   const [selectedBillingInterval, setSelectedBillingInterval] = useState("monthly");
-  const [paymentMethod, setPaymentMethod] = useState("card");
+  const [paymentMethod, setPaymentMethod] = useState("stripe");
   const [paymentName, setPaymentName] = useState("");
   const [paymentEmail, setPaymentEmail] = useState("");
   const [paymentCardNumber, setPaymentCardNumber] = useState("");
   const [paymentExpiry, setPaymentExpiry] = useState("");
   const [paymentCvc, setPaymentCvc] = useState("");
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -584,6 +585,71 @@ export default function DungeonCalendarApp() {
     }
   }, [currentUser]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get("session_id");
+    const stripeSuccess = params.get("stripe_success") === "true";
+    const stripeCancelled = params.get("stripe_cancelled") === "true";
+
+    if (stripeCancelled) {
+      setBillingMessage("Stripe Checkout was cancelled. No plan changes were made.");
+      window.history.replaceState({}, document.title, window.location.pathname);
+      return;
+    }
+
+    if (!stripeSuccess || !sessionId || !currentUserId) return;
+
+    let cancelled = false;
+
+    async function confirmStripeCheckout() {
+      setCheckoutLoading(true);
+      setBillingMessage("Confirming Stripe payment...");
+
+      try {
+        const response = await fetch(`/api/confirm-checkout-session?session_id=${encodeURIComponent(sessionId)}`);
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data?.error || "Unable to confirm Stripe Checkout.");
+        }
+
+        if (data.userId && data.userId !== currentUserId) {
+          throw new Error("This Stripe Checkout session belongs to a different signed-in user.");
+        }
+
+        const confirmedPlan = normalizePlan(data.planId);
+        const confirmedInterval = normalizeBillingInterval(data.billingInterval);
+
+        if (confirmedPlan === "free") {
+          throw new Error("Stripe did not return a paid Dungeon Calendar plan.");
+        }
+
+        await persistPlan(confirmedPlan, confirmedInterval, {
+          stripeCustomerId: data.stripeCustomerId || "",
+          stripeSubscriptionId: data.stripeSubscriptionId || "",
+          stripeSubscriptionStatus: data.stripeSubscriptionStatus || "active",
+          stripeCheckoutSessionId: data.stripeCheckoutSessionId || sessionId
+        });
+
+        if (!cancelled) {
+          setSelectedPaymentPlan("");
+          setBillingMessage(`${planLimits[confirmedPlan].name} ${confirmedInterval === "yearly" ? "yearly" : "monthly"} subscription activated through Stripe.`);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      } catch (error) {
+        if (!cancelled) setBillingMessage(error.message || "Stripe Checkout confirmation failed.");
+      } finally {
+        if (!cancelled) setCheckoutLoading(false);
+      }
+    }
+
+    confirmStripeCheckout();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
   const bestDates = useMemo(() => {
     return Object.entries(availability)
       .map(([key, ids]) => ({ key, count: ids.length, names: ids.map((id) => { const player = players.find((p) => p.id === id); return player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name; }).filter(Boolean) }))
@@ -751,7 +817,7 @@ export default function DungeonCalendarApp() {
     setCampaignCharacterNames({});
   }
 
-  async function persistPlan(nextPlan, nextBillingInterval = billingInterval) {
+  async function persistPlan(nextPlan, nextBillingInterval = billingInterval, extraProfileFields = {}) {
     const safePlan = normalizePlan(nextPlan);
     const safeBillingInterval = safePlan === "free" ? "monthly" : normalizeBillingInterval(nextBillingInterval);
     setPlan(safePlan);
@@ -761,11 +827,12 @@ export default function DungeonCalendarApp() {
       await saveUserProfile(currentUser.id, {
         plan: safePlan,
         billingInterval: safeBillingInterval,
+        ...extraProfileFields,
         updatedAt: new Date().toISOString()
       });
     }
 
-    setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan, billingInterval: safeBillingInterval } : player));
+    setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan, billingInterval: safeBillingInterval, ...extraProfileFields } : player));
   }
 
   async function startPlanCheckout(planId) {
@@ -785,26 +852,50 @@ export default function DungeonCalendarApp() {
   }
 
   async function completePayment() {
-    if (!selectedPaymentPlan) return;
+    if (!selectedPaymentPlan || checkoutLoading) return;
 
-    if (!paymentName.trim() || !paymentEmail.trim()) {
-      setBillingMessage("Enter your billing name and email.");
+    if (!currentUser?.id || !auth.currentUser?.uid) {
+      setBillingMessage("Log in before starting Stripe Checkout.");
       return;
     }
 
-    if (paymentMethod === "card" && (!paymentCardNumber.trim() || !paymentExpiry.trim() || !paymentCvc.trim())) {
-      setBillingMessage("Enter your card number, expiration date, and CVC.");
-      return;
-    }
-
-    const activatedPlan = selectedPaymentPlan;
+    const activatedPlan = normalizePlan(selectedPaymentPlan);
     const activatedInterval = normalizeBillingInterval(selectedBillingInterval);
-    await persistPlan(activatedPlan, activatedInterval);
-    setSelectedPaymentPlan("");
-    setPaymentCardNumber("");
-    setPaymentExpiry("");
-    setPaymentCvc("");
-    setBillingMessage(`${planLimits[activatedPlan].name} ${activatedInterval === "yearly" ? "yearly" : "monthly"} plan activated. Replace this demo payment form with Stripe Checkout before accepting real payments.`);
+
+    if (activatedPlan === "free") {
+      await persistPlan("free", "monthly");
+      setSelectedPaymentPlan("");
+      setBillingMessage("Free plan selected.");
+      return;
+    }
+
+    setCheckoutLoading(true);
+    setBillingMessage("Opening Stripe Checkout...");
+
+    try {
+      const response = await fetch("/api/create-checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planId: activatedPlan,
+          billingInterval: activatedInterval,
+          userId: currentUser.id,
+          email: paymentEmail.trim() || currentUser.email || auth.currentUser.email || "",
+          name: paymentName.trim() || currentUser.name || auth.currentUser.displayName || ""
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.url) {
+        throw new Error(data?.error || "Unable to start Stripe Checkout.");
+      }
+
+      window.location.assign(data.url);
+    } catch (error) {
+      setCheckoutLoading(false);
+      setBillingMessage(error.message || "Unable to start Stripe Checkout.");
+    }
   }
 
   async function cancelCurrentPlan() {
@@ -2512,118 +2603,14 @@ export default function DungeonCalendarApp() {
                 </div>
               </div>
 
-              <div className="mt-5">
-                <label className="text-sm text-zinc-300">Payment Method</label>
-                <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                  {[
-                    { id: "card", label: "Credit/Debit Card" },
-                    {
-                    id: "paypal", label: "PayPal"
-                  },
-                  {
-                    id: "googlepay", label: "Google Pay"
-                  },
-                  {
-                    id: "stripe", label: "Stripe"
-                  },
-                  {
-                    id: "shopify", label: "Shopify"
-                  },
-                  {
-                    id: "applepay", label: "Apple Pay"
-                  }
-                  ].map((method) => (
-                    <button
-                      key={method.id}
-                      onClick={() => setPaymentMethod(method.id)}
-                      className={classNames(
-                        "rounded-xl border px-4 py-3 text-sm font-bold transition",
-                        paymentMethod === method.id ? "border-amber-400 bg-amber-900/40 text-white" : "border-zinc-700 bg-black/40 text-zinc-300 hover:bg-zinc-900"
-                      )}
-                    >
-                      {method.label}
-                    </button>
-                  ))}
-                </div>
+              <div className="mt-5 rounded-xl border border-violet-700 bg-violet-950/30 p-4 text-sm text-violet-100">
+                <p className="font-bold">Secure Stripe Checkout</p>
+                <p className="mt-1 text-violet-200/90">Payment details are collected by Stripe. Dungeon Calendar never stores card numbers.</p>
               </div>
-
-              {paymentMethod === "card" ? (
-                <div className="mt-5 grid gap-4 md:grid-cols-[2fr_1fr_1fr]">
-                  <div>
-                    <label className="text-sm text-zinc-300">Card Number</label>
-                    <input
-                      value={paymentCardNumber}
-                      onChange={(event) => {
-                        let value = event.target.value.replace(/\D/g, "");
-
-                        const isAmex = /^3[47]/.test(value);
-                        const maxLength = isAmex ? 15 : 16;
-                        value = value.slice(0, maxLength);
-
-                        let formatted = "";
-
-                        if (isAmex) {
-                          const parts = [
-                            value.slice(0, 4),
-                            value.slice(4, 10),
-                            value.slice(10, 15)
-                          ].filter(Boolean);
-
-                          formatted = parts.join(" ");
-                        } else {
-                          formatted = value.match(/.{1,4}/g)?.join(" ") || value;
-                        }
-
-                        setPaymentCardNumber(formatted);
-                      }}
-                      placeholder="4242 4242 4242 4242"
-                      className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm text-zinc-300">Exp.</label>
-                    <input
-                      value={paymentExpiry}
-                      onChange={(event) => {
-                        let value = event.target.value.replace(/\D/g, "").slice(0, 4);
-
-                        if (value.length >= 3) {
-                          value = `${value.slice(0, 2)}/${value.slice(2)}`;
-                        }
-
-                        setPaymentExpiry(value);
-                      }}
-                      placeholder="MM/YY"
-                      className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm text-zinc-300">CVC</label>
-                    <input
-                      value={paymentCvc}
-                      onChange={(event) => setPaymentCvc(event.target.value)}
-                      placeholder="123"
-                      className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-5 rounded-xl border border-zinc-800 bg-black/40 p-4 text-sm text-zinc-300">
-                  {paymentMethod === "paypal"
-                    ? "PayPal checkout will open after you continue."
-                    : paymentMethod === "googlepay"
-                      ? "Google Pay checkout will open after you continue."
-                      : paymentMethod === "stripe"
-                        ? "Stripe secure checkout will open after you continue."
-                        : paymentMethod === "shopify"
-                          ? "Shopify payment checkout will open after you continue."
-                          : "Apple Pay checkout will open after you continue."}
-                </div>
-              )}
 
               <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-zinc-400">
-                  Demo checkout only. Use Stripe Checkout, Shopify Payments, PayPal, Google Pay, or Apple Pay merchant setup before charging real customers.
+                  You will be redirected to Stripe to complete your subscription securely.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {paymentMethod === "stripe" && (
@@ -2638,8 +2625,8 @@ export default function DungeonCalendarApp() {
                     </div>
                   )}
 
-                  <Button onClick={completePayment} className="rounded-xl bg-amber-600 hover:bg-amber-500">
-                    Pay {formatPlanPrice(selectedPaymentPlan, selectedBillingInterval)}
+                  <Button onClick={completePayment} disabled={checkoutLoading} className="rounded-xl bg-amber-600 hover:bg-amber-500">
+                    {checkoutLoading ? "Opening Stripe..." : `Continue to Stripe - ${formatPlanPrice(selectedPaymentPlan, selectedBillingInterval)}`}
                   </Button>
                 </div>
               </div>

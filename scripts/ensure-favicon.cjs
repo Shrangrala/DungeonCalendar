@@ -26,7 +26,7 @@ const iconCopies = [
 
 if (fs.existsSync(dist)) {
   for (const [fileName, ...sources] of iconCopies) {
-    const source = sources.find(Boolean).find((candidate) => fs.existsSync(candidate));
+    const source = sources.find((candidate) => candidate && fs.existsSync(candidate));
     if (source) copyIfExists(source, path.join(dist, fileName));
   }
 

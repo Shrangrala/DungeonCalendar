@@ -1167,7 +1167,7 @@ export default function DungeonCalendarApp() {
   const calendarEvent = buildCalendarEvent();
 
   const Sidebar = (
-    <aside className="rounded-2xl border border-red-900/60 bg-black/55 p-5 shadow-[0_0_60px_rgba(0,0,0,0.7)] backdrop-blur-md">
+    <aside className="w-full rounded-2xl border border-red-900/60 bg-black/55 p-4 shadow-[0_0_60px_rgba(0,0,0,0.7)] backdrop-blur-md sm:p-5">
       <DungeonCalendarLogo small />
       <div className="mt-5 text-center">
         <h1 className="text-2xl font-bold">Dungeon Calendar</h1>
@@ -1175,11 +1175,11 @@ export default function DungeonCalendarApp() {
       </div>
 
       {currentUser && (
-        <nav className="mt-7 space-y-2">
+        <nav className="mt-5 grid grid-cols-2 gap-2 lg:mt-7 lg:block lg:space-y-2">
           {navItems.filter((item) => isDungeonMaster || (item.id !== "settings" && item.id !== "players")).map((item) => {
             const Icon = item.icon;
             return (
-              <button key={item.id} onClick={() => setPage(item.id)} className={classNames("flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition", page === item.id ? "bg-red-900/60 text-white" : "text-zinc-300 hover:bg-zinc-900/80 hover:text-white")}>
+              <button key={item.id} onClick={() => setPage(item.id)} className={classNames("flex w-full items-center justify-center gap-2 rounded-xl px-3 py-3 text-center text-sm transition lg:justify-start lg:gap-3 lg:px-4 lg:text-left lg:text-base", page === item.id ? "bg-red-900/60 text-white" : "text-zinc-300 hover:bg-zinc-900/80 hover:text-white")}>
                 <Icon className="h-5 w-5" /> {item.label}
               </button>
             );
@@ -1347,7 +1347,7 @@ export default function DungeonCalendarApp() {
   const Header = (
     <div className="grid items-start gap-4 md:grid-cols-[1fr_auto]">
       <div>
-        <h2 className="text-4xl font-bold">
+        <h2 className="text-2xl font-bold leading-tight sm:text-4xl">
           {page === "dashboard" ? `Welcome back, ${currentUser?.username || currentUser?.campaignCharacterNames?.[activeCampaign?.id] || currentUser?.name || "Adventurer"}!` : page === "account" ? "Account Settings" : navItems.find((item) => item.id === page)?.label}
         </h2>
         <p className="mt-2 text-zinc-300">{campaignName || "Dungeon Calendar"}</p>
@@ -1375,15 +1375,15 @@ export default function DungeonCalendarApp() {
   function CalendarGrid({ compact = false } = {}) {
     return (
       <Card className="border-zinc-700 bg-black/55 text-zinc-100 shadow-2xl backdrop-blur">
-        <CardContent className="p-6">
+        <CardContent className="p-3 sm:p-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-center gap-4">
-              <Button variant="ghost" onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1))} className="h-12 w-12 rounded-lg bg-zinc-900 hover:bg-zinc-800 hover:text-white"><ChevronLeft /></Button>
-              <div className="min-w-52 text-center text-2xl font-bold">{monthNames[viewDate.getMonth()]} {viewDate.getFullYear()}</div>
-              <Button variant="ghost" onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1))} className="h-12 w-12 rounded-lg bg-zinc-900 hover:bg-zinc-800 hover:text-white"><ChevronRight /></Button>
+            <div className="flex w-full items-center gap-2 sm:gap-4 md:w-auto">
+              <Button variant="ghost" onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1))} className="h-10 w-10 shrink-0 rounded-lg bg-zinc-900 hover:bg-zinc-800 hover:text-white sm:h-12 sm:w-12"><ChevronLeft /></Button>
+              <div className="min-w-0 flex-1 text-center text-lg font-bold sm:min-w-52 sm:text-2xl">{monthNames[viewDate.getMonth()]} {viewDate.getFullYear()}</div>
+              <Button variant="ghost" onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1))} className="h-10 w-10 shrink-0 rounded-lg bg-zinc-900 hover:bg-zinc-800 hover:text-white sm:h-12 sm:w-12"><ChevronRight /></Button>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <p className="rounded-xl border border-zinc-800 bg-zinc-950/80 px-4 py-3 text-sm text-zinc-300">Marking as <span className="font-bold text-white">{activePlayer?.characterName || activePlayer?.name || currentUser?.campaignCharacterNames?.[activeCampaign?.id] || currentUser?.name}</span></p>
+            <div className="flex w-full flex-wrap items-center gap-3 md:w-auto">
+              <p className="w-full rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-300 sm:w-auto sm:px-4 sm:py-3">Marking as <span className="font-bold text-white">{activePlayer?.characterName || activePlayer?.name || currentUser?.campaignCharacterNames?.[activeCampaign?.id] || currentUser?.name}</span></p>
 
               {!isDungeonMaster && (
                 <div className="flex overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950/90">
@@ -1414,7 +1414,7 @@ export default function DungeonCalendarApp() {
             </div>
           </div>
           <div className="mt-5 overflow-hidden rounded-xl border border-zinc-800">
-            <div className="grid grid-cols-7 bg-zinc-950/90">{dayNames.map((day) => <div key={day} className="px-2 py-4 text-center text-sm font-semibold text-zinc-400">{day}</div>)}</div>
+            <div className="grid grid-cols-7 bg-zinc-950/90">{dayNames.map((day) => <div key={day} className="px-1 py-3 text-center text-[11px] font-semibold text-zinc-400 sm:px-2 sm:py-4 sm:text-sm">{day}</div>)}</div>
             <div className="grid grid-cols-7">
               {dates.map((date) => {
                 const key = dateKey(date);
@@ -1433,7 +1433,7 @@ export default function DungeonCalendarApp() {
                     disabled={!isDungeonMaster && !hasDungeonMasterAvailable}
                     onClick={() => toggleAvailability(date)}
                     className={classNames(
-                      compact ? "min-h-16 p-2" : "min-h-28 p-4",
+                      compact ? "min-h-14 p-1.5 sm:min-h-16 sm:p-2" : "min-h-16 p-1.5 sm:min-h-28 sm:p-4",
                       "border-r border-t border-zinc-800 text-left transition",
                       isDungeonMaster || hasDungeonMasterAvailable ? "hover:bg-zinc-900" : "cursor-not-allowed opacity-35",
                       date.getMonth() !== viewDate.getMonth() && "text-zinc-600",
@@ -1441,12 +1441,12 @@ export default function DungeonCalendarApp() {
                     )}
                   >
                     <div className="flex items-start justify-between"><span className="font-semibold">{date.getDate()}</span>{(hasDungeonMasterAvailable || hasDungeonMasterUnavailable || isChosenDate) && <Shield className="h-4 w-4" />}</div>
-                    {!compact && hasDungeonMasterAvailable && !isChosenDate && <div className="mt-4 text-sm font-medium text-emerald-100">DM available</div>}
-                    {!compact && hasDungeonMasterUnavailable && !isChosenDate && <div className="mt-4 text-sm font-medium text-red-100">DM not available</div>}
-                    {!compact && !isDungeonMaster && !hasDungeonMasterAvailable && !hasDungeonMasterUnavailable && <div className="mt-4 text-xs font-semibold text-zinc-400">Waiting for DM</div>}
-                    {!compact && isChosenDate && <div className="mt-4 rounded-md bg-emerald-300 px-2 py-1 text-center text-xs font-bold text-black">Final date</div>}
-                    {!compact && visibleUnavailableIds.length > 0 && <div className="mt-3 space-y-1">{visibleUnavailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-red-950/60 px-1.5 py-1 text-[11px] font-semibold text-red-100"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM not available" : isDungeonMaster ? `${player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name} unavailable` : "You unavailable"}</span></div> : null; })}</div>}
-                    {!compact && visibleAvailableIds.length > 0 && <div className="mt-3 space-y-1">{visibleAvailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-black/35 px-1.5 py-1 text-[11px] font-semibold text-white"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM available" : isDungeonMaster ? player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name : "You available"}</span></div> : null; })}</div>}
+                    {!compact && hasDungeonMasterAvailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-emerald-100 sm:block">DM available</div>}
+                    {!compact && hasDungeonMasterUnavailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-red-100 sm:block">DM not available</div>}
+                    {!compact && !isDungeonMaster && !hasDungeonMasterAvailable && !hasDungeonMasterUnavailable && <div className="mt-4 hidden text-xs font-semibold text-zinc-400 sm:block">Waiting for DM</div>}
+                    {!compact && isChosenDate && <div className="mt-2 rounded-md bg-emerald-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
+                    {!compact && visibleUnavailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleUnavailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-red-950/60 px-1.5 py-1 text-[11px] font-semibold text-red-100"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM not available" : isDungeonMaster ? `${player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name} unavailable` : "You unavailable"}</span></div> : null; })}</div>}
+                    {!compact && visibleAvailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleAvailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-black/35 px-1.5 py-1 text-[11px] font-semibold text-white"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM available" : isDungeonMaster ? player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name : "You available"}</span></div> : null; })}</div>}
                   </button>
                 );
               })}
@@ -1459,7 +1459,7 @@ export default function DungeonCalendarApp() {
 
   function PlayersPage() {
     return (
-      <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[320px_1fr] xl:grid-cols-[360px_1fr]">
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
           <CardContent className="space-y-3 p-6">
             <h2 className="text-2xl font-bold">Campaigns</h2>
@@ -2540,15 +2540,15 @@ export default function DungeonCalendarApp() {
   }
 
   if (!currentUser) {
-    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-6 py-10"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
+    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-3 py-5 sm:px-6 sm:py-10"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
   }
 
   return (
     <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100">
       <AppBackground />
-      <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] justify-center gap-6 overflow-visible px-6 py-8 lg:grid-cols-[300px_minmax(0,1200px)]">
+      <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] gap-4 overflow-visible px-3 py-4 sm:px-5 sm:py-6 lg:grid-cols-[300px_minmax(0,1fr)] lg:gap-6 lg:px-6">
         {Sidebar}
-        <section className="mx-auto w-full max-w-[1200px] space-y-5">
+        <section className="w-full min-w-0 space-y-4 sm:space-y-5">
           {Header}
           {PageContent()}
         </section>

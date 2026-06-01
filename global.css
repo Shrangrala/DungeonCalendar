@@ -22,3 +22,28 @@ body {
 #root {
   width: 100%;
 }
+/* Mobile web polish for Dungeon Calendar */
+@media (max-width: 640px) {
+  html,
+  body,
+  #root {
+    min-width: 0;
+    width: 100%;
+    overflow-x: hidden;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font-size: 16px; /* prevents iOS zoom on form focus */
+  }
+
+  img {
+    max-width: 100%;
+  }
+
+  .rounded-2xl {
+    border-radius: 1rem;
+  }
+}

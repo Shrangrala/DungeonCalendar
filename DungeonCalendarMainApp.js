@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { doc, getDoc, getFirestore, setDoc } from "firebase/firestore";
+import { doc, getDoc, getFirestore, onSnapshot, setDoc } from "firebase/firestore";
 import app, { auth } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
@@ -452,6 +452,30 @@ export default function DungeonCalendarApp() {
 
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!currentUserId || auth.currentUser?.uid !== currentUserId) return undefined;
+
+    const userRef = doc(db, "users", currentUserId);
+    const unsubscribeProfile = onSnapshot(userRef, (snapshot) => {
+      if (!snapshot.exists()) return;
+
+      const profile = snapshot.data();
+      const syncedPlayer = firebaseProfileToPlayer(currentUserId, profile, auth.currentUser?.email || "");
+
+      setPlan(normalizePlan(profile?.plan || syncedPlayer.plan || "free"));
+      setPlayers((current) => {
+        const withoutDuplicate = current.filter((player) =>
+          player.id !== currentUserId && normalizeEmail(player.email) !== normalizeEmail(syncedPlayer.email)
+        );
+        return [...withoutDuplicate, syncedPlayer];
+      });
+    }, (error) => {
+      console.warn("Live profile sync failed:", error);
+    });
+
+    return () => unsubscribeProfile();
+  }, [currentUserId]);
 
   useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;

@@ -10,6 +10,6 @@
       "favicon": "./assets/favicon.png",
       "bundler": "metro"
     },
-    "description": "Schedule tabletop RPG sessions, manage campaigns, track player availability, and organize D&D adventures with Dungeon Calendar."
+    "description": "Dungeon Calendar helps Dungeons & Dragons and tabletop RPG groups schedule sessions, manage campaigns, track player availability, invite players, and organize adventures."
   }
 }

@@ -56,6 +56,81 @@ const playerColors = [
 const defaultPlayers = [];
 
 
+const seoTitle = "Dungeon Calendar - D&D Campaign Scheduling & Session Planning";
+const seoDescription = "Dungeon Calendar helps Dungeons & Dragons and tabletop RPG groups schedule sessions, manage campaigns, track player availability, invite players, and organize adventures.";
+const seoKeywords = "D&D scheduling, Dungeons and Dragons calendar, tabletop RPG scheduler, campaign management, player availability, Dungeon Master tools, RPG session planner";
+const siteUrl = "https://dungeoncalendar.com";
+
+function setMetaTag(selector, attributes) {
+  if (typeof document === "undefined") return;
+  let element = document.head.querySelector(selector);
+  if (!element) {
+    element = document.createElement("meta");
+    document.head.appendChild(element);
+  }
+  Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+}
+
+function setLinkTag(rel, href, extra = {}) {
+  if (typeof document === "undefined") return;
+  let element = document.head.querySelector(`link[rel="${rel}"]`);
+  if (!element) {
+    element = document.createElement("link");
+    element.setAttribute("rel", rel);
+    document.head.appendChild(element);
+  }
+  element.setAttribute("href", href);
+  Object.entries(extra).forEach(([key, value]) => element.setAttribute(key, value));
+}
+
+function updateSeoHead() {
+  if (typeof document === "undefined") return;
+  document.title = seoTitle;
+  setMetaTag('meta[name="description"]', { name: "description", content: seoDescription });
+  setMetaTag('meta[name="keywords"]', { name: "keywords", content: seoKeywords });
+  setMetaTag('meta[name="robots"]', { name: "robots", content: "index, follow" });
+  setMetaTag('meta[property="og:title"]', { property: "og:title", content: seoTitle });
+  setMetaTag('meta[property="og:description"]', { property: "og:description", content: seoDescription });
+  setMetaTag('meta[property="og:type"]', { property: "og:type", content: "website" });
+  setMetaTag('meta[property="og:url"]', { property: "og:url", content: siteUrl });
+  setMetaTag('meta[property="og:image"]', { property: "og:image", content: `${siteUrl}/icon-512.png` });
+  setMetaTag('meta[name="twitter:card"]', { name: "twitter:card", content: "summary_large_image" });
+  setMetaTag('meta[name="twitter:title"]', { name: "twitter:title", content: seoTitle });
+  setMetaTag('meta[name="twitter:description"]', { name: "twitter:description", content: seoDescription });
+  setMetaTag('meta[name="twitter:image"]', { name: "twitter:image", content: `${siteUrl}/icon-512.png` });
+  setLinkTag("canonical", siteUrl);
+  setLinkTag("manifest", "/manifest.json");
+  setLinkTag("icon", "/favicon.ico");
+  setLinkTag("apple-touch-icon", "/apple-touch-icon.png");
+
+  const structuredDataId = "dungeon-calendar-structured-data";
+  let structuredData = document.getElementById(structuredDataId);
+  if (!structuredData) {
+    structuredData = document.createElement("script");
+    structuredData.type = "application/ld+json";
+    structuredData.id = structuredDataId;
+    document.head.appendChild(structuredData);
+  }
+  structuredData.textContent = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: "Dungeon Calendar",
+    applicationCategory: "GameApplication",
+    operatingSystem: "Web, iOS, Android",
+    url: siteUrl,
+    description: seoDescription,
+    offers: [
+      { "@type": "Offer", name: "Free", price: "0", priceCurrency: "USD" },
+      { "@type": "Offer", name: "Adventurer", price: "2.99", priceCurrency: "USD" },
+      { "@type": "Offer", name: "Guildmaster", price: "4.99", priceCurrency: "USD" }
+    ],
+    audience: {
+      "@type": "Audience",
+      audienceType: "Dungeons & Dragons players, Dungeon Masters, and tabletop RPG groups"
+    }
+  });
+}
+
 function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
   return {
     id: crypto.randomUUID(),
@@ -444,6 +519,10 @@ export default function DungeonCalendarApp() {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [pendingStripeActivation, setPendingStripeActivation] = useState(null);
   const [stripeAutoVerifyAttempted, setStripeAutoVerifyAttempted] = useState(false);
+
+  useEffect(() => {
+    updateSeoHead();
+  }, []);
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -3248,6 +3327,101 @@ export default function DungeonCalendarApp() {
     );
   }
 
+  function MarketingLandingPage() {
+    const features = [
+      {
+        title: "D&D session scheduling",
+        description: "Find the best date for your next Dungeons & Dragons session by collecting availability from every player."
+      },
+      {
+        title: "Dungeon Master tools",
+        description: "Create campaigns, invite party members, choose final dates, and manage tabletop RPG scheduling in one place."
+      },
+      {
+        title: "Player availability tracking",
+        description: "Players can mark available and unavailable dates so the whole party can see what works."
+      },
+      {
+        title: "Campaign calendars",
+        description: "Keep multiple campaigns organized with session times, reminders, calendar exports, and shared party planning."
+      }
+    ];
+
+    return (
+      <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100">
+        <AppBackground />
+        <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1500px] gap-6 px-4 py-6 sm:px-6 xl:grid-cols-[minmax(0,1fr)_420px] xl:items-start lg:py-10">
+          <section className="min-w-0 space-y-6 rounded-3xl border border-red-900/50 bg-black/50 p-5 shadow-[0_0_70px_rgba(0,0,0,0.65)] backdrop-blur-md sm:p-8 lg:p-10">
+            <div className="mx-auto max-w-[260px] sm:max-w-[320px] lg:mx-0"><DungeonCalendarLogo /></div>
+
+            <div className="mx-auto max-w-4xl text-center lg:text-left">
+              <p className="text-sm font-black uppercase tracking-[0.35em] text-red-300">D&D Campaign Scheduling App</p>
+              <h1 className="mt-4 max-w-5xl text-3xl font-black leading-tight text-white sm:text-5xl lg:text-6xl">
+                Schedule D&D sessions without the group chat chaos.
+              </h1>
+              <p className="mt-5 max-w-3xl text-base leading-7 text-zinc-300 sm:text-lg sm:leading-8">
+                Dungeon Calendar helps Dungeon Masters and tabletop RPG groups plan adventures, track player availability,
+                manage campaigns, send invites, and choose the best session date from one shared calendar.
+              </p>
+
+              <div className="mt-7 flex flex-wrap justify-center gap-3 lg:justify-start">
+                <Button
+                  onClick={() => document.getElementById("login-panel")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                  className="rounded-xl bg-gradient-to-r from-red-800 to-red-600 px-6 py-4 text-base font-black hover:from-red-700 hover:to-red-500"
+                >
+                  Start Scheduling
+                </Button>
+                <Button
+                  onClick={() => document.getElementById("features")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                  variant="ghost"
+                  className="rounded-xl border border-zinc-700 px-6 py-4 text-base font-bold hover:bg-zinc-900"
+                >
+                  View Features
+                </Button>
+              </div>
+            </div>
+
+            <div id="features" className="grid min-w-0 gap-4 md:grid-cols-2">
+              {features.map((feature) => (
+                <div key={feature.title} className="min-w-0 rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+                  <h2 className="break-words text-lg font-black leading-snug text-amber-200 sm:text-xl">{feature.title}</h2>
+                  <p className="mt-2 break-words text-sm leading-6 text-zinc-300">{feature.description}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-2xl border border-emerald-800/70 bg-emerald-950/25 p-5">
+                <h2 className="text-xl font-black text-emerald-200">Free</h2>
+                <p className="mt-2 text-sm text-zinc-300">Create your first campaign and join unlimited invited campaigns.</p>
+              </div>
+              <div className="rounded-2xl border border-blue-800/70 bg-blue-950/25 p-5">
+                <h2 className="text-xl font-black text-blue-200">Adventurer</h2>
+                <p className="mt-2 text-sm text-zinc-300">More campaign creation, calendar export, and automatic best-date voting.</p>
+              </div>
+              <div className="rounded-2xl border border-red-800/70 bg-red-950/25 p-5">
+                <h2 className="text-xl font-black text-red-200">Guildmaster</h2>
+                <p className="mt-2 text-sm text-zinc-300">Unlimited campaign creation, full tracking, and custom player token uploads.</p>
+              </div>
+            </div>
+
+            <div className="min-w-0 rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+              <h2 className="text-2xl font-black">Built for tabletop RPG groups</h2>
+              <p className="mt-3 leading-7 text-zinc-300">
+                Whether you run weekly Dungeons & Dragons sessions, rotating one-shots, Pathfinder campaigns, or any tabletop RPG,
+                Dungeon Calendar gives your party a shared scheduling hub for planning the next adventure.
+              </p>
+            </div>
+          </section>
+
+          <aside id="login-panel" className="w-full min-w-0 xl:sticky xl:top-6">
+            {Sidebar}
+          </aside>
+        </main>
+      </div>
+    );
+  }
+
   function PageContent() {
     if (page === "dashboard") return DashboardPage();
     if (page === "calendar") return CalendarGrid();
@@ -3260,7 +3434,7 @@ export default function DungeonCalendarApp() {
   }
 
   if (!currentUser) {
-    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-3 py-5 sm:px-6 sm:py-10"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
+    return <MarketingLandingPage />;
   }
 
   return (

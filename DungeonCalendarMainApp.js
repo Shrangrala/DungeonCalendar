@@ -413,6 +413,9 @@ export default function DungeonCalendarApp() {
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
   const [newPlayerPhone, setNewPlayerPhone] = useState("");
   const [copied, setCopied] = useState(false);
+  const [emailInvitePlayer, setEmailInvitePlayer] = useState(null);
+  const [emailInviteCopied, setEmailInviteCopied] = useState(false);
+  const [emailInviteMessage, setEmailInviteMessage] = useState("");
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [accountUsername, setAccountUsername] = useState("");
   const [accountName, setAccountName] = useState("");
@@ -1773,6 +1776,55 @@ export default function DungeonCalendarApp() {
     return `You have been invited to ${campaignName || "the campaign"}. Log in as ${playerName} and mark your Dungeon Calendar availability: ${getLoginLink(playerName)}`;
   }
 
+  function getInviteEmailSubject() {
+    return `${campaignName || "Dungeon Calendar"} scheduling invite`;
+  }
+
+  function openEmailInvitePopup(player) {
+    setEmailInvitePlayer(player);
+    setEmailInviteCopied(false);
+    setEmailInviteMessage("");
+  }
+
+  function closeEmailInvitePopup() {
+    setEmailInvitePlayer(null);
+    setEmailInviteCopied(false);
+    setEmailInviteMessage("");
+  }
+
+  async function copyEmailInviteText() {
+    if (!emailInvitePlayer) return;
+
+    const inviteText = [
+      `To: ${emailInvitePlayer.email || ""}`,
+      `Subject: ${getInviteEmailSubject()}`,
+      "",
+      getInviteMessage(emailInvitePlayer.name)
+    ].join("\n");
+
+    try {
+      await navigator.clipboard.writeText(inviteText);
+      setEmailInviteCopied(true);
+      setEmailInviteMessage("Invite email copied. Your Dungeon Calendar page stayed open.");
+    } catch {
+      setEmailInviteCopied(false);
+      setEmailInviteMessage("Copy was blocked by the browser. You can manually select the text below.");
+    }
+  }
+
+  function openInviteEmailClient() {
+    if (!emailInvitePlayer?.email) return;
+
+    const mailtoUrl = `mailto:${emailInvitePlayer.email}?subject=${encodeURIComponent(getInviteEmailSubject())}&body=${encodeURIComponent(getInviteMessage(emailInvitePlayer.name))}`;
+    const opened = window.open(mailtoUrl, "_blank", "noopener,noreferrer");
+
+    if (opened) {
+      setEmailInviteMessage("Your email app should open in a separate window/tab. This page will stay open.");
+    } else {
+      setEmailInviteMessage("Popup was blocked. Use Copy Invite Email, or allow popups for dungeoncalendar.com.");
+    }
+  }
+
   function formatCalendarDate(date) {
     return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
   }
@@ -2194,7 +2246,7 @@ export default function DungeonCalendarApp() {
 
                     {isDungeonMaster && !isDmPlayer && (
                       <div className="mt-4 flex flex-wrap gap-2 border-t border-zinc-800 pt-3">
-                        {player.email && <a href={`mailto:${player.email}?subject=${encodeURIComponent(`${campaignName} Dungeon Calendar scheduling invite`)}&body=${encodeURIComponent(getInviteMessage(player.name))}`} className="inline-flex items-center gap-1 rounded-lg bg-blue-700 px-2 py-1 text-xs font-bold"><Mail className="h-3 w-3" /> Email</a>}
+                        {player.email && <button type="button" onClick={() => openEmailInvitePopup(player)} className="inline-flex items-center gap-1 rounded-lg bg-blue-700 px-2 py-1 text-xs font-bold"><Mail className="h-3 w-3" /> Email</button>}
                         {player.phone && <a href={`sms:${player.phone}?&body=${encodeURIComponent(getInviteMessage(player.name))}`} className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-2 py-1 text-xs font-bold"><MessageSquare className="h-3 w-3" /> Text</a>}
                         <button onClick={() => navigator.clipboard.writeText(getLoginLink(player.name))} className="inline-flex items-center gap-1 rounded-lg bg-zinc-700 px-2 py-1 text-xs font-bold"><Copy className="h-3 w-3" /> Copy link</button>
                       </div>
@@ -3142,6 +3194,60 @@ export default function DungeonCalendarApp() {
     );
   }
 
+  function EmailInvitePopup() {
+    if (!emailInvitePlayer) return null;
+
+    const inviteBody = getInviteMessage(emailInvitePlayer.name);
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6 backdrop-blur-sm">
+        <div className="w-full max-w-lg rounded-2xl border border-zinc-700 bg-zinc-950 p-5 text-zinc-100 shadow-2xl">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.25em] text-red-300">Send Invite</p>
+              <h3 className="mt-2 text-2xl font-bold">Email Campaign Invite</h3>
+              <p className="mt-1 text-sm text-zinc-400">Your Dungeon Calendar page will stay open.</p>
+            </div>
+            <button type="button" onClick={closeEmailInvitePopup} className="rounded-lg border border-zinc-700 px-3 py-1 text-sm font-bold text-zinc-300 hover:bg-zinc-900">Close</button>
+          </div>
+
+          <div className="mt-5 space-y-3">
+            <div className="rounded-xl border border-zinc-800 bg-black/40 p-3 text-sm">
+              <p className="text-zinc-500">To</p>
+              <p className="mt-1 break-all font-semibold text-zinc-100">{emailInvitePlayer.email}</p>
+            </div>
+
+            <div className="rounded-xl border border-zinc-800 bg-black/40 p-3 text-sm">
+              <p className="text-zinc-500">Subject</p>
+              <p className="mt-1 font-semibold text-zinc-100">{getInviteEmailSubject()}</p>
+            </div>
+
+            <textarea
+              readOnly
+              value={inviteBody}
+              className="min-h-32 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 text-sm text-zinc-100 outline-none"
+            />
+
+            {emailInviteMessage && (
+              <p className={classNames("rounded-xl border p-3 text-sm", emailInviteCopied ? "border-emerald-700 bg-emerald-950/40 text-emerald-200" : "border-amber-700 bg-amber-950/40 text-amber-200")}>
+                {emailInviteMessage}
+              </p>
+            )}
+
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button onClick={copyEmailInviteText} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">
+                <Copy className="mr-2 h-4 w-4" /> Copy Invite Email
+              </Button>
+              <Button onClick={openInviteEmailClient} className="rounded-xl bg-blue-700 hover:bg-blue-600">
+                <Mail className="mr-2 h-4 w-4" /> Open Email App
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function PageContent() {
     if (page === "dashboard") return DashboardPage();
     if (page === "calendar") return CalendarGrid();
@@ -3167,6 +3273,7 @@ export default function DungeonCalendarApp() {
           {PageContent()}
         </section>
       </main>
+      <EmailInvitePopup />
     </div>
   );
 }

@@ -21,4 +21,4 @@ https://dungeoncalendar.com/?stripe_success=true&stripe_plan=guildmaster&stripe_
 Recommended cancel URL for all links:
 https://dungeoncalendar.com/?stripe_cancelled=true
 
-The app also saves a pending plan before sending the user to Stripe. If Stripe returns without the plan parameters, the Billing page shows an Activate Paid Plan button for the pending selection.
+The app also saves a pending plan before sending the user to Stripe. If Stripe returns without the plan parameters, the app now automatically applies the pending paid plan to the signed-in user when they return to Dungeon Calendar. The Billing page still includes an Activate Paid Plan button as a fallback.

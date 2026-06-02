@@ -650,18 +650,24 @@ export default function DungeonCalendarApp() {
       });
     }
 
-    if (!stripeSuccess && !urlPlan) return;
+    if (pending && !pendingUserMatches) {
+      if (stripeSuccess || urlPlan) {
+        setBillingMessage("Stripe checkout completed, but it was started by a different signed-in account. Sign in with the checkout account and reload this page.");
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+      return;
+    }
+
+    // Stripe Payment Links do not always send custom query parameters back to the site.
+    // To keep plan activation reliable without a Vercel/Stripe backend integration, the app
+    // stores the selected paid plan before redirecting to Stripe, then applies that pending
+    // plan when the user returns to Dungeon Calendar after checkout.
+    if (!stripeSuccess && !urlPlan && !pending) return;
 
     const planToActivate = normalizePlan(urlPlan || pending?.plan || "free");
     const intervalToActivate = normalizeBillingInterval(urlBilling || pending?.billingInterval || pending?.interval || "monthly");
 
-    if (pending && !pendingUserMatches) {
-      setBillingMessage("Stripe checkout completed, but it was started by a different signed-in account. Sign in with the checkout account and reload this page.");
-      window.history.replaceState({}, document.title, window.location.pathname);
-      return;
-    }
-
-    activateStripePlan(planToActivate, intervalToActivate, "stripe_return").finally(() => {
+    activateStripePlan(planToActivate, intervalToActivate, stripeSuccess || urlPlan ? "stripe_return" : "stripe_pending_return").finally(() => {
       window.history.replaceState({}, document.title, window.location.pathname);
     });
   }, [currentUser?.id]);

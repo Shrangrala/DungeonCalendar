@@ -607,6 +607,31 @@ export default function DungeonCalendarApp() {
     }
   }
 
+  function syncPendingStripeActivationFromStorage() {
+    const pending = readPendingStripePlan();
+    if (!pending?.plan || normalizePlan(pending.plan) === "free") {
+      setPendingStripeActivation(null);
+      return null;
+    }
+
+    const uid = currentUser?.id || auth.currentUser?.uid || "";
+    const pendingUserMatches = !pending.uid || !uid || pending.uid === uid;
+
+    if (!pendingUserMatches) {
+      setPendingStripeActivation(null);
+      return pending;
+    }
+
+    const nextPending = {
+      plan: normalizePlan(pending.plan),
+      billingInterval: normalizeBillingInterval(pending.billingInterval || pending.interval || "monthly"),
+      startedAt: pending.startedAt || ""
+    };
+
+    setPendingStripeActivation(nextPending);
+    return nextPending;
+  }
+
   async function activateStripePlan(planId, interval = "monthly", source = "stripe_payment_link") {
     const safePlan = normalizePlan(planId);
     const safeInterval = normalizeBillingInterval(interval);
@@ -643,12 +668,7 @@ export default function DungeonCalendarApp() {
     const pending = readPendingStripePlan();
     const pendingUserMatches = !pending?.uid || pending.uid === currentUser.id;
 
-    if (pending && pendingUserMatches) {
-      setPendingStripeActivation({
-        plan: normalizePlan(pending.plan),
-        billingInterval: normalizeBillingInterval(pending.billingInterval || pending.interval || "monthly")
-      });
-    }
+    syncPendingStripeActivationFromStorage();
 
     if (pending && !pendingUserMatches) {
       if (stripeSuccess || urlPlan) {
@@ -658,11 +678,11 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    // Stripe Payment Links do not always send custom query parameters back to the site.
-    // To keep plan activation reliable without a Vercel/Stripe backend integration, the app
-    // stores the selected paid plan before redirecting to Stripe, then applies that pending
-    // plan when the user returns to Dungeon Calendar after checkout.
-    if (!stripeSuccess && !urlPlan && !pending) return;
+    // Stripe Payment Links and Stripe's "you already have a subscription" screen may not
+    // return custom query parameters. The app therefore keeps the selected paid plan pending
+    // and exposes an activation button when the user returns to Dungeon Calendar. If Stripe
+    // does return success parameters, activate automatically.
+    if (!stripeSuccess && !urlPlan) return;
 
     const planToActivate = normalizePlan(urlPlan || pending?.plan || "free");
     const intervalToActivate = normalizeBillingInterval(urlBilling || pending?.billingInterval || pending?.interval || "monthly");
@@ -670,6 +690,23 @@ export default function DungeonCalendarApp() {
     activateStripePlan(planToActivate, intervalToActivate, stripeSuccess || urlPlan ? "stripe_return" : "stripe_pending_return").finally(() => {
       window.history.replaceState({}, document.title, window.location.pathname);
     });
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser || auth.currentUser?.uid !== currentUser.id) return undefined;
+
+    const refreshPending = () => syncPendingStripeActivationFromStorage();
+    refreshPending();
+
+    window.addEventListener("focus", refreshPending);
+    window.addEventListener("pageshow", refreshPending);
+    document.addEventListener("visibilitychange", refreshPending);
+
+    return () => {
+      window.removeEventListener("focus", refreshPending);
+      window.removeEventListener("pageshow", refreshPending);
+      document.removeEventListener("visibilitychange", refreshPending);
+    };
   }, [currentUser?.id]);
 
   const bestDates = useMemo(() => {
@@ -924,12 +961,14 @@ export default function DungeonCalendarApp() {
       checkoutUrl.searchParams.set("stripe_plan", activatedPlan);
       checkoutUrl.searchParams.set("stripe_billing", activatedInterval);
       checkoutUrl.searchParams.set("stripe_success", "true");
-      localStorage.setItem("dnd-calendar-pending-stripe-plan", JSON.stringify({
+      const pendingCheckoutPlan = {
         uid: currentUser?.id || auth.currentUser?.uid || "",
         plan: activatedPlan,
         billingInterval: activatedInterval,
         startedAt: new Date().toISOString()
-      }));
+      };
+      localStorage.setItem("dnd-calendar-pending-stripe-plan", JSON.stringify(pendingCheckoutPlan));
+      setPendingStripeActivation(pendingCheckoutPlan);
 
       if (typeof window !== "undefined") {
         window.location.assign(checkoutUrl.toString());
@@ -2533,13 +2572,14 @@ export default function DungeonCalendarApp() {
 
           {pendingStripeActivation?.plan && pendingStripeActivation.plan !== "free" && (
             <div className="rounded-xl border border-emerald-700 bg-emerald-950/40 p-4 text-sm text-emerald-100">
-              <p className="font-bold">Stripe checkout detected</p>
+              <p className="font-bold">Stripe subscription pending activation</p>
               <p className="mt-1">Activate {planLimits[pendingStripeActivation.plan]?.name || "paid"} ({pendingStripeActivation.billingInterval}) for this account.</p>
+              <p className="mt-2 text-emerald-200/90">Use this after Stripe says you already have a subscription or after returning from checkout.</p>
               <Button
-                onClick={() => activateStripePlan(pendingStripeActivation.plan, pendingStripeActivation.billingInterval, "manual_return_button")}
+                onClick={() => activateStripePlan(pendingStripeActivation.plan, pendingStripeActivation.billingInterval, "manual_stripe_subscription_activation")}
                 className="mt-3 rounded-xl bg-emerald-700 hover:bg-emerald-600"
               >
-                Activate Paid Plan
+                Activate My Paid Plan
               </Button>
             </div>
           )}
@@ -2723,6 +2763,15 @@ export default function DungeonCalendarApp() {
                   <Button onClick={completePayment} disabled={checkoutLoading} className="rounded-xl bg-amber-600 hover:bg-amber-500">
                     {checkoutLoading ? "Opening Stripe..." : `Continue to Stripe - ${formatPlanPrice(selectedPaymentPlan, selectedBillingInterval)}`}
                   </Button>
+                  {pendingStripeActivation?.plan && pendingStripeActivation.plan === selectedPaymentPlan && (
+                    <Button
+                      onClick={() => activateStripePlan(pendingStripeActivation.plan, pendingStripeActivation.billingInterval || selectedBillingInterval, "manual_existing_subscription_checkout_panel")}
+                      variant="ghost"
+                      className="rounded-xl border border-emerald-700 text-emerald-100 hover:bg-emerald-950"
+                    >
+                      Already subscribed? Activate Plan
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>

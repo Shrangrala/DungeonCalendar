@@ -80,15 +80,15 @@ module.exports = async function handler(req, res) {
 
   try {
     const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-    const customers = await stripe.customers.list({ email, limit: 20 });
+    const customers = await stripe.customers.list({ email, limit: 5 });
 
     let best = null;
 
     for (const customer of customers.data || []) {
       const subscriptions = await stripe.subscriptions.list({
         customer: customer.id,
-        status: 'all',
-        limit: 50
+        status: 'active',
+        limit: 10
       });
 
       for (const subscription of subscriptions.data || []) {

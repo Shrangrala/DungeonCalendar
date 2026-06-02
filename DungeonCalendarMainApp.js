@@ -241,14 +241,56 @@ function normalizeBillingInterval(interval = "monthly") {
   return ["monthly", "yearly"].includes(interval) ? interval : "monthly";
 }
 
-async function loadUserProfile(uid) {
+
+function cachedProfileKey(uid) {
+  return `dnd-calendar-user-profile-${uid}`;
+}
+
+function loadCachedUserProfile(uid) {
+  if (!uid) return null;
   try {
-    const snap = await getDoc(doc(db, "users", uid));
-    return snap.exists() ? snap.data() : null;
+    const raw = localStorage.getItem(cachedProfileKey(uid));
+    return raw ? JSON.parse(raw) : null;
   } catch (error) {
-    console.warn("Firestore SDK profile load failed; trying REST fallback:", error);
+    console.warn("Could not read cached profile:", error);
+    return null;
+  }
+}
+
+function saveCachedUserProfile(uid, profile = {}) {
+  if (!uid) return;
+  try {
+    const existing = loadCachedUserProfile(uid) || {};
+    const merged = {
+      ...existing,
+      ...profile,
+      plan: normalizePlan(profile.plan || existing.plan || "free"),
+      billingInterval: normalizeBillingInterval(profile.billingInterval || existing.billingInterval || "monthly"),
+      cachedAt: new Date().toISOString()
+    };
+    localStorage.setItem(cachedProfileKey(uid), JSON.stringify(merged));
+  } catch (error) {
+    console.warn("Could not cache profile locally:", error);
+  }
+}
+
+async function loadUserProfile(uid) {
+  const cached = loadCachedUserProfile(uid);
+  try {
+    const snap = await Promise.race([
+      getDoc(doc(db, "users", uid)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Profile load timed out; using cached profile.")), 3000))
+    ]);
+    const profile = snap.exists() ? snap.data() : null;
+    if (profile) saveCachedUserProfile(uid, profile);
+    return profile || cached || null;
+  } catch (error) {
+    console.warn("Firestore SDK profile load failed; trying cache/REST fallback:", error);
+    if (cached) return cached;
     try {
-      return await loadUserProfileViaRest(uid);
+      const restProfile = await loadUserProfileViaRest(uid);
+      if (restProfile) saveCachedUserProfile(uid, restProfile);
+      return restProfile;
     } catch (restError) {
       console.warn("Firestore REST profile load failed; continuing with Firebase Auth only:", restError);
       return null;
@@ -257,6 +299,7 @@ async function loadUserProfile(uid) {
 }
 
 async function saveUserProfile(uid, profile) {
+  saveCachedUserProfile(uid, profile);
   try {
     await setDoc(doc(db, "users", uid), profile, { merge: true });
     return true;
@@ -274,6 +317,7 @@ async function saveUserProfile(uid, profile) {
 
 async function saveUserProfileRequired(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
+  saveCachedUserProfile(uid, profile);
   try {
     await setDoc(doc(db, "users", uid), profile, { merge: true });
     return true;
@@ -286,6 +330,7 @@ async function saveUserProfileRequired(uid, profile) {
 
 async function saveUserProfileQuick(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
+  saveCachedUserProfile(uid, profile);
   const savePromise = setDoc(doc(db, "users", uid), profile, { merge: true });
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => reject(new Error("Profile save timed out. Check your connection and try again.")), 4500);
@@ -619,6 +664,7 @@ export default function DungeonCalendarApp() {
       if (!snapshot.exists()) return;
 
       const profile = snapshot.data();
+      saveCachedUserProfile(currentUserId, profile);
       const syncedPlayer = firebaseProfileToPlayer(currentUserId, profile, auth.currentUser?.email || "");
 
       setPlan(normalizePlan(profile?.plan || syncedPlayer.plan || "free"));
@@ -1034,16 +1080,19 @@ export default function DungeonCalendarApp() {
       throw new Error("Sign in again before changing your plan.");
     }
 
-    await saveUserProfileRequired(currentUser.id, {
+    const planPayload = {
       plan: safePlan,
       billingInterval: safeBillingInterval,
       ...extraProfileFields,
       updatedAt: new Date().toISOString()
-    });
+    };
 
+    saveCachedUserProfile(currentUser.id, planPayload);
     setPlan(safePlan);
     setBillingInterval(safeBillingInterval);
     setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan, billingInterval: safeBillingInterval, ...extraProfileFields } : player));
+
+    await saveUserProfileRequired(currentUser.id, planPayload);
   }
 
   async function startPlanCheckout(planId) {
@@ -1143,7 +1192,14 @@ export default function DungeonCalendarApp() {
       if (expectedPlan !== "free") statusUrl.searchParams.set("expectedPlan", expectedPlan);
       statusUrl.searchParams.set("expectedBillingInterval", expectedBillingInterval);
 
-      const response = await fetch(statusUrl.toString());
+      const controller = new AbortController();
+      const verifyTimeout = setTimeout(() => controller.abort(), 9000);
+      let response;
+      try {
+        response = await fetch(statusUrl.toString(), { signal: controller.signal });
+      } finally {
+        clearTimeout(verifyTimeout);
+      }
       const contentType = response.headers.get("content-type") || "";
 
       if (!contentType.includes("application/json")) {
@@ -1178,7 +1234,11 @@ export default function DungeonCalendarApp() {
       setBillingMessage(`${planLimits[verifiedPlan]?.name || "Paid"} plan verified from Stripe and activated. Billing: ${verifiedInterval}.`);
     } catch (error) {
       console.error("Stripe subscription verification failed:", error);
-      setBillingMessage(profileSaveErrorMessage(error) || error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is set in Vercel.");
+      if (error?.name === "AbortError") {
+        setBillingMessage("Stripe verification is taking too long. Confirm the billing email is correct, then try again in a moment.");
+      } else {
+        setBillingMessage(profileSaveErrorMessage(error) || error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is set in Vercel.");
+      }
     } finally {
       setStripeVerifyLoading(false);
       setCheckoutLoading(false);
@@ -1547,6 +1607,7 @@ export default function DungeonCalendarApp() {
         updatedAt: new Date().toISOString()
       };
 
+      saveCachedUserProfile(currentUser.id, profileUpdatePayload);
       setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedProfile : player));
       setAccountUsername(updatedProfile.username || "");
       setAccountName(updatedProfile.name || "");

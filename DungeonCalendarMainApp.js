@@ -1000,7 +1000,15 @@ export default function DungeonCalendarApp() {
     setBillingMessage("Checking Stripe subscription for " + email + "...");
 
     try {
-      const response = await fetch(`/api/stripe-subscription-status?email=${encodeURIComponent(email)}`);
+      const pendingForVerification = readPendingStripePlan();
+      const expectedPlan = normalizePlan(selectedPaymentPlan || pendingForVerification?.plan || currentUser?.pendingStripePlan || plan || "free");
+      const expectedBillingInterval = normalizeBillingInterval(selectedBillingInterval || pendingForVerification?.billingInterval || currentUser?.pendingStripeBillingInterval || billingInterval || "monthly");
+      const statusUrl = new URL("/api/stripe-subscription-status", window.location.origin);
+      statusUrl.searchParams.set("email", email);
+      if (expectedPlan !== "free") statusUrl.searchParams.set("expectedPlan", expectedPlan);
+      statusUrl.searchParams.set("expectedBillingInterval", expectedBillingInterval);
+
+      const response = await fetch(statusUrl.toString());
       const contentType = response.headers.get("content-type") || "";
 
       if (!contentType.includes("application/json")) {
@@ -1011,7 +1019,7 @@ export default function DungeonCalendarApp() {
       if (!response.ok) throw new Error(data.error || "Stripe subscription verification failed.");
 
       if (!data.active || normalizePlan(data.plan) === "free") {
-        setBillingMessage(data.message || "No active paid Stripe subscription was found for that email.");
+        setBillingMessage(data.message || "No active paid Stripe subscription was found for that email. Make sure the Stripe billing email matches this Dungeon Calendar account email.");
         return;
       }
 
@@ -2681,16 +2689,13 @@ export default function DungeonCalendarApp() {
           <div className="rounded-xl border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-100">
             <p className="font-bold">Using a Stripe coupon or already subscribed?</p>
             <p className="mt-1 text-blue-200/90">After Stripe Checkout, return here and click Activate for the paid plan you selected. Coupon codes do not change the Dungeon Calendar plan level.</p>
-            {(selectedPaymentPlan && selectedPaymentPlan !== "free") ? (
-              <Button
-                onClick={() => verifyStripeSubscriptionByEmail("manual_coupon_or_existing_subscription_activation")}
-                className="mt-3 rounded-xl bg-blue-700 hover:bg-blue-600"
-              >
-                {stripeVerifyLoading ? "Checking Stripe..." : "Verify Stripe Subscription"}
-              </Button>
-            ) : pendingStripeActivation?.plan && pendingStripeActivation.plan !== "free" ? null : (
-              <p className="mt-3 text-blue-200/80">Select Adventurer or Guildmaster first to show the activation button.</p>
-            )}
+            <Button
+              onClick={() => verifyStripeSubscriptionByEmail("manual_coupon_or_existing_subscription_activation")}
+              className="mt-3 rounded-xl bg-blue-700 hover:bg-blue-600"
+            >
+              {stripeVerifyLoading ? "Checking Stripe..." : "Verify Stripe Subscription"}
+            </Button>
+            <p className="mt-2 text-xs text-blue-200/80">This checks the signed-in email against Stripe and activates the matching paid plan.</p>
           </div>
 
           {pendingStripeActivation?.plan && pendingStripeActivation.plan !== "free" && (

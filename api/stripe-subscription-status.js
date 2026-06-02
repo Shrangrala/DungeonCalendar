@@ -4,15 +4,24 @@ function normalizeEmail(email = '') {
   return String(email).trim().toLowerCase();
 }
 
-function planFromText(text = '') {
-  const lower = String(text).toLowerCase();
-  if (lower.includes('guild')) return 'guildmaster';
-  if (lower.includes('master')) return 'guildmaster';
-  if (lower.includes('adventurer')) return 'adventurer';
-  return '';
+function normalizePlan(planId = 'free') {
+  const value = String(planId || '').trim().toLowerCase();
+  return ['free', 'adventurer', 'guildmaster'].includes(value) ? value : 'free';
 }
 
-function inferPlanFromPrice(price, product) {
+function normalizeBillingInterval(interval = 'monthly') {
+  const value = String(interval || '').trim().toLowerCase();
+  return value === 'yearly' || value === 'year' || value === 'annual' ? 'yearly' : 'monthly';
+}
+
+function planFromText(text = '') {
+  const lower = String(text).toLowerCase();
+  if (lower.includes('guildmaster') || lower.includes('guild master') || lower.includes('guild')) return 'guildmaster';
+  if (lower.includes('adventurer') || lower.includes('adventure')) return 'adventurer';
+  return 'free';
+}
+
+function inferPlanFromPrice(price, product, expectedPlan = 'free') {
   const text = [
     price?.nickname,
     price?.lookup_key,
@@ -24,19 +33,22 @@ function inferPlanFromPrice(price, product) {
   ].filter(Boolean).join(' ');
 
   const textPlan = planFromText(text);
-  if (textPlan) return textPlan;
+  if (textPlan !== 'free') return textPlan;
 
   const amount = Number(price?.unit_amount || 0);
-  // Fallback for current Dungeon Calendar prices:
-  // Adventurer: 2.99 monthly / 29.99 yearly. Guildmaster: 4.99 monthly / 49.99 yearly.
-  if (amount >= 4900 || amount === 499) return 'guildmaster';
-  if (amount >= 299 || amount === 2999) return 'adventurer';
-  return 'free';
+  if (amount === 499 || amount === 4999 || amount >= 4900) return 'guildmaster';
+  if (amount === 299 || amount === 2999) return 'adventurer';
+
+  // Payment Links can show "already subscribed" and still not expose a name we can infer reliably.
+  // If the app sent the selected plan, use that as a safe fallback once Stripe confirms an active subscription exists.
+  return normalizePlan(expectedPlan);
 }
 
-function inferBillingInterval(price) {
+function inferBillingInterval(price, expectedBillingInterval = 'monthly') {
   const interval = price?.recurring?.interval;
-  return interval === 'year' ? 'yearly' : 'monthly';
+  if (interval === 'year') return 'yearly';
+  if (interval === 'month') return 'monthly';
+  return normalizeBillingInterval(expectedBillingInterval);
 }
 
 module.exports = async function handler(req, res) {
@@ -55,7 +67,11 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const email = normalizeEmail(req.query?.email || req.body?.email || '');
+  const body = req.body || {};
+  const email = normalizeEmail(req.query?.email || body.email || '');
+  const expectedPlan = normalizePlan(req.query?.expectedPlan || body.expectedPlan || 'free');
+  const expectedBillingInterval = normalizeBillingInterval(req.query?.expectedBillingInterval || body.expectedBillingInterval || 'monthly');
+
   if (!email) {
     res.statusCode = 400;
     res.end(JSON.stringify({ error: 'Missing billing email.' }));
@@ -64,7 +80,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-    const customers = await stripe.customers.list({ email, limit: 10 });
+    const customers = await stripe.customers.list({ email, limit: 20 });
 
     let best = null;
 
@@ -72,35 +88,34 @@ module.exports = async function handler(req, res) {
       const subscriptions = await stripe.subscriptions.list({
         customer: customer.id,
         status: 'all',
-        limit: 20,
+        limit: 50,
         expand: ['data.items.data.price.product']
       });
 
       for (const subscription of subscriptions.data || []) {
-        if (!['active', 'trialing'].includes(subscription.status)) continue;
+        if (!['active', 'trialing', 'past_due'].includes(subscription.status)) continue;
 
         const item = subscription.items?.data?.[0];
         const price = item?.price;
         const product = price && typeof price.product === 'object' ? price.product : null;
-        const plan = inferPlanFromPrice(price, product);
+        const plan = inferPlanFromPrice(price, product, expectedPlan);
         if (plan === 'free') continue;
 
         const candidate = {
           active: true,
           plan,
-          billingInterval: inferBillingInterval(price),
+          billingInterval: inferBillingInterval(price, expectedBillingInterval),
           email,
           customerId: customer.id,
           subscriptionId: subscription.id,
           status: subscription.status,
           priceId: price?.id || '',
           productName: product?.name || '',
-          currentPeriodEnd: subscription.current_period_end || null
+          currentPeriodEnd: subscription.current_period_end || null,
+          created: subscription.created || 0
         };
 
-        if (!best || (subscription.created || 0) > (best.created || 0)) {
-          best = { ...candidate, created: subscription.created || 0 };
-        }
+        if (!best || candidate.created > best.created) best = candidate;
       }
     }
 
@@ -111,7 +126,7 @@ module.exports = async function handler(req, res) {
         plan: 'free',
         billingInterval: 'monthly',
         email,
-        message: 'No active paid subscription found for that billing email.'
+        message: 'No active paid subscription found for that billing email. Use the same email shown on the Stripe subscription page.'
       }));
       return;
     }

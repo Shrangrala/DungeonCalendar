@@ -450,6 +450,7 @@ export default function DungeonCalendarApp() {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [pendingStripeActivation, setPendingStripeActivation] = useState(null);
   const [stripeAutoVerifyAttempted, setStripeAutoVerifyAttempted] = useState(false);
+  const [stripeLoginVerifyUserId, setStripeLoginVerifyUserId] = useState("");
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -912,6 +913,21 @@ export default function DungeonCalendarApp() {
     };
   }, [currentUser?.id, stripeAutoVerifyAttempted]);
 
+  useEffect(() => {
+    if (!currentUser || auth.currentUser?.uid !== currentUser.id) return;
+    if (stripeLoginVerifyUserId === currentUser.id) return;
+
+    const email = normalizeEmail(currentUser.email || auth.currentUser?.email || "");
+    if (!email) return;
+
+    setStripeLoginVerifyUserId(currentUser.id);
+    const timer = setTimeout(() => {
+      verifyStripeSubscriptionByEmail("automatic_login_subscription_check");
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [currentUser?.id, currentUser?.email, stripeLoginVerifyUserId]);
+
   const bestDates = useMemo(() => {
     return Object.entries(availability)
       .map(([key, ids]) => ({ key, count: ids.length, names: ids.map((id) => { const player = players.find((p) => p.id === id); return player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name; }).filter(Boolean) }))
@@ -1079,6 +1095,7 @@ export default function DungeonCalendarApp() {
     setLoginPassword("");
     setLoginName("");
     setCampaignCharacterNames({});
+    setStripeLoginVerifyUserId("");
   }
 
   async function persistPlan(nextPlan, nextBillingInterval = billingInterval, extraProfileFields = {}) {
@@ -1183,14 +1200,20 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const email = normalizeEmail(paymentEmail || accountEmail || currentUser.email || auth.currentUser?.email || "");
+    const automaticLoginCheck = source === "automatic_login_subscription_check";
+    const email = normalizeEmail(automaticLoginCheck
+      ? (currentUser.email || auth.currentUser?.email || accountEmail || paymentEmail || "")
+      : (paymentEmail || accountEmail || currentUser.email || auth.currentUser?.email || "")
+    );
     if (!email) {
-      setBillingMessage("Enter the same billing email used in Stripe, then try verification again.");
+      if (!automaticLoginCheck) setBillingMessage("Enter the same billing email used in Stripe, then try verification again.");
       return;
     }
 
     setStripeVerifyLoading(true);
-    setBillingMessage("Checking Stripe subscription for " + email + "...");
+    if (!automaticLoginCheck) {
+      setBillingMessage("Checking Stripe subscription for " + email + "...");
+    }
 
     try {
       const pendingForVerification = readPendingStripePlan();
@@ -1202,7 +1225,7 @@ export default function DungeonCalendarApp() {
       statusUrl.searchParams.set("expectedBillingInterval", expectedBillingInterval);
 
       const controller = new AbortController();
-      const verifyTimeout = setTimeout(() => controller.abort(), 9000);
+      const verifyTimeout = setTimeout(() => controller.abort(), automaticLoginCheck ? 5000 : 9000);
       let response;
       try {
         response = await fetch(statusUrl.toString(), { signal: controller.signal });
@@ -1219,7 +1242,9 @@ export default function DungeonCalendarApp() {
       if (!response.ok) throw new Error(data.error || "Stripe subscription verification failed.");
 
       if (!data.active || normalizePlan(data.plan) === "free") {
-        setBillingMessage(data.message || "No active paid Stripe subscription was found for that email. Make sure the Stripe billing email matches this Dungeon Calendar account email.");
+        if (!automaticLoginCheck) {
+          setBillingMessage(data.message || "No active paid Stripe subscription was found for that email. Make sure the Stripe billing email matches this Dungeon Calendar account email.");
+        }
         return;
       }
 
@@ -1240,13 +1265,17 @@ export default function DungeonCalendarApp() {
       localStorage.removeItem("dnd-calendar-pending-stripe-plan");
       setPendingStripeActivation(null);
       setSelectedPaymentPlan("");
-      setBillingMessage(`${planLimits[verifiedPlan]?.name || "Paid"} plan verified from Stripe and activated. Billing: ${verifiedInterval}.`);
+      if (!automaticLoginCheck) {
+        setBillingMessage(`${planLimits[verifiedPlan]?.name || "Paid"} plan verified from Stripe and activated. Billing: ${verifiedInterval}.`);
+      }
     } catch (error) {
       console.error("Stripe subscription verification failed:", error);
-      if (error?.name === "AbortError") {
-        setBillingMessage("Stripe verification is taking too long. Confirm the billing email is correct, then try again in a moment.");
-      } else {
-        setBillingMessage(profileSaveErrorMessage(error) || error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is set in Vercel.");
+      if (!automaticLoginCheck) {
+        if (error?.name === "AbortError") {
+          setBillingMessage("Stripe verification is taking too long. Confirm the billing email is correct, then try again in a moment.");
+        } else {
+          setBillingMessage(profileSaveErrorMessage(error) || error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is set in Vercel.");
+        }
       }
     } finally {
       setStripeVerifyLoading(false);

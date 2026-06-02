@@ -21,7 +21,9 @@ const iconCopies = [
   ['apple-touch-icon.png', path.join(publicDir, 'apple-touch-icon.png'), path.join(assetsDir, 'app-icon.png')],
   ['icon-192.png', path.join(publicDir, 'icon-192.png'), path.join(assetsDir, 'app-icon.png')],
   ['icon-512.png', path.join(publicDir, 'icon-512.png'), path.join(assetsDir, 'app-icon.png')],
-  ['manifest.json', path.join(publicDir, 'manifest.json')]
+  ['manifest.json', path.join(publicDir, 'manifest.json')],
+  ['robots.txt', path.join(publicDir, 'robots.txt')],
+  ['sitemap.xml', path.join(publicDir, 'sitemap.xml')]
 ];
 
 if (fs.existsSync(dist)) {
@@ -34,16 +36,31 @@ if (fs.existsSync(dist)) {
   if (fs.existsSync(htmlPath)) {
     let html = fs.readFileSync(htmlPath, 'utf8');
     html = html
-      .replace(/<link[^>]+rel=["'](?:shortcut icon|icon|apple-touch-icon|manifest)["'][^>]*>\s*/gi, '')
+      .replace(/<title>.*?<\/title>\s*/is, '')
+      .replace(/<meta[^>]+name=["']description["'][^>]*>\s*/gi, '')
+      .replace(/<meta[^>]+property=["']og:[^"']+["'][^>]*>\s*/gi, '')
+      .replace(/<meta[^>]+name=["']twitter:[^"']+["'][^>]*>\s*/gi, '')
+      .replace(/<link[^>]+rel=["'](?:canonical|shortcut icon|icon|apple-touch-icon|manifest)["'][^>]*>\s*/gi, '')
       .replace(/<link[^>]+href=["'][^"']*favicon[^"']*["'][^>]*>\s*/gi, '')
       .replace(/<meta[^>]+name=["']theme-color["'][^>]*>\s*/gi, '');
 
     const faviconTags = [
+      '<title>Dungeon Calendar - D&D Campaign Scheduling</title>',
+      '<meta name="description" content="Schedule tabletop RPG sessions, manage campaigns, track player availability, and organize D&D adventures with Dungeon Calendar." />',
+      '<link rel="canonical" href="https://dungeoncalendar.com/" />',
+      '<meta property="og:title" content="Dungeon Calendar - D&D Campaign Scheduling" />',
+      '<meta property="og:description" content="Schedule tabletop RPG sessions, manage campaigns, track player availability, and organize D&D adventures with Dungeon Calendar." />',
+      '<meta property="og:type" content="website" />',
+      '<meta property="og:url" content="https://dungeoncalendar.com/" />',
+      '<meta property="og:image" content="https://dungeoncalendar.com/icon-512.png" />',
+      '<meta name="twitter:card" content="summary_large_image" />',
+      '<meta name="twitter:title" content="Dungeon Calendar - D&D Campaign Scheduling" />',
+      '<meta name="twitter:description" content="Schedule tabletop RPG sessions, manage campaigns, track player availability, and organize D&D adventures with Dungeon Calendar." />',
       '<link rel="icon" href="/favicon.ico" sizes="any" />',
-      '<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=4" />',
-      '<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=4" />',
-      '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=4" />',
-      '<link rel="manifest" href="/manifest.json?v=4" />',
+      '<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=5" />',
+      '<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=5" />',
+      '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=5" />',
+      '<link rel="manifest" href="/manifest.json?v=5" />',
       '<meta name="theme-color" content="#070504" />'
     ].join('\n    ');
 

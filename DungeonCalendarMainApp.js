@@ -270,6 +270,7 @@ export default function DungeonCalendarApp() {
   const [paymentExpiry, setPaymentExpiry] = useState("");
   const [paymentCvc, setPaymentCvc] = useState("");
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [pendingStripeActivation, setPendingStripeActivation] = useState(null);
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -597,35 +598,72 @@ export default function DungeonCalendarApp() {
     }
   }, []);
 
+  function readPendingStripePlan() {
+    try {
+      const pendingRaw = localStorage.getItem("dnd-calendar-pending-stripe-plan");
+      return pendingRaw ? JSON.parse(pendingRaw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function activateStripePlan(planId, interval = "monthly", source = "stripe_payment_link") {
+    const safePlan = normalizePlan(planId);
+    const safeInterval = normalizeBillingInterval(interval);
+
+    if (!currentUser || auth.currentUser?.uid !== currentUser.id) {
+      setBillingMessage("Sign in with the account that completed Stripe checkout, then return to this page to activate the plan.");
+      return;
+    }
+
+    if (safePlan === "free") {
+      setBillingMessage("Stripe checkout returned without a paid plan. Choose a paid plan again or contact support.");
+      return;
+    }
+
+    await persistPlan(safePlan, safeInterval, {
+      stripePaymentLinkActivatedAt: new Date().toISOString(),
+      stripeActivationSource: source
+    });
+
+    localStorage.removeItem("dnd-calendar-pending-stripe-plan");
+    setPendingStripeActivation(null);
+    setSelectedPaymentPlan("");
+    setCheckoutLoading(false);
+    setBillingMessage(`${planLimits[safePlan]?.name || "Paid"} plan activated. Billing: ${safeInterval}.`);
+  }
+
   useEffect(() => {
     if (!currentUser || auth.currentUser?.uid !== currentUser.id) return;
 
     const params = new URLSearchParams(window.location.search);
     const stripeSuccess = params.get("stripe_success") === "true" || params.get("payment_success") === "true" || params.get("stripe_sync") === "true";
-    if (!stripeSuccess) return;
+    const urlPlan = params.get("stripe_plan") || params.get("plan");
+    const urlBilling = params.get("stripe_billing") || params.get("billing") || params.get("interval");
+    const pending = readPendingStripePlan();
+    const pendingUserMatches = !pending?.uid || pending.uid === currentUser.id;
 
-    try {
-      const pendingRaw = localStorage.getItem("dnd-calendar-pending-stripe-plan");
-      const pending = pendingRaw ? JSON.parse(pendingRaw) : null;
-      const pendingUserMatches = !pending?.uid || pending.uid === currentUser.id;
-      const pendingPlan = normalizePlan(pending?.plan || "free");
-      const pendingInterval = normalizeBillingInterval(pending?.billingInterval || "monthly");
-
-      if (pending && pendingUserMatches && pendingPlan !== "free") {
-        persistPlan(pendingPlan, pendingInterval, {
-          stripePaymentLinkActivatedAt: new Date().toISOString()
-        });
-        setBillingMessage(`${planLimits[pendingPlan]?.name || "Paid"} plan activated. Stripe Payment Link checkout completed.`);
-        localStorage.removeItem("dnd-calendar-pending-stripe-plan");
-      } else if (pending && !pendingUserMatches) {
-        setBillingMessage("Stripe checkout completed, but it was started by a different signed-in account. Sign in with the checkout account and reload this page.");
-      }
-    } catch (error) {
-      console.warn("Unable to apply pending Stripe plan:", error);
-      setBillingMessage("Stripe checkout completed. If your plan does not update, choose the plan again or contact support.");
-    } finally {
-      window.history.replaceState({}, document.title, window.location.pathname);
+    if (pending && pendingUserMatches) {
+      setPendingStripeActivation({
+        plan: normalizePlan(pending.plan),
+        billingInterval: normalizeBillingInterval(pending.billingInterval || pending.interval || "monthly")
+      });
     }
+
+    if (!stripeSuccess && !urlPlan) return;
+
+    const planToActivate = normalizePlan(urlPlan || pending?.plan || "free");
+    const intervalToActivate = normalizeBillingInterval(urlBilling || pending?.billingInterval || pending?.interval || "monthly");
+
+    if (pending && !pendingUserMatches) {
+      setBillingMessage("Stripe checkout completed, but it was started by a different signed-in account. Sign in with the checkout account and reload this page.");
+      window.history.replaceState({}, document.title, window.location.pathname);
+      return;
+    }
+
+    activateStripePlan(planToActivate, intervalToActivate, "stripe_return").finally(() => {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    });
   }, [currentUser?.id]);
 
   const bestDates = useMemo(() => {
@@ -877,6 +915,9 @@ export default function DungeonCalendarApp() {
       const email = paymentEmail.trim() || currentUser?.email || auth.currentUser?.email || "";
       if (email) checkoutUrl.searchParams.set("prefilled_email", email);
       checkoutUrl.searchParams.set("client_reference_id", currentUser?.id || auth.currentUser?.uid || "guest");
+      checkoutUrl.searchParams.set("stripe_plan", activatedPlan);
+      checkoutUrl.searchParams.set("stripe_billing", activatedInterval);
+      checkoutUrl.searchParams.set("stripe_success", "true");
       localStorage.setItem("dnd-calendar-pending-stripe-plan", JSON.stringify({
         uid: currentUser?.id || auth.currentUser?.uid || "",
         plan: activatedPlan,
@@ -2483,6 +2524,19 @@ export default function DungeonCalendarApp() {
           </div>
 
           {billingMessage && <p className="rounded-xl border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-200">{billingMessage}</p>}
+
+          {pendingStripeActivation?.plan && pendingStripeActivation.plan !== "free" && (
+            <div className="rounded-xl border border-emerald-700 bg-emerald-950/40 p-4 text-sm text-emerald-100">
+              <p className="font-bold">Stripe checkout detected</p>
+              <p className="mt-1">Activate {planLimits[pendingStripeActivation.plan]?.name || "paid"} ({pendingStripeActivation.billingInterval}) for this account.</p>
+              <Button
+                onClick={() => activateStripePlan(pendingStripeActivation.plan, pendingStripeActivation.billingInterval, "manual_return_button")}
+                className="mt-3 rounded-xl bg-emerald-700 hover:bg-emerald-600"
+              >
+                Activate Paid Plan
+              </Button>
+            </div>
+          )}
 
           <div className="grid gap-5 md:grid-cols-3">
             <div className={classNames("rounded-2xl border p-5", plan === "free" ? "border-emerald-500 bg-emerald-950/30" : "border-zinc-800 bg-zinc-950/60")}>

@@ -3110,46 +3110,9 @@ export default function DungeonCalendarApp() {
           {billingMessage && <p className="rounded-xl border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-200">{billingMessage}</p>}
 
           <div className="rounded-xl border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-100">
-            <p className="font-bold">Using a Stripe coupon or already subscribed?</p>
-            <p className="mt-1 text-blue-200/90">After Stripe Checkout, return here and click Activate for the paid plan you selected. Coupon codes do not change the Dungeon Calendar plan level.</p>
-            <input
-              value={paymentEmail}
-              onChange={(event) => setPaymentEmail(event.target.value)}
-              placeholder={auth.currentUser?.email || "Stripe billing email"}
-              type="email"
-              className="mt-3 w-full rounded-xl border border-blue-700 bg-black/40 px-4 py-3 text-blue-50 outline-none ring-blue-500/40 focus:ring-2"
-            />
-            <Button
-              onClick={() => verifyStripeSubscriptionByEmail("manual_coupon_or_existing_subscription_activation")}
-              className="mt-3 rounded-xl bg-blue-700 hover:bg-blue-600"
-            >
-              {stripeVerifyLoading ? "Checking Stripe..." : "Verify Stripe Subscription"}
-            </Button>
-            <p className="mt-2 text-xs text-blue-200/80">This checks the signed-in email against Stripe and activates the matching paid plan.</p>
+            <p className="font-bold">Stripe subscription sync is automatic</p>
+            <p className="mt-1 text-blue-200/90">Choose a paid plan to open Stripe Checkout. After checkout, return to Dungeon Calendar and the app will verify the signed-in account email automatically. Existing subscriptions are also checked automatically each time you log in.</p>
           </div>
-
-          {pendingStripeActivation?.plan && pendingStripeActivation.plan !== "free" && (
-            <div className="rounded-xl border border-emerald-700 bg-emerald-950/40 p-4 text-sm text-emerald-100">
-              <p className="font-bold">Stripe subscription pending activation</p>
-              <p className="mt-1">Activate {planLimits[pendingStripeActivation.plan]?.name || "paid"} ({pendingStripeActivation.billingInterval}) for this account.</p>
-              <p className="mt-2 text-emerald-200/90">Use this after Stripe says you already have a subscription or after returning from checkout.</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button
-                  onClick={() => verifyStripeSubscriptionByEmail("manual_stripe_subscription_activation")}
-                  className="rounded-xl bg-emerald-700 hover:bg-emerald-600"
-                >
-                  {stripeVerifyLoading ? "Checking Stripe..." : "Verify My Stripe Subscription"}
-                </Button>
-                <Button
-                  onClick={() => activateStripePlan(pendingStripeActivation.plan, pendingStripeActivation.billingInterval, "manual_pending_plan_activation").catch((error) => setBillingMessage(profileSaveErrorMessage(error)))}
-                  variant="ghost"
-                  className="rounded-xl border border-emerald-700 text-emerald-100 hover:bg-emerald-950"
-                >
-                  Apply Pending Plan
-                </Button>
-              </div>
-            </div>
-          )}
 
           <div className="grid gap-5 md:grid-cols-3">
             <div className={classNames("rounded-2xl border p-5", plan === "free" ? "border-emerald-500 bg-emerald-950/30" : "border-zinc-800 bg-zinc-950/60")}>
@@ -3330,15 +3293,6 @@ export default function DungeonCalendarApp() {
                   <Button onClick={completePayment} disabled={checkoutLoading} className="rounded-xl bg-amber-600 hover:bg-amber-500">
                     {checkoutLoading ? "Opening Stripe..." : `Continue to Stripe - ${formatPlanPrice(selectedPaymentPlan, selectedBillingInterval)}`}
                   </Button>
-                  {pendingStripeActivation?.plan && pendingStripeActivation.plan === selectedPaymentPlan && (
-                    <Button
-                      onClick={() => verifyStripeSubscriptionByEmail("manual_existing_subscription_checkout_panel")}
-                      variant="ghost"
-                      className="rounded-xl border border-emerald-700 text-emerald-100 hover:bg-emerald-950"
-                    >
-                      {stripeVerifyLoading ? "Checking Stripe..." : "Already subscribed? Verify Email"}
-                    </Button>
-                  )}
                 </div>
               </div>
             </div>

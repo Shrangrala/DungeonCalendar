@@ -284,6 +284,16 @@ async function saveUserProfileRequired(uid, profile) {
   }
 }
 
+async function saveUserProfileQuick(uid, profile) {
+  if (!uid) throw new Error("Missing user id for profile save.");
+  const savePromise = setDoc(doc(db, "users", uid), profile, { merge: true });
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("Profile save timed out. Check your connection and try again.")), 4500);
+  });
+  await Promise.race([savePromise, timeoutPromise]);
+  return true;
+}
+
 function profileSaveErrorMessage(error) {
   const code = error?.code || "";
   if (code === "permission-denied") return "Profile could not be saved because Firestore rules denied access to users/{uid}. Update Firestore rules to allow signed-in users to read/write their own user document.";
@@ -1521,7 +1531,7 @@ export default function DungeonCalendarApp() {
         password: ""
       };
 
-      await saveUserProfileRequired(currentUser.id, {
+      const profileUpdatePayload = {
         role: updatedProfile.role || "Player",
         username: updatedProfile.username || "",
         name: updatedProfile.name || "",
@@ -1535,7 +1545,7 @@ export default function DungeonCalendarApp() {
         color: updatedProfile.color || "",
         campaignTokenImages: updatedProfile.campaignTokenImages || {},
         updatedAt: new Date().toISOString()
-      });
+      };
 
       setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedProfile : player));
       setAccountUsername(updatedProfile.username || "");
@@ -1545,6 +1555,11 @@ export default function DungeonCalendarApp() {
       setEditingField("");
       setAccountPassword("");
       setAccountMessage(editingField === "password" ? "Password changed and account settings saved." : "Account settings saved.");
+
+      saveUserProfileQuick(currentUser.id, profileUpdatePayload).catch((error) => {
+        console.error("Background profile save failed:", error);
+        setAccountMessage(profileSaveErrorMessage(error));
+      });
     } catch (error) {
       const code = error?.code || "";
       if (code === "auth/requires-recent-login") {

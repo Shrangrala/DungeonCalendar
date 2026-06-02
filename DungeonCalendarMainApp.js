@@ -147,6 +147,88 @@ function PlayerToken({ player, campaignId = "", size = "sm", className = "" }) {
 }
 
 
+
+const FIRESTORE_PROJECT_ID = "dungeon-calendar-app";
+
+function encodeFirestoreValue(value) {
+  if (value === null || value === undefined) return { nullValue: null };
+  if (typeof value === "string") return { stringValue: value };
+  if (typeof value === "boolean") return { booleanValue: value };
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value };
+  }
+  if (Array.isArray(value)) {
+    return { arrayValue: { values: value.map(encodeFirestoreValue) } };
+  }
+  if (typeof value === "object") {
+    return { mapValue: { fields: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encodeFirestoreValue(item)])) } };
+  }
+  return { stringValue: String(value) };
+}
+
+function decodeFirestoreValue(value) {
+  if (!value || typeof value !== "object") return undefined;
+  if ("stringValue" in value) return value.stringValue;
+  if ("booleanValue" in value) return value.booleanValue;
+  if ("integerValue" in value) return Number(value.integerValue);
+  if ("doubleValue" in value) return Number(value.doubleValue);
+  if ("nullValue" in value) return null;
+  if ("arrayValue" in value) return (value.arrayValue.values || []).map(decodeFirestoreValue);
+  if ("mapValue" in value) return Object.fromEntries(Object.entries(value.mapValue.fields || {}).map(([key, item]) => [key, decodeFirestoreValue(item)]));
+  return undefined;
+}
+
+function decodeFirestoreDocument(document) {
+  return Object.fromEntries(Object.entries(document?.fields || {}).map(([key, value]) => [key, decodeFirestoreValue(value)]));
+}
+
+async function saveUserProfileViaRest(uid, profile) {
+  const signedInUser = auth.currentUser;
+  if (!signedInUser || signedInUser.uid !== uid) throw new Error("Sign in again before saving your profile.");
+
+  const token = await signedInUser.getIdToken(true);
+  const fields = Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, encodeFirestoreValue(value)]));
+  const updateMask = Object.keys(profile).map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`).join("&");
+  const url = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents/users/${encodeURIComponent(uid)}${updateMask ? `?${updateMask}` : ""}`;
+
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ fields })
+  });
+
+  if (!response.ok) {
+    let details = "";
+    try {
+      const errorBody = await response.json();
+      details = errorBody?.error?.message || JSON.stringify(errorBody);
+    } catch {
+      details = await response.text();
+    }
+    throw new Error(`Firestore REST save failed (${response.status}): ${details}`);
+  }
+
+  return true;
+}
+
+async function loadUserProfileViaRest(uid) {
+  const signedInUser = auth.currentUser;
+  if (!signedInUser || signedInUser.uid !== uid) return null;
+
+  const token = await signedInUser.getIdToken();
+  const url = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents/users/${encodeURIComponent(uid)}`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Firestore REST load failed (${response.status})`);
+  return decodeFirestoreDocument(await response.json());
+}
+
 function normalizeEmail(email = "") {
   return email.trim().toLowerCase();
 }
@@ -164,8 +246,13 @@ async function loadUserProfile(uid) {
     const snap = await getDoc(doc(db, "users", uid));
     return snap.exists() ? snap.data() : null;
   } catch (error) {
-    console.warn("Firestore profile load failed; continuing with Firebase Auth only:", error);
-    return null;
+    console.warn("Firestore SDK profile load failed; trying REST fallback:", error);
+    try {
+      return await loadUserProfileViaRest(uid);
+    } catch (restError) {
+      console.warn("Firestore REST profile load failed; continuing with Firebase Auth only:", restError);
+      return null;
+    }
   }
 }
 
@@ -174,21 +261,34 @@ async function saveUserProfile(uid, profile) {
     await setDoc(doc(db, "users", uid), profile, { merge: true });
     return true;
   } catch (error) {
-    console.warn("Firestore profile save failed; login will still continue:", error);
-    return false;
+    console.warn("Firestore SDK profile save failed; trying REST fallback:", error);
+    try {
+      await saveUserProfileViaRest(uid, profile);
+      return true;
+    } catch (restError) {
+      console.warn("Firestore REST profile save failed; login will still continue:", restError);
+      return false;
+    }
   }
 }
 
 async function saveUserProfileRequired(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
-  await setDoc(doc(db, "users", uid), profile, { merge: true });
-  return true;
+  try {
+    await setDoc(doc(db, "users", uid), profile, { merge: true });
+    return true;
+  } catch (error) {
+    console.warn("Firestore SDK required profile save failed; trying REST fallback:", error);
+    await saveUserProfileViaRest(uid, profile);
+    return true;
+  }
 }
 
 function profileSaveErrorMessage(error) {
   const code = error?.code || "";
   if (code === "permission-denied") return "Profile could not be saved because Firestore rules denied access to users/{uid}. Update Firestore rules to allow signed-in users to read/write their own user document.";
-  if (code === "unavailable") return "Profile could not be saved because Firestore appears offline or blocked in this browser. Check internet, disable tracking/ad blockers for dungeoncalendar.com, then try again.";
+  if (code === "unavailable") return "Profile could not be saved because Firestore appears offline or blocked in this browser. The app tried a REST fallback too. Check internet, disable tracking/ad blockers for dungeoncalendar.com, then try again.";
+  if ((error?.message || "").includes("Firestore REST save failed")) return error.message;
   return error?.message || "Profile could not be saved. Please try again.";
 }
 
@@ -265,6 +365,7 @@ export default function DungeonCalendarApp() {
   const [accountEmail, setAccountEmail] = useState("");
   const [accountPassword, setAccountPassword] = useState("");
   const [accountMessage, setAccountMessage] = useState("");
+  const [isSavingAccount, setIsSavingAccount] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [editingField, setEditingField] = useState("");
@@ -1358,7 +1459,9 @@ export default function DungeonCalendarApp() {
     }
   }
 
-  async function saveAccountSettings() {
+  async function saveAccountSettings(event) {
+    if (event?.preventDefault) event.preventDefault();
+    if (isSavingAccount) return;
     if (!currentUser || !auth.currentUser) {
       setAccountMessage("Sign in again before saving account settings.");
       return;
@@ -1385,6 +1488,8 @@ export default function DungeonCalendarApp() {
     }
 
     try {
+      setIsSavingAccount(true);
+      setAccountMessage("Saving account settings...");
       if (editingField === "password") {
         if (!userUsesPasswordLogin()) {
           setAccountMessage("This account signs in with Google. Change the password from your Google account settings.");
@@ -1462,6 +1567,8 @@ export default function DungeonCalendarApp() {
       }
       console.error("Account settings save failed:", error);
       setAccountMessage(profileSaveErrorMessage(error));
+    } finally {
+      setIsSavingAccount(false);
     }
   }
 
@@ -2142,7 +2249,7 @@ export default function DungeonCalendarApp() {
                 type={type}
                 placeholder={placeholder}
                 className="mt-3 w-full min-w-[260px] rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 text-zinc-100 outline-none ring-red-600/40 focus:ring-2"
-                onKeyDown={(event) => event.key === "Enter" && saveAccountSettings()}
+                onKeyDown={(event) => { if (event.key === "Enter") saveAccountSettings(event); }}
               />
             ) : (
               <p className={classNames("mt-2 text-lg font-semibold text-zinc-100", field === "password" && "tracking-[0.3em]")}>{value}</p>
@@ -2301,7 +2408,7 @@ export default function DungeonCalendarApp() {
                         onChange={(event) => setAccountPassword(event.target.value)}
                         type="password"
                         className="mt-3 w-full min-w-[260px] rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
-                        onKeyDown={(event) => event.key === "Enter" && saveAccountSettings()}
+                        onKeyDown={(event) => { if (event.key === "Enter") saveAccountSettings(event); }}
                       />
                     ) : (
                       <p className="mt-2 text-lg font-semibold tracking-[0.3em] text-zinc-100">••••••••</p>
@@ -2327,8 +2434,8 @@ export default function DungeonCalendarApp() {
               {accountMessage && <p className="rounded-xl border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-200">{accountMessage}</p>}
 
               <div className="flex flex-wrap gap-3">
-                <Button onClick={saveAccountSettings} className="rounded-xl bg-red-700 px-6 py-3 hover:bg-red-600">
-                  Save Changes
+                <Button onClick={saveAccountSettings} disabled={isSavingAccount} className="rounded-xl bg-red-700 px-6 py-3 hover:bg-red-600">
+                  {isSavingAccount ? "Saving..." : "Save Changes"}
                 </Button>
               </div>
             </CardContent>

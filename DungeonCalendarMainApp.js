@@ -599,12 +599,26 @@ export default function DungeonCalendarApp() {
   }, []);
 
   function readPendingStripePlan() {
+    let pending = null;
+
     try {
       const pendingRaw = localStorage.getItem("dnd-calendar-pending-stripe-plan");
-      return pendingRaw ? JSON.parse(pendingRaw) : null;
+      pending = pendingRaw ? JSON.parse(pendingRaw) : null;
     } catch {
-      return null;
+      pending = null;
     }
+
+    const profilePendingPlan = normalizePlan(currentUser?.pendingStripePlan || "free");
+    if ((!pending?.plan || normalizePlan(pending.plan) === "free") && profilePendingPlan !== "free") {
+      pending = {
+        uid: currentUser?.id || auth.currentUser?.uid || "",
+        plan: profilePendingPlan,
+        billingInterval: normalizeBillingInterval(currentUser?.pendingStripeBillingInterval || currentUser?.pendingBillingInterval || "monthly"),
+        startedAt: currentUser?.pendingStripeStartedAt || currentUser?.updatedAt || ""
+      };
+    }
+
+    return pending;
   }
 
   function syncPendingStripeActivationFromStorage() {
@@ -647,6 +661,9 @@ export default function DungeonCalendarApp() {
     }
 
     await persistPlan(safePlan, safeInterval, {
+      pendingStripePlan: "free",
+      pendingStripeBillingInterval: "monthly",
+      pendingStripeStartedAt: "",
       stripePaymentLinkActivatedAt: new Date().toISOString(),
       stripeActivationSource: source
     });
@@ -678,16 +695,17 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    // Stripe Payment Links and Stripe's "you already have a subscription" screen may not
-    // return custom query parameters. The app therefore keeps the selected paid plan pending
-    // and exposes an activation button when the user returns to Dungeon Calendar. If Stripe
-    // does return success parameters, activate automatically.
-    if (!stripeSuccess && !urlPlan) return;
+    // Stripe Payment Links, coupon-code checkouts, and Stripe's "you already have a subscription"
+    // page may return without the plan query parameters. The selected plan is saved before
+    // redirecting to Stripe, then reused on the return path.
+    const returnedFromStripe = typeof document !== "undefined" && /stripe\.com/i.test(document.referrer || "");
 
-    const planToActivate = normalizePlan(urlPlan || pending?.plan || "free");
-    const intervalToActivate = normalizeBillingInterval(urlBilling || pending?.billingInterval || pending?.interval || "monthly");
+    if (!stripeSuccess && !urlPlan && !returnedFromStripe) return;
 
-    activateStripePlan(planToActivate, intervalToActivate, stripeSuccess || urlPlan ? "stripe_return" : "stripe_pending_return").finally(() => {
+    const planToActivate = normalizePlan(urlPlan || pending?.plan || currentUser?.pendingStripePlan || "free");
+    const intervalToActivate = normalizeBillingInterval(urlBilling || pending?.billingInterval || pending?.interval || currentUser?.pendingStripeBillingInterval || "monthly");
+
+    activateStripePlan(planToActivate, intervalToActivate, stripeSuccess || urlPlan ? "stripe_return" : "stripe_coupon_or_existing_subscription_return").finally(() => {
       window.history.replaceState({}, document.title, window.location.pathname);
     });
   }, [currentUser?.id]);
@@ -930,6 +948,36 @@ export default function DungeonCalendarApp() {
     return stripePaymentLinks[safePlan]?.[safeInterval] || "";
   }
 
+  async function rememberPendingStripePlan(planId, interval) {
+    const pendingCheckoutPlan = {
+      uid: currentUser?.id || auth.currentUser?.uid || "",
+      plan: normalizePlan(planId),
+      billingInterval: normalizeBillingInterval(interval),
+      startedAt: new Date().toISOString()
+    };
+
+    localStorage.setItem("dnd-calendar-pending-stripe-plan", JSON.stringify(pendingCheckoutPlan));
+    setPendingStripeActivation(pendingCheckoutPlan);
+
+    if (pendingCheckoutPlan.uid && pendingCheckoutPlan.plan !== "free") {
+      await saveUserProfile(pendingCheckoutPlan.uid, {
+        pendingStripePlan: pendingCheckoutPlan.plan,
+        pendingStripeBillingInterval: pendingCheckoutPlan.billingInterval,
+        pendingStripeStartedAt: pendingCheckoutPlan.startedAt,
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    setPlayers((current) => current.map((player) => player.id === pendingCheckoutPlan.uid ? {
+      ...player,
+      pendingStripePlan: pendingCheckoutPlan.plan,
+      pendingStripeBillingInterval: pendingCheckoutPlan.billingInterval,
+      pendingStripeStartedAt: pendingCheckoutPlan.startedAt
+    } : player));
+
+    return pendingCheckoutPlan;
+  }
+
   async function completePayment() {
     if (!selectedPaymentPlan || checkoutLoading) return;
 
@@ -961,14 +1009,7 @@ export default function DungeonCalendarApp() {
       checkoutUrl.searchParams.set("stripe_plan", activatedPlan);
       checkoutUrl.searchParams.set("stripe_billing", activatedInterval);
       checkoutUrl.searchParams.set("stripe_success", "true");
-      const pendingCheckoutPlan = {
-        uid: currentUser?.id || auth.currentUser?.uid || "",
-        plan: activatedPlan,
-        billingInterval: activatedInterval,
-        startedAt: new Date().toISOString()
-      };
-      localStorage.setItem("dnd-calendar-pending-stripe-plan", JSON.stringify(pendingCheckoutPlan));
-      setPendingStripeActivation(pendingCheckoutPlan);
+      await rememberPendingStripePlan(activatedPlan, activatedInterval);
 
       if (typeof window !== "undefined") {
         window.location.assign(checkoutUrl.toString());
@@ -2569,6 +2610,21 @@ export default function DungeonCalendarApp() {
           </div>
 
           {billingMessage && <p className="rounded-xl border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-200">{billingMessage}</p>}
+
+          <div className="rounded-xl border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-100">
+            <p className="font-bold">Using a Stripe coupon or already subscribed?</p>
+            <p className="mt-1 text-blue-200/90">After Stripe Checkout, return here and click Activate for the paid plan you selected. Coupon codes do not change the Dungeon Calendar plan level.</p>
+            {(selectedPaymentPlan && selectedPaymentPlan !== "free") ? (
+              <Button
+                onClick={() => activateStripePlan(selectedPaymentPlan, selectedBillingInterval, "manual_coupon_or_existing_subscription_activation")}
+                className="mt-3 rounded-xl bg-blue-700 hover:bg-blue-600"
+              >
+                Activate {planLimits[selectedPaymentPlan]?.name || "Paid"} Plan
+              </Button>
+            ) : pendingStripeActivation?.plan && pendingStripeActivation.plan !== "free" ? null : (
+              <p className="mt-3 text-blue-200/80">Select Adventurer or Guildmaster first to show the activation button.</p>
+            )}
+          </div>
 
           {pendingStripeActivation?.plan && pendingStripeActivation.plan !== "free" && (
             <div className="rounded-xl border border-emerald-700 bg-emerald-950/40 p-4 text-sm text-emerald-100">

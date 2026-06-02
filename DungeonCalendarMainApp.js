@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { doc, getDoc, getFirestore, onSnapshot, setDoc } from "firebase/firestore";
-import app, { auth } from "./firebase";
+import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
@@ -146,7 +146,6 @@ function PlayerToken({ player, campaignId = "", size = "sm", className = "" }) {
   return <span className={classNames(sizeClass, "shrink-0 rounded-full border-2 border-black/30", player?.color, className)} />;
 }
 
-const db = getFirestore(app);
 
 function normalizeEmail(email = "") {
   return email.trim().toLowerCase();
@@ -189,7 +188,7 @@ async function saveUserProfileRequired(uid, profile) {
 function profileSaveErrorMessage(error) {
   const code = error?.code || "";
   if (code === "permission-denied") return "Profile could not be saved because Firestore rules denied access to users/{uid}. Update Firestore rules to allow signed-in users to read/write their own user document.";
-  if (code === "unavailable") return "Profile could not be saved because Firestore is temporarily unavailable. Try again.";
+  if (code === "unavailable") return "Profile could not be saved because Firestore appears offline or blocked in this browser. Check internet, disable tracking/ad blockers for dungeoncalendar.com, then try again.";
   return error?.message || "Profile could not be saved. Please try again.";
 }
 

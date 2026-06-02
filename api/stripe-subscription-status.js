@@ -88,8 +88,7 @@ module.exports = async function handler(req, res) {
       const subscriptions = await stripe.subscriptions.list({
         customer: customer.id,
         status: 'all',
-        limit: 50,
-        expand: ['data.items.data.price.product']
+        limit: 50
       });
 
       for (const subscription of subscriptions.data || []) {
@@ -97,7 +96,18 @@ module.exports = async function handler(req, res) {
 
         const item = subscription.items?.data?.[0];
         const price = item?.price;
-        const product = price && typeof price.product === 'object' ? price.product : null;
+        let product = null;
+
+        if (price?.product && typeof price.product === 'object') {
+          product = price.product;
+        } else if (price?.product && typeof price.product === 'string') {
+          try {
+            product = await stripe.products.retrieve(price.product);
+          } catch (productError) {
+            console.warn('Stripe product lookup failed; continuing with price-only plan inference:', productError?.message || productError);
+          }
+        }
+
         const plan = inferPlanFromPrice(price, product, expectedPlan);
         if (plan === 'free') continue;
 

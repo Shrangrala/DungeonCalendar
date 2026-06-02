@@ -432,6 +432,9 @@ export default function DungeonCalendarApp() {
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [newPasswordInput, setNewPasswordInput] = useState("");
   const [confirmPasswordInput, setConfirmPasswordInput] = useState("");
+  const [showCurrentPasswordText, setShowCurrentPasswordText] = useState(false);
+  const [showNewPasswordText, setShowNewPasswordText] = useState(false);
+  const [showConfirmPasswordText, setShowConfirmPasswordText] = useState(false);
   const [plan, setPlan] = useState("free");
   const [billingInterval, setBillingInterval] = useState("monthly");
   const [billingMessage, setBillingMessage] = useState("");
@@ -1505,6 +1508,9 @@ export default function DungeonCalendarApp() {
     setCurrentPasswordInput("");
     setNewPasswordInput("");
     setConfirmPasswordInput("");
+    setShowCurrentPasswordText(false);
+    setShowNewPasswordText(false);
+    setShowConfirmPasswordText(false);
     setAccountPassword("");
     if (editingField === "password") setEditingField("");
     if (message) setAccountMessage(message);
@@ -1538,6 +1544,8 @@ export default function DungeonCalendarApp() {
       const credential = EmailAuthProvider.credential(auth.currentUser.email, currentPasswordInput);
       await reauthenticateWithCredential(auth.currentUser, credential);
       setPasswordVerified(true);
+      setShowPasswordVerify(false);
+      setShowCurrentPasswordText(false);
       setCurrentPasswordInput("");
       setNewPasswordInput("");
       setConfirmPasswordInput("");
@@ -2580,14 +2588,23 @@ export default function DungeonCalendarApp() {
                     {showPasswordVerify ? (
                       <form onSubmit={verifyCurrentPassword} className="mt-3 rounded-xl border border-red-900 bg-red-950/30 p-4">
                         <p className="mb-3 text-sm text-zinc-300">Step 1: enter your current password.</p>
-                        <input
-                          value={currentPasswordInput}
-                          onChange={(event) => setCurrentPasswordInput(event.target.value)}
-                          type="password"
-                          autoComplete="current-password"
-                          placeholder="Current password"
-                          className="w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
-                        />
+                        <div className="relative">
+                          <input
+                            value={currentPasswordInput}
+                            onChange={(event) => setCurrentPasswordInput(event.target.value)}
+                            type={showCurrentPasswordText ? "text" : "password"}
+                            autoComplete="current-password"
+                            placeholder="Current password"
+                            className="w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 pr-20 outline-none ring-red-600/40 focus:ring-2"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowCurrentPasswordText((value) => !value)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-red-200 hover:text-white"
+                          >
+                            {showCurrentPasswordText ? "Hide" : "Show"}
+                          </button>
+                        </div>
                         <div className="mt-3 flex flex-wrap gap-3">
                           <Button type="submit" disabled={isSavingAccount} className="rounded-xl bg-red-700 hover:bg-red-600">{isSavingAccount ? "Verifying..." : "Verify Password"}</Button>
                           <Button onClick={() => resetPasswordChangeForm()} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">Cancel</Button>
@@ -2597,22 +2614,40 @@ export default function DungeonCalendarApp() {
                       <form onSubmit={savePasswordChange} className="mt-3 rounded-xl border border-emerald-900 bg-emerald-950/25 p-4">
                         <p className="mb-3 text-sm text-zinc-300">Step 2: enter your new password.</p>
                         <div className="grid gap-3 md:grid-cols-2">
-                          <input
-                            value={newPasswordInput}
-                            onChange={(event) => setNewPasswordInput(event.target.value)}
-                            type="password"
-                            autoComplete="new-password"
-                            placeholder="New password"
-                            className="w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
-                          />
-                          <input
-                            value={confirmPasswordInput}
-                            onChange={(event) => setConfirmPasswordInput(event.target.value)}
-                            type="password"
-                            autoComplete="new-password"
-                            placeholder="Confirm new password"
-                            className="w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
-                          />
+                          <div className="relative">
+                            <input
+                              value={newPasswordInput}
+                              onChange={(event) => setNewPasswordInput(event.target.value)}
+                              type={showNewPasswordText ? "text" : "password"}
+                              autoComplete="new-password"
+                              placeholder="New password"
+                              className="w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 pr-20 outline-none ring-red-600/40 focus:ring-2"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowNewPasswordText((value) => !value)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-emerald-200 hover:text-white"
+                            >
+                              {showNewPasswordText ? "Hide" : "Show"}
+                            </button>
+                          </div>
+                          <div className="relative">
+                            <input
+                              value={confirmPasswordInput}
+                              onChange={(event) => setConfirmPasswordInput(event.target.value)}
+                              type={showConfirmPasswordText ? "text" : "password"}
+                              autoComplete="new-password"
+                              placeholder="Confirm new password"
+                              className="w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 pr-20 outline-none ring-red-600/40 focus:ring-2"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowConfirmPasswordText((value) => !value)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-emerald-200 hover:text-white"
+                            >
+                              {showConfirmPasswordText ? "Hide" : "Show"}
+                            </button>
+                          </div>
                         </div>
                         <div className="mt-3 flex flex-wrap gap-3">
                           <Button type="submit" disabled={isSavingAccount} className="rounded-xl bg-emerald-700 hover:bg-emerald-600">{isSavingAccount ? "Saving..." : "Save New Password"}</Button>
@@ -2635,6 +2670,9 @@ export default function DungeonCalendarApp() {
                         setCurrentPasswordInput("");
                         setNewPasswordInput("");
                         setConfirmPasswordInput("");
+                        setShowCurrentPasswordText(false);
+                        setShowNewPasswordText(false);
+                        setShowConfirmPasswordText(false);
                         setAccountMessage("");
                       }}
                       variant="ghost"

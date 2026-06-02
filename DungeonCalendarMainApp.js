@@ -269,6 +269,7 @@ export default function DungeonCalendarApp() {
   const [paymentCardNumber, setPaymentCardNumber] = useState("");
   const [paymentExpiry, setPaymentExpiry] = useState("");
   const [paymentCvc, setPaymentCvc] = useState("");
+  const [stripeVerifyLoading, setStripeVerifyLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [pendingStripeActivation, setPendingStripeActivation] = useState(null);
 
@@ -612,7 +613,6 @@ export default function DungeonCalendarApp() {
     if ((!pending?.plan || normalizePlan(pending.plan) === "free") && profilePendingPlan !== "free") {
       pending = {
         uid: currentUser?.id || auth.currentUser?.uid || "",
-        accountEmail: normalizeEmail(currentUser?.pendingStripeAccountEmail || auth.currentUser?.email || currentUser?.email || ""),
         plan: profilePendingPlan,
         billingInterval: normalizeBillingInterval(currentUser?.pendingStripeBillingInterval || currentUser?.pendingBillingInterval || "monthly"),
         startedAt: currentUser?.pendingStripeStartedAt || currentUser?.updatedAt || ""
@@ -638,8 +638,6 @@ export default function DungeonCalendarApp() {
     }
 
     const nextPending = {
-      uid: pending.uid || uid,
-      accountEmail: normalizeEmail(pending.accountEmail || currentUser?.pendingStripeAccountEmail || auth.currentUser?.email || currentUser?.email || ""),
       plan: normalizePlan(pending.plan),
       billingInterval: normalizeBillingInterval(pending.billingInterval || pending.interval || "monthly"),
       startedAt: pending.startedAt || ""
@@ -652,22 +650,9 @@ export default function DungeonCalendarApp() {
   async function activateStripePlan(planId, interval = "monthly", source = "stripe_payment_link") {
     const safePlan = normalizePlan(planId);
     const safeInterval = normalizeBillingInterval(interval);
-    const pending = readPendingStripePlan();
-    const signedInEmail = normalizeEmail(auth.currentUser?.email || currentUser?.email || "");
-    const pendingEmail = normalizeEmail(pending?.accountEmail || currentUser?.pendingStripeAccountEmail || paymentEmail || "");
 
     if (!currentUser || auth.currentUser?.uid !== currentUser.id) {
       setBillingMessage("Sign in with the account that completed Stripe checkout, then return to this page to activate the plan.");
-      return;
-    }
-
-    if (pending?.uid && pending.uid !== currentUser.id) {
-      setBillingMessage("This Stripe checkout was started by a different Dungeon Calendar account. Sign in with that account to activate it.");
-      return;
-    }
-
-    if (pendingEmail && signedInEmail && pendingEmail !== signedInEmail) {
-      setBillingMessage(`This checkout was started for ${pendingEmail}. Sign in as that email or start checkout again with ${signedInEmail}.`);
       return;
     }
 
@@ -680,18 +665,15 @@ export default function DungeonCalendarApp() {
       pendingStripePlan: "free",
       pendingStripeBillingInterval: "monthly",
       pendingStripeStartedAt: "",
-      pendingStripeAccountEmail: "",
       stripePaymentLinkActivatedAt: new Date().toISOString(),
       stripeActivationSource: source
     });
 
-    try {
-      localStorage.removeItem("dnd-calendar-pending-stripe-plan");
-    } catch {}
+    localStorage.removeItem("dnd-calendar-pending-stripe-plan");
     setPendingStripeActivation(null);
     setSelectedPaymentPlan("");
     setCheckoutLoading(false);
-    setBillingMessage(`${planLimits[safePlan]?.name || "Paid"} plan activated for ${signedInEmail || "this account"}. Billing: ${safeInterval}.`);
+    setBillingMessage(`${planLimits[safePlan]?.name || "Paid"} plan activated. Billing: ${safeInterval}.`);
   }
 
   useEffect(() => {
@@ -942,14 +924,12 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const accountEmail = normalizeEmail(auth.currentUser?.email || currentUser?.email || "");
     setSelectedPaymentPlan(planId);
     setSelectedBillingInterval(planId === plan ? billingInterval : "monthly");
-    setPaymentName(currentUser?.name ?? auth.currentUser?.displayName ?? "");
-    setPaymentEmail(accountEmail);
-    setBillingMessage(accountEmail ? "" : "Sign in before opening Stripe Checkout so the selected plan can attach to your account.");
+    setPaymentName(currentUser?.name ?? "");
+    setPaymentEmail(currentUser?.email ?? "");
+    setBillingMessage("");
   }
-
 
 
   const stripePaymentLinks = {
@@ -972,19 +952,17 @@ export default function DungeonCalendarApp() {
   function rememberPendingStripePlan(planId, interval) {
     const pendingCheckoutPlan = {
       uid: currentUser?.id || auth.currentUser?.uid || "",
-      accountEmail: normalizeEmail(auth.currentUser?.email || currentUser?.email || paymentEmail || ""),
       plan: normalizePlan(planId),
       billingInterval: normalizeBillingInterval(interval),
       startedAt: new Date().toISOString()
     };
 
-    // Store this immediately before leaving the site. Do not wait for Firestore here;
-    // a Firestore rules/network problem must never block the Stripe redirect.
     try {
       localStorage.setItem("dnd-calendar-pending-stripe-plan", JSON.stringify(pendingCheckoutPlan));
     } catch (error) {
-      console.warn("Could not save local pending Stripe plan:", error);
+      console.warn("Could not save pending Stripe plan locally:", error);
     }
+
     setPendingStripeActivation(pendingCheckoutPlan);
 
     if (pendingCheckoutPlan.uid && pendingCheckoutPlan.plan !== "free") {
@@ -992,20 +970,76 @@ export default function DungeonCalendarApp() {
         pendingStripePlan: pendingCheckoutPlan.plan,
         pendingStripeBillingInterval: pendingCheckoutPlan.billingInterval,
         pendingStripeStartedAt: pendingCheckoutPlan.startedAt,
-        pendingStripeAccountEmail: pendingCheckoutPlan.accountEmail,
         updatedAt: new Date().toISOString()
-      }).catch((error) => console.warn("Could not save pending Stripe plan before redirect:", error));
+      }).catch((error) => console.warn("Could not save pending Stripe plan to Firestore before redirect:", error));
     }
 
     setPlayers((current) => current.map((player) => player.id === pendingCheckoutPlan.uid ? {
       ...player,
       pendingStripePlan: pendingCheckoutPlan.plan,
       pendingStripeBillingInterval: pendingCheckoutPlan.billingInterval,
-      pendingStripeStartedAt: pendingCheckoutPlan.startedAt,
-      pendingStripeAccountEmail: pendingCheckoutPlan.accountEmail
+      pendingStripeStartedAt: pendingCheckoutPlan.startedAt
     } : player));
 
     return pendingCheckoutPlan;
+  }
+
+  async function verifyStripeSubscriptionByEmail(source = "manual_stripe_email_verification") {
+    if (!currentUser || auth.currentUser?.uid !== currentUser.id) {
+      setBillingMessage("Sign in before verifying your Stripe subscription.");
+      return;
+    }
+
+    const email = normalizeEmail(paymentEmail || accountEmail || currentUser.email || auth.currentUser?.email || "");
+    if (!email) {
+      setBillingMessage("Enter the same billing email used in Stripe, then try verification again.");
+      return;
+    }
+
+    setStripeVerifyLoading(true);
+    setBillingMessage("Checking Stripe subscription for " + email + "...");
+
+    try {
+      const response = await fetch(`/api/stripe-subscription-status?email=${encodeURIComponent(email)}`);
+      const contentType = response.headers.get("content-type") || "";
+
+      if (!contentType.includes("application/json")) {
+        throw new Error("Stripe verification API did not return JSON. Check that /api/stripe-subscription-status is deployed and Vercel is not rewriting /api routes to the web app.");
+      }
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Stripe subscription verification failed.");
+
+      if (!data.active || normalizePlan(data.plan) === "free") {
+        setBillingMessage(data.message || "No active paid Stripe subscription was found for that email.");
+        return;
+      }
+
+      const verifiedPlan = normalizePlan(data.plan);
+      const verifiedInterval = normalizeBillingInterval(data.billingInterval || "monthly");
+
+      await persistPlan(verifiedPlan, verifiedInterval, {
+        pendingStripePlan: "free",
+        pendingStripeBillingInterval: "monthly",
+        pendingStripeStartedAt: "",
+        stripeSubscriptionId: data.subscriptionId || "",
+        stripeCustomerId: data.customerId || "",
+        stripeVerifiedEmail: email,
+        stripeVerifiedAt: new Date().toISOString(),
+        stripeActivationSource: source
+      });
+
+      localStorage.removeItem("dnd-calendar-pending-stripe-plan");
+      setPendingStripeActivation(null);
+      setSelectedPaymentPlan("");
+      setBillingMessage(`${planLimits[verifiedPlan]?.name || "Paid"} plan verified from Stripe and activated. Billing: ${verifiedInterval}.`);
+    } catch (error) {
+      console.error("Stripe subscription verification failed:", error);
+      setBillingMessage(error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is set in Vercel.");
+    } finally {
+      setStripeVerifyLoading(false);
+      setCheckoutLoading(false);
+    }
   }
 
   async function completePayment() {
@@ -1028,29 +1062,21 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const signedInEmail = normalizeEmail(auth.currentUser?.email || currentUser?.email || "");
-    const billingEmail = normalizeEmail(paymentEmail || signedInEmail);
-
-    if (!signedInEmail) {
-      setBillingMessage("Sign in before opening Stripe Checkout so the paid plan can attach to your account.");
-      return;
-    }
-
-    if (billingEmail && billingEmail !== signedInEmail) {
-      setBillingMessage(`Use the same email as your Dungeon Calendar login (${signedInEmail}) so the plan can be activated on this account.`);
-      return;
-    }
-
     setCheckoutLoading(true);
     setBillingMessage("Opening Stripe Checkout...");
 
     try {
       const checkoutUrl = new URL(paymentLink);
-      checkoutUrl.searchParams.set("prefilled_email", signedInEmail);
+      const email = paymentEmail.trim() || currentUser?.email || auth.currentUser?.email || "";
+      if (email) checkoutUrl.searchParams.set("prefilled_email", email);
+      checkoutUrl.searchParams.set("client_reference_id", currentUser?.id || auth.currentUser?.uid || "guest");
+      checkoutUrl.searchParams.set("stripe_plan", activatedPlan);
+      checkoutUrl.searchParams.set("stripe_billing", activatedInterval);
+      checkoutUrl.searchParams.set("stripe_success", "true");
       rememberPendingStripePlan(activatedPlan, activatedInterval);
 
       if (typeof window !== "undefined") {
-        window.location.href = checkoutUrl.toString();
+        window.location.assign(checkoutUrl.toString());
       }
     } catch (error) {
       setCheckoutLoading(false);
@@ -1291,13 +1317,16 @@ export default function DungeonCalendarApp() {
   }
 
   async function saveAccountSettings() {
-    if (!currentUser) return;
+    if (!currentUser || !auth.currentUser) {
+      setAccountMessage("Sign in again before saving account settings.");
+      return;
+    }
 
     const nextUsername = accountUsername.trim() || currentUser.username || currentUser.name || "player";
     const nextName = accountName.trim() || currentUser.name || accountUsername.trim() || "Player";
     const currentAuthEmail = normalizeEmail(auth.currentUser?.email || "");
     const existingEmail = normalizeEmail(currentUser.email || currentAuthEmail || "");
-    const nextEmail = normalizeEmail(accountEmail.trim() ? accountEmail : existingEmail);
+    const nextEmail = normalizeEmail(accountEmail || existingEmail);
     const emailChanged = !!nextEmail && nextEmail !== currentAuthEmail && nextEmail !== existingEmail;
 
     if (!nextUsername || !nextName) {
@@ -2651,13 +2680,13 @@ export default function DungeonCalendarApp() {
 
           <div className="rounded-xl border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-100">
             <p className="font-bold">Using a Stripe coupon or already subscribed?</p>
-            <p className="mt-1 text-blue-200/90">Use the same email as your Dungeon Calendar login. Coupon codes do not change the Dungeon Calendar plan level.</p>
+            <p className="mt-1 text-blue-200/90">After Stripe Checkout, return here and click Activate for the paid plan you selected. Coupon codes do not change the Dungeon Calendar plan level.</p>
             {(selectedPaymentPlan && selectedPaymentPlan !== "free") ? (
               <Button
-                onClick={() => activateStripePlan(selectedPaymentPlan, selectedBillingInterval, "manual_coupon_or_existing_subscription_activation")}
+                onClick={() => verifyStripeSubscriptionByEmail("manual_coupon_or_existing_subscription_activation")}
                 className="mt-3 rounded-xl bg-blue-700 hover:bg-blue-600"
               >
-                Activate {planLimits[selectedPaymentPlan]?.name || "Paid"} Plan
+                {stripeVerifyLoading ? "Checking Stripe..." : "Verify Stripe Subscription"}
               </Button>
             ) : pendingStripeActivation?.plan && pendingStripeActivation.plan !== "free" ? null : (
               <p className="mt-3 text-blue-200/80">Select Adventurer or Guildmaster first to show the activation button.</p>
@@ -2670,10 +2699,10 @@ export default function DungeonCalendarApp() {
               <p className="mt-1">Activate {planLimits[pendingStripeActivation.plan]?.name || "paid"} ({pendingStripeActivation.billingInterval}) for this account.</p>
               <p className="mt-2 text-emerald-200/90">Use this after Stripe says you already have a subscription or after returning from checkout.</p>
               <Button
-                onClick={() => activateStripePlan(pendingStripeActivation.plan, pendingStripeActivation.billingInterval, "manual_stripe_subscription_activation")}
+                onClick={() => verifyStripeSubscriptionByEmail("manual_stripe_subscription_activation")}
                 className="mt-3 rounded-xl bg-emerald-700 hover:bg-emerald-600"
               >
-                Activate My Paid Plan
+                {stripeVerifyLoading ? "Checking Stripe..." : "Verify My Stripe Subscription"}
               </Button>
             </div>
           )}
@@ -2859,11 +2888,11 @@ export default function DungeonCalendarApp() {
                   </Button>
                   {pendingStripeActivation?.plan && pendingStripeActivation.plan === selectedPaymentPlan && (
                     <Button
-                      onClick={() => activateStripePlan(pendingStripeActivation.plan, pendingStripeActivation.billingInterval || selectedBillingInterval, "manual_existing_subscription_checkout_panel")}
+                      onClick={() => verifyStripeSubscriptionByEmail("manual_existing_subscription_checkout_panel")}
                       variant="ghost"
                       className="rounded-xl border border-emerald-700 text-emerald-100 hover:bg-emerald-950"
                     >
-                      Already subscribed? Verify Email & Activate
+                      {stripeVerifyLoading ? "Checking Stripe..." : "Already subscribed? Verify Email"}
                     </Button>
                   )}
                 </div>

@@ -14,7 +14,8 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.4",
-    "react-native-web": "^0.21.0"
+    "react-native-web": "^0.21.0",
+    "stripe": "^18.5.0"
   },
   "devDependencies": {
     "autoprefixer": "^10.5.0",

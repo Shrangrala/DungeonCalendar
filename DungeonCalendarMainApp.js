@@ -180,6 +180,19 @@ async function saveUserProfile(uid, profile) {
   }
 }
 
+async function saveUserProfileRequired(uid, profile) {
+  if (!uid) throw new Error("Missing user id for profile save.");
+  await setDoc(doc(db, "users", uid), profile, { merge: true });
+  return true;
+}
+
+function profileSaveErrorMessage(error) {
+  const code = error?.code || "";
+  if (code === "permission-denied") return "Profile could not be saved because Firestore rules denied access to users/{uid}. Update Firestore rules to allow signed-in users to read/write their own user document.";
+  if (code === "unavailable") return "Profile could not be saved because Firestore is temporarily unavailable. Try again.";
+  return error?.message || "Profile could not be saved. Please try again.";
+}
+
 function authErrorMessage(error) {
   const code = error?.code || "";
   if (code === "auth/configuration-not-found") return "Firebase Email/Password sign-in is not enabled. Open Firebase Console > Authentication > Sign-in method and enable Email/Password.";
@@ -272,6 +285,7 @@ export default function DungeonCalendarApp() {
   const [stripeVerifyLoading, setStripeVerifyLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [pendingStripeActivation, setPendingStripeActivation] = useState(null);
+  const [stripeAutoVerifyAttempted, setStripeAutoVerifyAttempted] = useState(false);
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -515,22 +529,18 @@ export default function DungeonCalendarApp() {
   useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
 
-    // Keep campaign/plan membership fields synced without overwriting profile settings.
-    // Username, name, email, and phone are only written by saveAccountSettings(), login account creation,
-    // or Google profile creation. This prevents a stale phone/browser localStorage profile from wiping
-    // the user's saved desktop settings during login or live sync.
+    // Keep campaign membership fields synced without overwriting profile settings or paid plan data.
+    // Username, name, email, phone, plan, and billingInterval are only written by explicit account/plan actions.
     saveUserProfile(currentUserId, {
       role: currentUser.role || "Player",
-      plan: normalizePlan(plan),
-      billingInterval: normalizeBillingInterval(billingInterval),
       campaignIds: currentUser.campaignIds || [],
       campaignCharacterNames: currentUser.campaignCharacterNames || {},
       lockedColorCampaignIds: currentUser.lockedColorCampaignIds || [],
       color: currentUser.color || "",
       campaignTokenImages: currentUser.campaignTokenImages || {},
-      updatedAt: new Date().toISOString()
-    }).catch((error) => console.error("Failed to sync web profile:", error));
-  }, [authProfileLoaded, currentUserId, currentUser?.campaignIds, currentUser?.campaignCharacterNames, currentUser?.lockedColorCampaignIds, currentUser?.color, currentUser?.campaignTokenImages, currentUser?.role, plan, billingInterval]);
+      membershipSyncedAt: new Date().toISOString()
+    }).catch((error) => console.error("Failed to sync web membership profile:", error));
+  }, [authProfileLoaded, currentUserId, currentUser?.campaignIds, currentUser?.campaignCharacterNames, currentUser?.lockedColorCampaignIds, currentUser?.color, currentUser?.campaignTokenImages, currentUser?.role]);
 
   useEffect(() => {
     localStorage.setItem("dnd-calendar-players", JSON.stringify(players));
@@ -706,15 +716,24 @@ export default function DungeonCalendarApp() {
     const planToActivate = normalizePlan(urlPlan || pending?.plan || currentUser?.pendingStripePlan || "free");
     const intervalToActivate = normalizeBillingInterval(urlBilling || pending?.billingInterval || pending?.interval || currentUser?.pendingStripeBillingInterval || "monthly");
 
-    activateStripePlan(planToActivate, intervalToActivate, stripeSuccess || urlPlan ? "stripe_return" : "stripe_coupon_or_existing_subscription_return").finally(() => {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    });
+    activateStripePlan(planToActivate, intervalToActivate, stripeSuccess || urlPlan ? "stripe_return" : "stripe_coupon_or_existing_subscription_return")
+      .catch((error) => setBillingMessage(profileSaveErrorMessage(error)))
+      .finally(() => {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      });
   }, [currentUser?.id]);
 
   useEffect(() => {
     if (!currentUser || auth.currentUser?.uid !== currentUser.id) return undefined;
 
-    const refreshPending = () => syncPendingStripeActivationFromStorage();
+    const refreshPending = () => {
+      const pending = syncPendingStripeActivationFromStorage();
+      if (pending?.plan && normalizePlan(pending.plan) !== "free" && !stripeAutoVerifyAttempted) {
+        setPage("billing");
+        setStripeAutoVerifyAttempted(true);
+        setTimeout(() => verifyStripeSubscriptionByEmail("automatic_return_from_stripe_or_existing_subscription"), 250);
+      }
+    };
     refreshPending();
 
     window.addEventListener("focus", refreshPending);
@@ -726,7 +745,7 @@ export default function DungeonCalendarApp() {
       window.removeEventListener("pageshow", refreshPending);
       document.removeEventListener("visibilitychange", refreshPending);
     };
-  }, [currentUser?.id]);
+  }, [currentUser?.id, stripeAutoVerifyAttempted]);
 
   const bestDates = useMemo(() => {
     return Object.entries(availability)
@@ -900,27 +919,33 @@ export default function DungeonCalendarApp() {
   async function persistPlan(nextPlan, nextBillingInterval = billingInterval, extraProfileFields = {}) {
     const safePlan = normalizePlan(nextPlan);
     const safeBillingInterval = safePlan === "free" ? "monthly" : normalizeBillingInterval(nextBillingInterval);
-    setPlan(safePlan);
-    setBillingInterval(safeBillingInterval);
 
-    if (currentUser?.id && auth.currentUser?.uid === currentUser.id) {
-      await saveUserProfile(currentUser.id, {
-        plan: safePlan,
-        billingInterval: safeBillingInterval,
-        ...extraProfileFields,
-        updatedAt: new Date().toISOString()
-      });
+    if (!currentUser?.id || auth.currentUser?.uid !== currentUser.id) {
+      throw new Error("Sign in again before changing your plan.");
     }
 
+    await saveUserProfileRequired(currentUser.id, {
+      plan: safePlan,
+      billingInterval: safeBillingInterval,
+      ...extraProfileFields,
+      updatedAt: new Date().toISOString()
+    });
+
+    setPlan(safePlan);
+    setBillingInterval(safeBillingInterval);
     setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan, billingInterval: safeBillingInterval, ...extraProfileFields } : player));
   }
 
   async function startPlanCheckout(planId) {
     if (planId === "free") {
-      await persistPlan("free", "monthly");
-      setSelectedPaymentPlan("");
-      setSelectedBillingInterval("monthly");
-      setBillingMessage("Free plan selected.");
+      try {
+        await persistPlan("free", "monthly");
+        setSelectedPaymentPlan("");
+        setSelectedBillingInterval("monthly");
+        setBillingMessage("Free plan selected.");
+      } catch (error) {
+        setBillingMessage(profileSaveErrorMessage(error));
+      }
       return;
     }
 
@@ -1043,7 +1068,7 @@ export default function DungeonCalendarApp() {
       setBillingMessage(`${planLimits[verifiedPlan]?.name || "Paid"} plan verified from Stripe and activated. Billing: ${verifiedInterval}.`);
     } catch (error) {
       console.error("Stripe subscription verification failed:", error);
-      setBillingMessage(error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is set in Vercel.");
+      setBillingMessage(profileSaveErrorMessage(error) || error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is set in Vercel.");
     } finally {
       setStripeVerifyLoading(false);
       setCheckoutLoading(false);
@@ -1057,9 +1082,13 @@ export default function DungeonCalendarApp() {
     const activatedInterval = normalizeBillingInterval(selectedBillingInterval);
 
     if (activatedPlan === "free") {
-      await persistPlan("free", "monthly");
-      setSelectedPaymentPlan("");
-      setBillingMessage("Free plan selected.");
+      try {
+        await persistPlan("free", "monthly");
+        setSelectedPaymentPlan("");
+        setBillingMessage("Free plan selected.");
+      } catch (error) {
+        setBillingMessage(profileSaveErrorMessage(error));
+      }
       return;
     }
 
@@ -1101,10 +1130,16 @@ export default function DungeonCalendarApp() {
     const confirmed = window.confirm("Cancel your current paid membership and switch to the Free plan?");
     if (!confirmed) return;
 
-    await persistPlan("free", "monthly");
-    setSelectedPaymentPlan("");
-    setBillingMessage("Membership cancelled. Free plan is now active.");
-    setAccountMessage("Membership cancelled. You are now on the Free plan.");
+    try {
+      await persistPlan("free", "monthly");
+      setSelectedPaymentPlan("");
+      setBillingMessage("Membership cancelled. Free plan is now active.");
+      setAccountMessage("Membership cancelled. You are now on the Free plan.");
+    } catch (error) {
+      const message = profileSaveErrorMessage(error);
+      setBillingMessage(message);
+      setAccountMessage(message);
+    }
   }
 
   function ownedCampaignsForUser(userId = currentUser?.id) {
@@ -1382,7 +1417,7 @@ export default function DungeonCalendarApp() {
         password: ""
       };
 
-      await saveUserProfile(currentUser.id, {
+      await saveUserProfileRequired(currentUser.id, {
         role: updatedProfile.role || "Player",
         username: updatedProfile.username || "",
         name: updatedProfile.name || "",
@@ -1427,7 +1462,7 @@ export default function DungeonCalendarApp() {
         return;
       }
       console.error("Account settings save failed:", error);
-      setAccountMessage("Account settings could not be saved. Please try again.");
+      setAccountMessage(profileSaveErrorMessage(error));
     }
   }
 
@@ -2689,6 +2724,13 @@ export default function DungeonCalendarApp() {
           <div className="rounded-xl border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-100">
             <p className="font-bold">Using a Stripe coupon or already subscribed?</p>
             <p className="mt-1 text-blue-200/90">After Stripe Checkout, return here and click Activate for the paid plan you selected. Coupon codes do not change the Dungeon Calendar plan level.</p>
+            <input
+              value={paymentEmail}
+              onChange={(event) => setPaymentEmail(event.target.value)}
+              placeholder={auth.currentUser?.email || "Stripe billing email"}
+              type="email"
+              className="mt-3 w-full rounded-xl border border-blue-700 bg-black/40 px-4 py-3 text-blue-50 outline-none ring-blue-500/40 focus:ring-2"
+            />
             <Button
               onClick={() => verifyStripeSubscriptionByEmail("manual_coupon_or_existing_subscription_activation")}
               className="mt-3 rounded-xl bg-blue-700 hover:bg-blue-600"
@@ -2703,12 +2745,21 @@ export default function DungeonCalendarApp() {
               <p className="font-bold">Stripe subscription pending activation</p>
               <p className="mt-1">Activate {planLimits[pendingStripeActivation.plan]?.name || "paid"} ({pendingStripeActivation.billingInterval}) for this account.</p>
               <p className="mt-2 text-emerald-200/90">Use this after Stripe says you already have a subscription or after returning from checkout.</p>
-              <Button
-                onClick={() => verifyStripeSubscriptionByEmail("manual_stripe_subscription_activation")}
-                className="mt-3 rounded-xl bg-emerald-700 hover:bg-emerald-600"
-              >
-                {stripeVerifyLoading ? "Checking Stripe..." : "Verify My Stripe Subscription"}
-              </Button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  onClick={() => verifyStripeSubscriptionByEmail("manual_stripe_subscription_activation")}
+                  className="rounded-xl bg-emerald-700 hover:bg-emerald-600"
+                >
+                  {stripeVerifyLoading ? "Checking Stripe..." : "Verify My Stripe Subscription"}
+                </Button>
+                <Button
+                  onClick={() => activateStripePlan(pendingStripeActivation.plan, pendingStripeActivation.billingInterval, "manual_pending_plan_activation").catch((error) => setBillingMessage(profileSaveErrorMessage(error)))}
+                  variant="ghost"
+                  className="rounded-xl border border-emerald-700 text-emerald-100 hover:bg-emerald-950"
+                >
+                  Apply Pending Plan
+                </Button>
+              </div>
             </div>
           )}
 

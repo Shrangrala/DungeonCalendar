@@ -2080,11 +2080,137 @@ export default function DungeonCalendarApp() {
             <h2 className="text-3xl font-black">Ready to start your next adventure?</h2>
             <p className="mx-auto mt-3 max-w-2xl text-zinc-300">Create a free account, invite your party, and find the best date for your next campaign session.</p>
             <Button onClick={() => navigateTo("/")} className="mt-6 rounded-xl bg-red-700 px-6 py-3 hover:bg-red-600">Create Your Free Account</Button>
+            <div className="mt-5 flex flex-wrap justify-center gap-4 text-sm text-zinc-300">
+              <button type="button" onClick={() => navigateTo("/privacy")} className="hover:text-white">Privacy Policy</button>
+              <button type="button" onClick={() => navigateTo("/terms")} className="hover:text-white">Terms of Service</button>
+            </div>
           </section>
         </main>
       </div>
     );
   }
+
+  function LegalPageShell({ title, subtitle, children }) {
+    return (
+      <div className="relative min-h-screen overflow-x-hidden text-zinc-100">
+        <AppBackground />
+        <main className="relative z-10 mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
+          <header className="flex flex-col gap-4 rounded-3xl border border-red-900/60 bg-black/60 p-5 shadow-2xl backdrop-blur md:flex-row md:items-center md:justify-between">
+            <button type="button" onClick={() => navigateTo("/")} className="text-left">
+              <DungeonCalendarLogo small />
+            </button>
+            <div className="flex flex-wrap gap-3">
+              <Button onClick={() => navigateTo("/about")} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">About</Button>
+              <Button onClick={() => navigateTo("/")} className="rounded-xl bg-red-700 hover:bg-red-600">Open App</Button>
+            </div>
+          </header>
+
+          <section className="mt-6 rounded-3xl border border-zinc-700 bg-black/70 p-6 shadow-2xl backdrop-blur sm:p-8">
+            <p className="text-sm font-bold uppercase tracking-[0.3em] text-red-300">Dungeon Calendar</p>
+            <h1 className="mt-4 text-4xl font-black leading-tight sm:text-5xl">{title}</h1>
+            <p className="mt-4 text-lg leading-8 text-zinc-300">{subtitle}</p>
+            <div className="mt-8 space-y-6 text-left text-zinc-300">
+              {children}
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
+  function PrivacyPolicyPage() {
+    return (
+      <LegalPageShell
+        title="Privacy Policy"
+        subtitle="This Privacy Policy explains how Dungeon Calendar collects, uses, stores, and protects information when you use the app and website. Last updated: June 2026."
+      >
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Information We Collect</h2>
+          <p className="mt-3 leading-7">Dungeon Calendar may collect account information such as your name, username, email address, phone number if provided, profile settings, campaign membership, character names, availability responses, campaign settings, and subscription status.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">How We Use Information</h2>
+          <ul className="mt-3 list-disc space-y-2 pl-6 leading-7">
+            <li>To create and manage user accounts.</li>
+            <li>To help Dungeon Masters and players schedule tabletop RPG sessions.</li>
+            <li>To save profile settings, campaign access, player availability, and subscription plan status.</li>
+            <li>To provide support, improve app reliability, and prevent abuse.</li>
+          </ul>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Firebase, Stripe, and Third-Party Services</h2>
+          <p className="mt-3 leading-7">Dungeon Calendar uses Firebase for authentication and cloud data storage. Subscription payments and billing are processed by Stripe. Dungeon Calendar does not store full credit card numbers on its own servers.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Data Sharing</h2>
+          <p className="mt-3 leading-7">We do not sell personal information. Information may be shared with service providers only when needed to operate Dungeon Calendar, such as Firebase for account/data services and Stripe for subscription payments.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Account Updates and Deletion</h2>
+          <p className="mt-3 leading-7">You can update profile information in User Settings. You may request help with account access, corrections, or deletion by contacting dungeoncalendarsupport@gmail.com.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Children's Privacy</h2>
+          <p className="mt-3 leading-7">Dungeon Calendar is not directed to children under 13 without appropriate parental or guardian involvement. If you believe a child has provided information improperly, contact us so we can review and respond.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Contact</h2>
+          <p className="mt-3 leading-7">For privacy questions or support requests, contact dungeoncalendarsupport@gmail.com.</p>
+        </section>
+      </LegalPageShell>
+    );
+  }
+
+  function TermsOfServicePage() {
+    return (
+      <LegalPageShell
+        title="Terms of Service"
+        subtitle="These Terms of Service describe the rules for using Dungeon Calendar. Last updated: June 2026."
+      >
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Use of Dungeon Calendar</h2>
+          <p className="mt-3 leading-7">Dungeon Calendar is a scheduling and campaign management tool for tabletop role-playing games. By using the service, you agree to use it lawfully, respectfully, and only for appropriate campaign scheduling and account management purposes.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Accounts</h2>
+          <p className="mt-3 leading-7">You are responsible for keeping your account credentials secure and for activity that occurs under your account. You agree to provide accurate account information and keep it updated.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Campaign Content</h2>
+          <p className="mt-3 leading-7">Users are responsible for campaign names, character names, availability information, invites, and other content they add to Dungeon Calendar. Do not upload or share content that is unlawful, harmful, abusive, or infringes another person's rights.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Subscriptions and Billing</h2>
+          <p className="mt-3 leading-7">Dungeon Calendar may offer free and paid subscription plans. Paid subscriptions are processed by Stripe. Subscription features, pricing, billing intervals, and cancellation options may vary by plan and may change over time.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Availability of Service</h2>
+          <p className="mt-3 leading-7">We work to keep Dungeon Calendar available and reliable, but we do not guarantee uninterrupted access. Features may be updated, changed, temporarily unavailable, or discontinued as the app improves.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Limitation of Liability</h2>
+          <p className="mt-3 leading-7">Dungeon Calendar is provided as a scheduling tool. To the fullest extent permitted by law, Dungeon Calendar is not responsible for indirect, incidental, or consequential damages related to use of the service.</p>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
+          <h2 className="text-2xl font-bold text-white">Contact</h2>
+          <p className="mt-3 leading-7">For support or Terms of Service questions, contact dungeoncalendarsupport@gmail.com.</p>
+        </section>
+      </LegalPageShell>
+    );
+  }
+
 
   const Sidebar = (
     <aside className="w-full rounded-2xl border border-red-900/60 bg-black/55 p-4 shadow-[0_0_60px_rgba(0,0,0,0.7)] backdrop-blur-md sm:p-5">
@@ -2179,6 +2305,12 @@ export default function DungeonCalendarApp() {
           <Button onClick={() => navigateTo("/about")} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-4 text-zinc-100 hover:bg-zinc-900 hover:text-white">
             About Dungeon Calendar
           </Button>
+
+          <div className="flex flex-wrap justify-center gap-3 text-sm text-zinc-400">
+            <button type="button" onClick={() => navigateTo("/privacy")} className="hover:text-zinc-100">Privacy Policy</button>
+            <span>•</span>
+            <button type="button" onClick={() => navigateTo("/terms")} className="hover:text-zinc-100">Terms of Service</button>
+          </div>
         </div>
       ) : (
         <div className="space-y-4">
@@ -2263,6 +2395,12 @@ export default function DungeonCalendarApp() {
           </Button>
 
           <Button onClick={() => navigateTo("/about")} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-5 text-zinc-100 hover:bg-zinc-900 hover:text-white">About Dungeon Calendar</Button>
+
+          <div className="flex flex-wrap justify-center gap-3 text-sm text-zinc-400">
+            <button type="button" onClick={() => navigateTo("/privacy")} className="hover:text-zinc-100">Privacy</button>
+            <span>•</span>
+            <button type="button" onClick={() => navigateTo("/terms")} className="hover:text-zinc-100">Terms</button>
+          </div>
 
           <Button onClick={logout} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-5 text-zinc-100 hover:bg-zinc-900 hover:text-white"><LogOut className="mr-2 h-4 w-4" /> Log Out</Button>
         </div>
@@ -3508,6 +3646,14 @@ export default function DungeonCalendarApp() {
 
   if (publicRoute === "/about") {
     return AboutPage();
+  }
+
+  if (publicRoute === "/privacy") {
+    return PrivacyPolicyPage();
+  }
+
+  if (publicRoute === "/terms") {
+    return TermsOfServicePage();
   }
 
   if (!currentUser) {

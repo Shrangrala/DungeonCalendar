@@ -3,6 +3,9 @@ import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, 
 import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
+import PrivacyPolicy from "./PrivacyPolicy";
+import TermsOfService from "./TermsOfService";
+
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
     <button

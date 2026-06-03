@@ -2,6 +2,12 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://dungeoncalendar.com/</loc>
+	<url>
+  <loc>https://dungeoncalendar.com/privacy</loc>
+</url>
+<url>
+  <loc>https://dungeoncalendar.com/terms</loc>
+</url>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>

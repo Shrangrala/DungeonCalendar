@@ -3,6 +3,9 @@ import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, 
 import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
+import PrivacyPolicy from "./PrivacyPolicy";
+import TermsOfService from "./TermsOfService";
+
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
     <button
@@ -1999,25 +2002,29 @@ export default function DungeonCalendarApp() {
     return (
       <div className="relative min-h-screen overflow-x-hidden text-zinc-100">
         <AppBackground />
-        <main className="relative z-10 mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-          <header className="flex flex-col gap-4 rounded-3xl border border-red-900/60 bg-black/60 p-5 shadow-2xl backdrop-blur md:flex-row md:items-center md:justify-between">
-            <button type="button" onClick={() => navigateTo("/")} className="text-left">
+        <main className="relative z-10 mx-auto w-[95%] max-w-[1600px] px-3 py-6 sm:px-6 lg:px-8">
+          <header className="rounded-3xl border border-red-900/60 bg-black/60 p-6 text-center shadow-2xl backdrop-blur sm:p-8">
+            <button type="button" onClick={() => navigateTo("/")} className="mx-auto block">
               <DungeonCalendarLogo small />
             </button>
-            <div className="flex flex-wrap gap-3">
+            <h1 className="mt-4 text-2xl font-black text-white sm:text-3xl">Dungeon Calendar</h1>
+            <p className="mx-auto mt-2 max-w-2xl text-sm font-semibold uppercase tracking-[0.22em] text-red-300">
+              D&D Campaign Scheduling & Session Planning
+            </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-3">
               <Button onClick={() => navigateTo("/")} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">Log In</Button>
               <Button onClick={() => navigateTo("/")} className="rounded-xl bg-red-700 hover:bg-red-600">Create Free Account</Button>
             </div>
           </header>
 
-          <section className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
-            <div className="rounded-3xl border border-zinc-700 bg-black/60 p-6 shadow-2xl backdrop-blur sm:p-8">
+          <section className="mt-6 grid auto-rows-fr gap-6 lg:grid-cols-2">
+            <div className="flex h-full flex-col rounded-3xl border border-zinc-700 bg-black/60 p-6 shadow-2xl backdrop-blur sm:p-8 lg:p-10">
               <p className="text-sm font-bold uppercase tracking-[0.3em] text-red-300">About Dungeon Calendar</p>
-              <h1 className="mt-4 text-4xl font-black leading-tight sm:text-5xl">Schedule tabletop RPG sessions without endless group chats.</h1>
-              <p className="mt-5 max-w-3xl text-lg leading-8 text-zinc-300">
+              <h2 className="mt-4 text-4xl font-black leading-tight sm:text-5xl xl:text-6xl">Schedule tabletop RPG sessions without endless group chats.</h2>
+              <p className="mt-5 max-w-4xl text-lg leading-8 text-zinc-300">
                 Dungeon Calendar is a campaign scheduling and player management app built for Dungeons & Dragons, Pathfinder, and other tabletop RPG groups. Dungeon Masters can manage campaigns, collect player availability, invite party members, and choose final session dates from one organized calendar.
               </p>
-              <div className="mt-6 flex flex-wrap gap-3">
+              <div className="mt-7 flex flex-wrap gap-3">
                 <Button onClick={() => navigateTo("/")} className="rounded-xl bg-red-700 px-5 py-3 hover:bg-red-600">Start Scheduling Free</Button>
                 <Button onClick={copyShareLink} variant="ghost" className="rounded-xl border border-zinc-700 px-5 py-3 hover:bg-zinc-900">
                   <Copy className="mr-2 h-4 w-4" /> {copied ? "Copied!" : "Copy App Link"}
@@ -2025,19 +2032,29 @@ export default function DungeonCalendarApp() {
               </div>
             </div>
 
-            <aside className="rounded-3xl border border-amber-700/60 bg-amber-950/25 p-6 shadow-2xl backdrop-blur sm:p-8">
-              <h2 className="text-2xl font-black text-amber-100">Built for parties that actually want to play.</h2>
-              <p className="mt-4 text-zinc-300">Use Dungeon Calendar to reduce scheduling friction, organize player responses, and keep your next adventure moving.</p>
-              <div className="mt-6 space-y-3 text-sm text-zinc-200">
-                <div className="rounded-2xl border border-zinc-800 bg-black/35 p-4"><b>D&D scheduling</b><span className="mt-1 block text-zinc-400">Coordinate sessions with a visual campaign calendar.</span></div>
-                <div className="rounded-2xl border border-zinc-800 bg-black/35 p-4"><b>Dungeon Master tools</b><span className="mt-1 block text-zinc-400">Manage campaigns, invites, players, and final dates.</span></div>
-                <div className="rounded-2xl border border-zinc-800 bg-black/35 p-4"><b>Player availability</b><span className="mt-1 block text-zinc-400">Let everyone mark available and unavailable dates.</span></div>
+            <aside className="flex h-full flex-col rounded-3xl border border-amber-700/60 bg-amber-950/25 p-6 shadow-2xl backdrop-blur sm:p-8 lg:p-10">
+              <h2 className="text-3xl font-black leading-tight text-amber-100 xl:text-4xl">Built for parties that actually want to play.</h2>
+              <p className="mt-4 text-lg leading-8 text-zinc-300">Use Dungeon Calendar to reduce scheduling friction, organize player responses, and keep your next adventure moving.</p>
+              <div className="mt-6 grid flex-1 gap-4 text-sm text-zinc-200">
+                <div className="rounded-2xl border border-zinc-800 bg-black/35 p-5"><b>D&D scheduling</b><span className="mt-1 block text-zinc-400">Coordinate sessions with a visual campaign calendar.</span></div>
+                <div className="rounded-2xl border border-zinc-800 bg-black/35 p-5"><b>Dungeon Master tools</b><span className="mt-1 block text-zinc-400">Manage campaigns, invites, players, and final dates.</span></div>
+                <div className="rounded-2xl border border-zinc-800 bg-black/35 p-5"><b>Player availability</b><span className="mt-1 block text-zinc-400">Let everyone mark available and unavailable dates.</span></div>
               </div>
             </aside>
           </section>
 
+          <section className="mt-6 rounded-3xl border border-zinc-700 bg-black/60 p-6 text-center shadow-2xl backdrop-blur sm:p-8">
+            <p className="text-sm font-bold uppercase tracking-[0.25em] text-red-300">Trusted Dungeon Master Tools</p>
+            <h2 className="mx-auto mt-3 max-w-3xl text-3xl font-black">A shared scheduling hub for every adventure.</h2>
+            <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+              {["Campaign Scheduling", "Availability Tracking", "Email Invites", "Cross-Device Access", "Firebase Security", "Stripe Billing"].map((item) => (
+                <div key={item} className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4 font-bold text-zinc-100">{item}</div>
+              ))}
+            </div>
+          </section>
+
           <section className="mt-6 rounded-3xl border border-zinc-700 bg-black/60 p-6 shadow-2xl backdrop-blur sm:p-8">
-            <div className="max-w-3xl">
+            <div className="mx-auto max-w-4xl text-center">
               <p className="text-sm font-bold uppercase tracking-[0.25em] text-red-300">Features</p>
               <h2 className="mt-3 text-3xl font-black">Everything your campaign needs to plan the next session.</h2>
             </div>

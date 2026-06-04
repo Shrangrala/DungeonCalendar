@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 import PrivacyPolicy from "./PrivacyPolicy";
@@ -58,6 +58,39 @@ const playerColors = [
 
 const defaultPlayers = [];
 
+
+function normalizeCampaignForFirestore(campaign = {}) {
+  return {
+    id: campaign.id || crypto.randomUUID(),
+    ownerId: campaign.ownerId || "",
+    dungeonMasterIds: Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : [],
+    name: campaign.name || "",
+    isEditingName: campaign.isEditingName !== false,
+    availability: campaign.availability || {},
+    unavailable: campaign.unavailable || {},
+    chosenDate: campaign.chosenDate || "",
+    sessionTime: campaign.sessionTime || "18:00",
+    sessionDuration: Number(campaign.sessionDuration || 4),
+    reminderHours: Number(campaign.reminderHours || 24),
+    memberIds: Array.isArray(campaign.memberIds) ? campaign.memberIds : [],
+    invitedEmails: Array.isArray(campaign.invitedEmails) ? campaign.invitedEmails : [],
+    inactiveMemberIds: Array.isArray(campaign.inactiveMemberIds) ? campaign.inactiveMemberIds : [],
+    updatedAt: campaign.updatedAt || new Date().toISOString()
+  };
+}
+
+function userCanSeeCampaign(user, campaign) {
+  if (!user || !campaign) return false;
+  const uid = user.id;
+  const email = normalizeEmail(user.email || "");
+  const joined = (user.campaignIds || []).includes(campaign.id);
+  const owner = campaign.ownerId === uid;
+  const dm = (campaign.dungeonMasterIds || []).includes(uid);
+  const member = (campaign.memberIds || []).includes(uid);
+  const invited = email && (campaign.invitedEmails || []).map(normalizeEmail).includes(email);
+  const inactive = (campaign.inactiveMemberIds || []).includes(uid);
+  return !inactive && (joined || owner || dm || member || invited);
+}
 
 function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
   return {
@@ -407,10 +440,8 @@ export default function DungeonCalendarApp() {
   const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("dnd-calendar-remember-me") === "true");
   const [authMode, setAuthMode] = useState("login");
   const [availabilityMode, setAvailabilityMode] = useState("available");
-  const [campaigns, setCampaigns] = useState(() => {
-    const savedCampaigns = localStorage.getItem("dnd-calendar-campaigns");
-    return savedCampaigns ? JSON.parse(savedCampaigns) : [createCampaign()];
-  });
+  const [campaigns, setCampaigns] = useState([]);
+  const [campaignsLoaded, setCampaignsLoaded] = useState(false);
   const [activeCampaignId, setActiveCampaignId] = useState(() => localStorage.getItem("dnd-calendar-active-campaign") || "");
   const [newPlayer, setNewPlayer] = useState("");
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
@@ -582,11 +613,7 @@ export default function DungeonCalendarApp() {
   const activePlayer = players.find((player) => player.id === activePlayerId);
   const visibleCampaigns = useMemo(() => {
     if (!currentUser) return [];
-    return campaigns.filter((campaign) =>
-      (currentUser.campaignIds ?? []).includes(campaign.id) ||
-      (campaign.dungeonMasterIds ?? []).includes(currentUser.id) ||
-      campaign.ownerId === currentUser.id
-    );
+    return campaigns.filter((campaign) => userCanSeeCampaign(currentUser, campaign));
   }, [campaigns, currentUser]);
   const activeCampaign = visibleCampaigns.find((campaign) => campaign.id === activeCampaignId) ?? visibleCampaigns[0];
   const availability = activeCampaign?.availability ?? {};
@@ -603,7 +630,8 @@ export default function DungeonCalendarApp() {
   const activeCampaignPlayers = useMemo(() => {
     const relevantPlayers = players.filter((player) =>
       (player.campaignIds ?? []).includes(activeCampaign?.id) ||
-      activeCampaign?.dungeonMasterIds?.includes(player.id)
+      activeCampaign?.dungeonMasterIds?.includes(player.id) ||
+      activeCampaign?.memberIds?.includes(player.id)
     );
 
     return relevantPlayers.filter((player, index, list) => {
@@ -697,6 +725,19 @@ export default function DungeonCalendarApp() {
   }, [currentUserId]);
 
   useEffect(() => {
+    const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
+      const syncedCampaigns = snapshot.docs.map((item) => normalizeCampaignForFirestore({ id: item.id, ...item.data() }));
+      setCampaigns(syncedCampaigns);
+      setCampaignsLoaded(true);
+    }, (error) => {
+      console.warn("Live campaign sync failed:", error);
+      setCampaignsLoaded(true);
+    });
+
+    return () => unsubscribeCampaigns();
+  }, []);
+
+  useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
 
     // Keep campaign membership fields synced without overwriting profile settings or paid plan data.
@@ -717,8 +758,16 @@ export default function DungeonCalendarApp() {
   }, [players]);
 
   useEffect(() => {
-    localStorage.setItem("dnd-calendar-campaigns", JSON.stringify(campaigns));
-  }, [campaigns]);
+    if (!campaignsLoaded || !currentUserId) return;
+    campaigns.forEach((campaign) => {
+      if (!campaign?.id) return;
+      const normalized = normalizeCampaignForFirestore(campaign);
+      const canWrite = normalized.ownerId === currentUserId || (normalized.dungeonMasterIds || []).includes(currentUserId) || (normalized.memberIds || []).includes(currentUserId);
+      if (!canWrite) return;
+      setDoc(doc(db, "campaigns", normalized.id), normalized, { merge: true })
+        .catch((error) => console.warn("Failed to sync campaign to Firestore:", normalized.id, error));
+    });
+  }, [campaigns, campaignsLoaded, currentUserId]);
 
   useEffect(() => {
     localStorage.setItem("dnd-calendar-current-user", currentUserId);
@@ -1380,7 +1429,7 @@ export default function DungeonCalendarApp() {
       setPage("billing");
       return;
     }
-    const campaign = createCampaign("", [currentUser.id], currentUser.id);
+    const campaign = { ...createCampaign("", [currentUser.id], currentUser.id), memberIds: [currentUser.id] };
     setCampaigns((current) => [...current, campaign]);
     setPlayers((current) => current.map((player) => {
       if (player.id !== currentUser.id) return player;
@@ -1404,6 +1453,16 @@ export default function DungeonCalendarApp() {
         ? player
         : { ...player, campaignIds: [...existingCampaignIds, campaignId] };
     }));
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== campaignId) return campaign;
+      const memberIds = campaign.memberIds || [];
+      const inactiveMemberIds = (campaign.inactiveMemberIds || []).filter((id) => id !== currentUser.id);
+      return {
+        ...campaign,
+        memberIds: memberIds.includes(currentUser.id) ? memberIds : [...memberIds, currentUser.id],
+        inactiveMemberIds
+      };
+    }));
     setActiveCampaignId(campaignId);
   }
 
@@ -1424,7 +1483,8 @@ export default function DungeonCalendarApp() {
       return role === "Dungeon Master"
         ? {
             ...campaign,
-            dungeonMasterIds: currentDmIds.includes(currentUser.id) ? currentDmIds : [...currentDmIds, currentUser.id]
+            dungeonMasterIds: currentDmIds.includes(currentUser.id) ? currentDmIds : [...currentDmIds, currentUser.id],
+            memberIds: (campaign.memberIds || []).includes(currentUser.id) ? (campaign.memberIds || []) : [...(campaign.memberIds || []), currentUser.id]
           }
         : {
             ...campaign,
@@ -1463,6 +1523,8 @@ export default function DungeonCalendarApp() {
         ...campaign,
         ownerId: campaign.ownerId === currentUser.id ? "" : campaign.ownerId,
         dungeonMasterIds: removeId(campaign.dungeonMasterIds),
+        memberIds: removeId(campaign.memberIds),
+        inactiveMemberIds: [...new Set([...(campaign.inactiveMemberIds || []), currentUser.id])],
         availability: removeFromDateMap(campaign.availability),
         unavailable: removeFromDateMap(campaign.unavailable)
       };
@@ -1494,6 +1556,19 @@ export default function DungeonCalendarApp() {
     if (players.some((player) => player.name.toLowerCase() === trimmed.toLowerCase())) return;
     const player = { id: crypto.randomUUID(), role: "Player", name: trimmed, email: newPlayerEmail.trim(), password: "dndplayer", phone: newPlayerPhone.trim(), campaignIds: activeCampaign?.id ? [activeCampaign.id] : [], campaignCharacterNames: activeCampaign?.id ? { [activeCampaign.id]: "" } : {}, color: playerColors[players.length % playerColors.length] };
     setPlayers((current) => [...current, player]);
+    if (activeCampaign?.id) {
+      setCampaigns((current) => current.map((campaign) => {
+        if (campaign.id !== activeCampaign.id) return campaign;
+        const memberIds = campaign.memberIds || [];
+        const invitedEmails = campaign.invitedEmails || [];
+        const email = normalizeEmail(player.email || "");
+        return {
+          ...campaign,
+          memberIds: memberIds.includes(player.id) ? memberIds : [...memberIds, player.id],
+          invitedEmails: email && !invitedEmails.map(normalizeEmail).includes(email) ? [...invitedEmails, email] : invitedEmails
+        };
+      }));
+    }
     setNewPlayer("");
     setNewPlayerEmail("");
     setNewPlayerPhone("");
@@ -1776,7 +1851,11 @@ export default function DungeonCalendarApp() {
     setPlayers((current) => current.filter((player) => player.id !== id));
     setCampaigns((current) => current.map((campaign) => ({
       ...campaign,
-      availability: Object.fromEntries(Object.entries(campaign.availability).map(([key, ids]) => [key, ids.filter((playerId) => playerId !== id)]))
+      dungeonMasterIds: (campaign.dungeonMasterIds || []).filter((playerId) => playerId !== id),
+      memberIds: (campaign.memberIds || []).filter((playerId) => playerId !== id),
+      inactiveMemberIds: [...new Set([...(campaign.inactiveMemberIds || []), id])],
+      availability: Object.fromEntries(Object.entries(campaign.availability || {}).map(([key, ids]) => [key, ids.filter((playerId) => playerId !== id)])),
+      unavailable: Object.fromEntries(Object.entries(campaign.unavailable || {}).map(([key, ids]) => [key, ids.filter((playerId) => playerId !== id)]))
     })));
   }
 

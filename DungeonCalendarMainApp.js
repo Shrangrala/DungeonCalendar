@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, signOut, updatePassword, verifyBeforeUpdateEmail } from "firebase/auth";
+import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, deleteUser, reauthenticateWithCredential, reauthenticateWithPopup, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -38,11 +38,6 @@ const navItems = [
   { id: "results", label: "Results", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings }
 ];
-
-const authActionSettings = {
-  url: "https://dungeoncalendar.com",
-  handleCodeInApp: false
-};
 
 const playerColors = [
   "bg-lime-500",
@@ -277,6 +272,35 @@ function saveCachedUserProfile(uid, profile = {}) {
   } catch (error) {
     console.warn("Could not cache profile locally:", error);
   }
+}
+
+function clearDungeonCalendarLocalCache(uid = "") {
+  try {
+    const prefixes = ["dnd-calendar", "dungeon-calendar"];
+    const exactKeys = [
+      "dnd-calendar-players",
+      "dnd-calendar-campaigns",
+      "dnd-calendar-current-user",
+      "dnd-calendar-active-player",
+      "dnd-calendar-active-campaign",
+      "dnd-calendar-remember-me",
+      "dnd-calendar-pending-stripe-plan"
+    ];
+    for (const key of exactKeys) localStorage.removeItem(key);
+    if (uid) localStorage.removeItem(cachedProfileKey(uid));
+    Object.keys(localStorage).forEach((key) => {
+      if (prefixes.some((prefix) => key.startsWith(prefix))) localStorage.removeItem(key);
+    });
+  } catch (error) {
+    console.warn("Could not clear Dungeon Calendar local cache:", error);
+  }
+}
+
+function removeUserIdFromDateMap(dateMap = {}, uid = "") {
+  return Object.fromEntries(Object.entries(dateMap || {}).map(([key, ids]) => [
+    key,
+    Array.isArray(ids) ? ids.filter((id) => id !== uid) : []
+  ]));
 }
 
 async function loadUserProfile(uid) {
@@ -986,13 +1010,6 @@ export default function DungeonCalendarApp() {
       } else {
         const credential = await createUserWithEmailAndPassword(auth, trimmedEmail, loginPassword);
         uid = credential.user.uid;
-        try {
-          await sendEmailVerification(credential.user, authActionSettings);
-          setLoginError("Account created. A verification email was sent to " + trimmedEmail + ".");
-        } catch (emailError) {
-          console.warn("Email verification send failed:", emailError);
-          setLoginError("Account created, but the verification email could not be sent. You can still sign in.");
-        }
         const existingInvite = players.find((item) => normalizeEmail(item.email) === trimmedEmail);
 
         player = {
@@ -1031,26 +1048,6 @@ export default function DungeonCalendarApp() {
       setPage("calendar");
       setLoginError("");
     } catch (error) {
-      setLoginError(authErrorMessage(error));
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  async function sendPasswordResetFromLogin() {
-    const email = normalizeEmail(loginEmail);
-    if (!email) {
-      setLoginError("Enter your email address first, then select Forgot Password.");
-      return;
-    }
-
-    try {
-      setAuthBusy(true);
-      setLoginError("");
-      await sendPasswordResetEmail(auth, email, authActionSettings);
-      setLoginError("Password reset email sent to " + email + ". Check your inbox.");
-    } catch (error) {
-      console.error("Password reset email failed:", error);
       setLoginError(authErrorMessage(error));
     } finally {
       setAuthBusy(false);
@@ -1115,21 +1112,13 @@ export default function DungeonCalendarApp() {
   async function logout() {
     try {
       await signOut(auth);
-
-      // Clear cached profile data
-      localStorage.removeItem("dungeon-calendar-profile");
-      localStorage.removeItem("dungeon-calendar-user");
-      localStorage.removeItem("dnd-calendar-user");
-      localStorage.removeItem("dnd-calendar-profile");
     } catch (error) {
       console.error("Firebase sign out failed:", error);
     }
 
-    localStorage.removeItem("dnd-calendar-remember-me");
+    clearDungeonCalendarLocalCache(currentUserId || auth.currentUser?.uid || "");
     setCurrentUserId("");
     setActivePlayerId("");
-    localStorage.removeItem("dnd-calendar-current-user");
-    localStorage.removeItem("dnd-calendar-active-player");
     setLoginEmail("");
     setLoginPassword("");
     setLoginName("");
@@ -1716,8 +1705,7 @@ export default function DungeonCalendarApp() {
           setAccountMessage("This account signs in with Google. Change the login email from your Google account settings.");
           return;
         }
-        await verifyBeforeUpdateEmail(auth.currentUser, nextEmail, authActionSettings);
-        setAccountMessage("Verification email sent to " + nextEmail + ". Open that email to finish changing your login email.");
+        await updateEmail(auth.currentUser, nextEmail);
       }
 
       const updatedProfile = {
@@ -1788,23 +1776,118 @@ export default function DungeonCalendarApp() {
     }
   }
 
-  function deleteCurrentAccount() {
-    if (!currentUser) return;
+  async function reauthenticateForAccountDeletion() {
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser?.email) throw new Error("Sign in again before deleting your account.");
 
-    if (campaigns.some((campaign) => campaign.dungeonMasterIds?.includes(currentUser.id))) {
-      setAccountMessage("Accounts that are Dungeon Master for a campaign cannot be deleted until that role is removed.");
+    const providers = firebaseUser.providerData.map((provider) => provider.providerId);
+    const hasPasswordProvider = providers.includes("password");
+    const hasGoogleProvider = providers.includes("google.com");
+
+    if (hasPasswordProvider && accountPassword.trim()) {
+      const credential = EmailAuthProvider.credential(firebaseUser.email, accountPassword);
+      await reauthenticateWithCredential(firebaseUser, credential);
       return;
     }
+
+    if (hasGoogleProvider) {
+      await reauthenticateWithPopup(firebaseUser, new GoogleAuthProvider());
+      return;
+    }
+
+    if (hasPasswordProvider) {
+      throw new Error("Enter your current password in Account Security, then press Confirm Delete again.");
+    }
+  }
+
+  async function deleteCurrentAccount() {
+    if (isSavingAccount) return;
+    if (!currentUser || !auth.currentUser) return;
 
     if (deleteConfirmText !== "DELETE") {
       setAccountMessage("Type DELETE to confirm account removal.");
       return;
     }
 
-    removePlayer(currentUser.id);
-    setShowDeleteConfirm(false);
-    setDeleteConfirmText("");
-    logout();
+    const uid = auth.currentUser.uid;
+    const email = normalizeEmail(auth.currentUser.email || currentUser.email || "");
+
+    try {
+      setIsSavingAccount(true);
+      setAccountMessage("Deleting account and associated Dungeon Calendar data...");
+
+      await reauthenticateForAccountDeletion();
+
+      try {
+        const campaignSnapshot = await getDocs(collection(db, "campaigns"));
+        await Promise.all(campaignSnapshot.docs.map(async (campaignDoc) => {
+          const campaign = campaignDoc.data() || {};
+          const isRelated =
+            campaign.ownerId === uid ||
+            (campaign.memberIds || []).includes(uid) ||
+            (campaign.dungeonMasterIds || []).includes(uid) ||
+            (campaign.invitedEmails || []).map(normalizeEmail).includes(email);
+
+          if (!isRelated) return;
+
+          const nextMemberIds = (campaign.memberIds || []).filter((id) => id !== uid);
+          const nextDungeonMasterIds = (campaign.dungeonMasterIds || []).filter((id) => id !== uid);
+          const nextInactiveMemberIds = Array.from(new Set([...(campaign.inactiveMemberIds || []), uid]));
+          const nextLeftUserIds = Array.from(new Set([...(campaign.leftUserIds || []), uid]));
+          const nextInvitedEmails = email ? (campaign.invitedEmails || []).filter((item) => normalizeEmail(item) !== email) : (campaign.invitedEmails || []);
+
+          const update = {
+            memberIds: nextMemberIds,
+            dungeonMasterIds: nextDungeonMasterIds,
+            inactiveMemberIds: nextInactiveMemberIds,
+            leftUserIds: nextLeftUserIds,
+            invitedEmails: nextInvitedEmails,
+            availability: removeUserIdFromDateMap(campaign.availability, uid),
+            unavailable: removeUserIdFromDateMap(campaign.unavailable, uid),
+            updatedAt: new Date().toISOString()
+          };
+
+          if (campaign.ownerId === uid) {
+            update.ownerId = "";
+            update.status = "archived";
+            update.archived = true;
+          }
+
+          await setDoc(doc(db, "campaigns", campaignDoc.id), update, { merge: true });
+        }));
+      } catch (campaignError) {
+        console.warn("Could not clean campaign memberships before account deletion:", campaignError);
+      }
+
+      try { await deleteDoc(doc(db, "users", uid)); } catch (error) { console.warn("Could not delete user profile document:", error); }
+      try { await deleteDoc(doc(db, "customers", uid)); } catch (error) { console.warn("Could not delete Stripe customer document:", error); }
+
+      await deleteUser(auth.currentUser);
+
+      clearDungeonCalendarLocalCache(uid);
+      setPlayers([]);
+      setCampaigns([]);
+      setCurrentUserId("");
+      setActivePlayerId("");
+      setActiveCampaignId("");
+      setShowDeleteConfirm(false);
+      setDeleteConfirmText("");
+      setAccountPassword("");
+      setPage("landing");
+      setAccountMessage("Account deleted.");
+    } catch (error) {
+      console.error("Account deletion failed:", error);
+      const code = error?.code || "";
+      if (code === "auth/requires-recent-login") {
+        setAccountMessage("For security, sign out and sign back in, then delete your account again.");
+      } else if (code === "auth/popup-closed-by-user") {
+        setAccountMessage("Google verification was cancelled. Verify again to delete your account.");
+      } else {
+        setAccountMessage(error?.message || "Account deletion failed. Try again.");
+      }
+    } finally {
+      setIsSavingAccount(false);
+    }
   }
 
   function removePlayer(id) {
@@ -2197,16 +2280,6 @@ export default function DungeonCalendarApp() {
           <div>
             <label className="text-sm text-zinc-200">Password</label>
             <input value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && login()} placeholder="Enter password" type="password" className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2" />
-            {authMode === "login" && (
-              <button
-                type="button"
-                onClick={sendPasswordResetFromLogin}
-                disabled={authBusy}
-                className="mt-2 text-sm font-semibold text-red-300 hover:text-red-200 disabled:opacity-60"
-              >
-                Forgot Password? Send reset email
-              </button>
-            )}
           </div>
 
           {authMode === "create" && (

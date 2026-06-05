@@ -243,57 +243,19 @@ function normalizeBillingInterval(interval = "monthly") {
 
 
 function cachedProfileKey(uid) {
-  return `dnd-calendar-user-profile-${uid}`;
+  return "";
 }
 
 function loadCachedUserProfile(uid) {
-  if (!uid) return null;
-  try {
-    const raw = localStorage.getItem(cachedProfileKey(uid));
-    return raw ? JSON.parse(raw) : null;
-  } catch (error) {
-    console.warn("Could not read cached profile:", error);
-    return null;
-  }
+  return null;
 }
 
 function saveCachedUserProfile(uid, profile = {}) {
-  if (!uid) return;
-  try {
-    const existing = loadCachedUserProfile(uid) || {};
-    const merged = {
-      ...existing,
-      ...profile,
-      plan: normalizePlan(profile.plan || existing.plan || "free"),
-      billingInterval: normalizeBillingInterval(profile.billingInterval || existing.billingInterval || "monthly"),
-      cachedAt: new Date().toISOString()
-    };
-    localStorage.setItem(cachedProfileKey(uid), JSON.stringify(merged));
-  } catch (error) {
-    console.warn("Could not cache profile locally:", error);
-  }
+  // Firebase/Firestore is the only source of truth. No browser profile cache.
 }
 
 function clearDungeonCalendarLocalCache(uid = "") {
-  try {
-    const prefixes = ["dnd-calendar", "dungeon-calendar"];
-    const exactKeys = [
-      "dnd-calendar-players",
-      "dnd-calendar-campaigns",
-      "dnd-calendar-current-user",
-      "dnd-calendar-active-player",
-      "dnd-calendar-active-campaign",
-      "dnd-calendar-remember-me",
-      "dnd-calendar-pending-stripe-plan"
-    ];
-    for (const key of exactKeys) localStorage.removeItem(key);
-    if (uid) localStorage.removeItem(cachedProfileKey(uid));
-    Object.keys(localStorage).forEach((key) => {
-      if (prefixes.some((prefix) => key.startsWith(prefix))) localStorage.removeItem(key);
-    });
-  } catch (error) {
-    console.warn("Could not clear Dungeon Calendar local cache:", error);
-  }
+  // Local profile/campaign persistence has been removed. Firebase owns all user data.
 }
 
 function removeUserIdFromDateMap(dateMap = {}, uid = "") {
@@ -417,12 +379,9 @@ export default function DungeonCalendarApp() {
   const today = new Date();
   const [page, setPage] = useState("dashboard");
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
-  const [players, setPlayers] = useState(() => {
-    const savedPlayers = localStorage.getItem("dnd-calendar-players");
-    return savedPlayers ? JSON.parse(savedPlayers) : defaultPlayers;
-  });
-  const [currentUserId, setCurrentUserId] = useState(() => localStorage.getItem("dnd-calendar-current-user") || "");
-  const [activePlayerId, setActivePlayerId] = useState(() => localStorage.getItem("dnd-calendar-active-player") || "");
+  const [players, setPlayers] = useState(defaultPlayers);
+  const [currentUserId, setCurrentUserId] = useState("");
+  const [activePlayerId, setActivePlayerId] = useState("");
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginName, setLoginName] = useState("");
@@ -430,14 +389,11 @@ export default function DungeonCalendarApp() {
   const [loginError, setLoginError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authProfileLoaded, setAuthProfileLoaded] = useState(false);
-  const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("dnd-calendar-remember-me") === "true");
+  const [rememberMe, setRememberMe] = useState(false);
   const [authMode, setAuthMode] = useState("login");
   const [availabilityMode, setAvailabilityMode] = useState("available");
-  const [campaigns, setCampaigns] = useState(() => {
-    const savedCampaigns = localStorage.getItem("dnd-calendar-campaigns");
-    return savedCampaigns ? JSON.parse(savedCampaigns) : [createCampaign()];
-  });
-  const [activeCampaignId, setActiveCampaignId] = useState(() => localStorage.getItem("dnd-calendar-active-campaign") || "");
+  const [campaigns, setCampaigns] = useState([]);
+  const [activeCampaignId, setActiveCampaignId] = useState("");
   const [newPlayer, setNewPlayer] = useState("");
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
   const [newPlayerPhone, setNewPlayerPhone] = useState("");
@@ -739,26 +695,6 @@ export default function DungeonCalendarApp() {
   }, [authProfileLoaded, currentUserId, currentUser?.campaignIds, currentUser?.campaignCharacterNames, currentUser?.lockedColorCampaignIds, currentUser?.color, currentUser?.campaignTokenImages, currentUser?.role]);
 
   useEffect(() => {
-    localStorage.setItem("dnd-calendar-players", JSON.stringify(players));
-  }, [players]);
-
-  useEffect(() => {
-    localStorage.setItem("dnd-calendar-campaigns", JSON.stringify(campaigns));
-  }, [campaigns]);
-
-  useEffect(() => {
-    localStorage.setItem("dnd-calendar-current-user", currentUserId);
-  }, [currentUserId]);
-
-  useEffect(() => {
-    localStorage.setItem("dnd-calendar-active-player", activePlayerId);
-  }, [activePlayerId]);
-
-  useEffect(() => {
-    localStorage.setItem("dnd-calendar-active-campaign", activeCampaignId);
-  }, [activeCampaignId]);
-
-  useEffect(() => {
     if (!currentUser) return;
     if (visibleCampaigns.length === 0) {
       if (activeCampaignId) setActiveCampaignId("");
@@ -799,7 +735,6 @@ export default function DungeonCalendarApp() {
     const stripeCancelled = params.get("stripe_cancelled") === "true";
 
     if (stripeCancelled) {
-      localStorage.removeItem("dnd-calendar-pending-stripe-plan");
       setBillingMessage("Stripe Checkout was cancelled. No plan changes were made.");
       window.history.replaceState({}, document.title, window.location.pathname);
     }
@@ -807,13 +742,6 @@ export default function DungeonCalendarApp() {
 
   function readPendingStripePlan() {
     let pending = null;
-
-    try {
-      const pendingRaw = localStorage.getItem("dnd-calendar-pending-stripe-plan");
-      pending = pendingRaw ? JSON.parse(pendingRaw) : null;
-    } catch {
-      pending = null;
-    }
 
     const profilePendingPlan = normalizePlan(currentUser?.pendingStripePlan || "free");
     if ((!pending?.plan || normalizePlan(pending.plan) === "free") && profilePendingPlan !== "free") {
@@ -875,7 +803,6 @@ export default function DungeonCalendarApp() {
       stripeActivationSource: source
     });
 
-    localStorage.removeItem("dnd-calendar-pending-stripe-plan");
     setPendingStripeActivation(null);
     setSelectedPaymentPlan("");
     setCheckoutLoading(false);
@@ -975,7 +902,6 @@ export default function DungeonCalendarApp() {
     if (authBusy) return;
     setAuthBusy(true);
     setLoginError("");
-    localStorage.setItem("dnd-calendar-remember-me", rememberMe ? "true" : "false");
     const trimmedName = loginName.trim();
     const trimmedEmail = normalizeEmail(loginEmail);
 
@@ -1036,11 +962,6 @@ export default function DungeonCalendarApp() {
         return [...withoutDuplicate, player];
       });
 
-      if (rememberMe) {
-        localStorage.setItem("dnd-calendar-current-user", uid);
-        localStorage.setItem("dnd-calendar-active-player", uid);
-      }
-
       setPlan(normalizePlan(player.plan || "free"));
       setCurrentUserId(uid);
       setActivePlayerId(uid);
@@ -1058,7 +979,6 @@ export default function DungeonCalendarApp() {
     if (authBusy) return;
     setAuthBusy(true);
     setLoginError("");
-    localStorage.setItem("dnd-calendar-remember-me", rememberMe ? "true" : "false");
 
     try {
       const provider = new GoogleAuthProvider();
@@ -1090,11 +1010,6 @@ export default function DungeonCalendarApp() {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
         return [...withoutDuplicate, player];
       });
-
-      if (rememberMe) {
-        localStorage.setItem("dnd-calendar-current-user", uid);
-        localStorage.setItem("dnd-calendar-active-player", uid);
-      }
 
       setPlan(normalizePlan(player.plan || "free"));
       setCurrentUserId(uid);
@@ -1195,12 +1110,6 @@ export default function DungeonCalendarApp() {
       startedAt: new Date().toISOString()
     };
 
-    try {
-      localStorage.setItem("dnd-calendar-pending-stripe-plan", JSON.stringify(pendingCheckoutPlan));
-    } catch (error) {
-      console.warn("Could not save pending Stripe plan locally:", error);
-    }
-
     setPendingStripeActivation(pendingCheckoutPlan);
 
     if (pendingCheckoutPlan.uid && pendingCheckoutPlan.plan !== "free") {
@@ -1290,7 +1199,6 @@ export default function DungeonCalendarApp() {
         stripeActivationSource: source
       });
 
-      localStorage.removeItem("dnd-calendar-pending-stripe-plan");
       setPendingStripeActivation(null);
       setSelectedPaymentPlan("");
       if (!automaticLoginCheck) {

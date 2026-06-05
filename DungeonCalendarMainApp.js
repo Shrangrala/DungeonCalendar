@@ -1115,6 +1115,12 @@ export default function DungeonCalendarApp() {
   async function logout() {
     try {
       await signOut(auth);
+
+      // Clear cached profile data
+      localStorage.removeItem("dungeon-calendar-profile");
+      localStorage.removeItem("dungeon-calendar-user");
+      localStorage.removeItem("dnd-calendar-user");
+      localStorage.removeItem("dnd-calendar-profile");
     } catch (error) {
       console.error("Firebase sign out failed:", error);
     }

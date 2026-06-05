@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, deleteUser, reauthenticateWithCredential, reauthenticateWithPopup, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
@@ -68,7 +68,14 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
     chosenDate: "",
     sessionTime: "18:00",
     sessionDuration: 4,
-    reminderHours: 24
+    reminderHours: 24,
+    status: "active",
+    archived: false,
+    deleted: false,
+    memberIds: ownerId ? [ownerId] : [],
+    inactiveMemberIds: [],
+    leftUserIds: [],
+    invitedEmails: []
   };
 }
 
@@ -243,19 +250,38 @@ function normalizeBillingInterval(interval = "monthly") {
 
 
 function cachedProfileKey(uid) {
-  return "";
+  return `dnd-calendar-user-profile-${uid}`;
 }
 
 function loadCachedUserProfile(uid) {
+  // Firebase/Firestore is the only source of truth. Do not restore deleted or stale users from browser storage.
   return null;
 }
 
 function saveCachedUserProfile(uid, profile = {}) {
-  // Firebase/Firestore is the only source of truth. No browser profile cache.
+  // No-op by design. Profile, plan, campaign, and membership data must persist only in Firebase/Firestore.
 }
 
 function clearDungeonCalendarLocalCache(uid = "") {
-  // Local profile/campaign persistence has been removed. Firebase owns all user data.
+  try {
+    const prefixes = ["dnd-calendar", "dungeon-calendar"];
+    const exactKeys = [
+      "dnd-calendar-players",
+      "dnd-calendar-campaigns",
+      "dnd-calendar-current-user",
+      "dnd-calendar-active-player",
+      "dnd-calendar-active-campaign",
+      "dnd-calendar-remember-me",
+      "dnd-calendar-pending-stripe-plan"
+    ];
+    for (const key of exactKeys) localStorage.removeItem(key);
+    if (uid) localStorage.removeItem(cachedProfileKey(uid));
+    Object.keys(localStorage).forEach((key) => {
+      if (prefixes.some((prefix) => key.startsWith(prefix))) localStorage.removeItem(key);
+    });
+  } catch (error) {
+    console.warn("Could not clear Dungeon Calendar local cache:", error);
+  }
 }
 
 function removeUserIdFromDateMap(dateMap = {}, uid = "") {
@@ -266,22 +292,16 @@ function removeUserIdFromDateMap(dateMap = {}, uid = "") {
 }
 
 async function loadUserProfile(uid) {
-  const cached = loadCachedUserProfile(uid);
   try {
     const snap = await Promise.race([
       getDoc(doc(db, "users", uid)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Profile load timed out; using cached profile.")), 3000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Profile load timed out.")), 3000))
     ]);
-    const profile = snap.exists() ? snap.data() : null;
-    if (profile) saveCachedUserProfile(uid, profile);
-    return profile || cached || null;
+    return snap.exists() ? snap.data() : null;
   } catch (error) {
-    console.warn("Firestore SDK profile load failed; trying cache/REST fallback:", error);
-    if (cached) return cached;
+    console.warn("Firestore SDK profile load failed; trying REST fallback:", error);
     try {
-      const restProfile = await loadUserProfileViaRest(uid);
-      if (restProfile) saveCachedUserProfile(uid, restProfile);
-      return restProfile;
+      return await loadUserProfileViaRest(uid);
     } catch (restError) {
       console.warn("Firestore REST profile load failed; continuing with Firebase Auth only:", restError);
       return null;
@@ -290,7 +310,6 @@ async function loadUserProfile(uid) {
 }
 
 async function saveUserProfile(uid, profile) {
-  saveCachedUserProfile(uid, profile);
   try {
     await setDoc(doc(db, "users", uid), profile, { merge: true });
     return true;
@@ -308,7 +327,6 @@ async function saveUserProfile(uid, profile) {
 
 async function saveUserProfileRequired(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
-  saveCachedUserProfile(uid, profile);
   try {
     await setDoc(doc(db, "users", uid), profile, { merge: true });
     return true;
@@ -321,7 +339,6 @@ async function saveUserProfileRequired(uid, profile) {
 
 async function saveUserProfileQuick(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
-  saveCachedUserProfile(uid, profile);
   const savePromise = setDoc(doc(db, "users", uid), profile, { merge: true });
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => reject(new Error("Profile save timed out. Check your connection and try again.")), 4500);
@@ -394,6 +411,7 @@ export default function DungeonCalendarApp() {
   const [availabilityMode, setAvailabilityMode] = useState("available");
   const [campaigns, setCampaigns] = useState([]);
   const [activeCampaignId, setActiveCampaignId] = useState("");
+  const [campaignsLoadedFromFirestore, setCampaignsLoadedFromFirestore] = useState(false);
   const [newPlayer, setNewPlayer] = useState("");
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
   const [newPlayerPhone, setNewPlayerPhone] = useState("");
@@ -679,6 +697,47 @@ export default function DungeonCalendarApp() {
   }, [currentUserId]);
 
   useEffect(() => {
+    if (!currentUserId || auth.currentUser?.uid !== currentUserId) {
+      setCampaignsLoadedFromFirestore(false);
+      return undefined;
+    }
+
+    const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
+      const uid = currentUserId;
+      const email = normalizeEmail(auth.currentUser?.email || currentUser?.email || "");
+      const nextCampaigns = snapshot.docs
+        .map((campaignDoc) => ({ id: campaignDoc.id, ...(campaignDoc.data() || {}) }))
+        .filter((campaign) => {
+          if (campaign.deleted || campaign.archived || campaign.status === "archived") return false;
+          if ((campaign.leftUserIds || []).includes(uid) || (campaign.inactiveMemberIds || []).includes(uid)) return false;
+          return campaign.ownerId === uid
+            || (campaign.memberIds || []).includes(uid)
+            || (campaign.dungeonMasterIds || []).includes(uid)
+            || (campaign.invitedEmails || []).map(normalizeEmail).includes(email);
+        });
+      setCampaigns(nextCampaigns);
+      setCampaignsLoadedFromFirestore(true);
+    }, (error) => {
+      console.warn("Live campaign sync failed:", error);
+      setCampaignsLoadedFromFirestore(true);
+    });
+
+    return () => unsubscribeCampaigns();
+  }, [currentUserId, currentUser?.email]);
+
+  useEffect(() => {
+    if (!authProfileLoaded || !currentUserId || auth.currentUser?.uid !== currentUserId || !campaignsLoadedFromFirestore) return;
+    campaigns.forEach((campaign) => {
+      if (!campaign?.id) return;
+      setDoc(doc(db, "campaigns", campaign.id), {
+        ...campaign,
+        id: campaign.id,
+        updatedAt: new Date().toISOString()
+      }, { merge: true }).catch((error) => console.warn("Failed to save campaign to Firestore:", error));
+    });
+  }, [campaigns, campaignsLoadedFromFirestore, authProfileLoaded, currentUserId]);
+
+  useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
 
     // Keep campaign membership fields synced without overwriting profile settings or paid plan data.
@@ -735,25 +794,26 @@ export default function DungeonCalendarApp() {
     const stripeCancelled = params.get("stripe_cancelled") === "true";
 
     if (stripeCancelled) {
+      saveUserProfile(auth.currentUser?.uid || currentUser?.id || "", {
+        pendingStripePlan: "free",
+        pendingStripeBillingInterval: "monthly",
+        pendingStripeStartedAt: "",
+        updatedAt: new Date().toISOString()
+      }).catch(() => {});
       setBillingMessage("Stripe Checkout was cancelled. No plan changes were made.");
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
 
   function readPendingStripePlan() {
-    let pending = null;
-
     const profilePendingPlan = normalizePlan(currentUser?.pendingStripePlan || "free");
-    if ((!pending?.plan || normalizePlan(pending.plan) === "free") && profilePendingPlan !== "free") {
-      pending = {
-        uid: currentUser?.id || auth.currentUser?.uid || "",
-        plan: profilePendingPlan,
-        billingInterval: normalizeBillingInterval(currentUser?.pendingStripeBillingInterval || currentUser?.pendingBillingInterval || "monthly"),
-        startedAt: currentUser?.pendingStripeStartedAt || currentUser?.updatedAt || ""
-      };
-    }
-
-    return pending;
+    if (profilePendingPlan === "free") return null;
+    return {
+      uid: currentUser?.id || auth.currentUser?.uid || "",
+      plan: profilePendingPlan,
+      billingInterval: normalizeBillingInterval(currentUser?.pendingStripeBillingInterval || currentUser?.pendingBillingInterval || "monthly"),
+      startedAt: currentUser?.pendingStripeStartedAt || currentUser?.updatedAt || ""
+    };
   }
 
   function syncPendingStripeActivationFromStorage() {
@@ -962,6 +1022,9 @@ export default function DungeonCalendarApp() {
         return [...withoutDuplicate, player];
       });
 
+      if (rememberMe) {
+      }
+
       setPlan(normalizePlan(player.plan || "free"));
       setCurrentUserId(uid);
       setActivePlayerId(uid);
@@ -1011,6 +1074,9 @@ export default function DungeonCalendarApp() {
         return [...withoutDuplicate, player];
       });
 
+      if (rememberMe) {
+      }
+
       setPlan(normalizePlan(player.plan || "free"));
       setCurrentUserId(uid);
       setActivePlayerId(uid);
@@ -1056,7 +1122,6 @@ export default function DungeonCalendarApp() {
       updatedAt: new Date().toISOString()
     };
 
-    saveCachedUserProfile(currentUser.id, planPayload);
     setPlan(safePlan);
     setBillingInterval(safeBillingInterval);
     setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan, billingInterval: safeBillingInterval, ...extraProfileFields } : player));
@@ -1102,7 +1167,7 @@ export default function DungeonCalendarApp() {
     return stripePaymentLinks[safePlan]?.[safeInterval] || "";
   }
 
-  function rememberPendingStripePlan(planId, interval) {
+  async function rememberPendingStripePlan(planId, interval) {
     const pendingCheckoutPlan = {
       uid: currentUser?.id || auth.currentUser?.uid || "",
       plan: normalizePlan(planId),
@@ -1113,12 +1178,12 @@ export default function DungeonCalendarApp() {
     setPendingStripeActivation(pendingCheckoutPlan);
 
     if (pendingCheckoutPlan.uid && pendingCheckoutPlan.plan !== "free") {
-      saveUserProfile(pendingCheckoutPlan.uid, {
+      await saveUserProfileRequired(pendingCheckoutPlan.uid, {
         pendingStripePlan: pendingCheckoutPlan.plan,
         pendingStripeBillingInterval: pendingCheckoutPlan.billingInterval,
         pendingStripeStartedAt: pendingCheckoutPlan.startedAt,
         updatedAt: new Date().toISOString()
-      }).catch((error) => console.warn("Could not save pending Stripe plan to Firestore before redirect:", error));
+      });
     }
 
     setPlayers((current) => current.map((player) => player.id === pendingCheckoutPlan.uid ? {
@@ -1178,15 +1243,24 @@ export default function DungeonCalendarApp() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Stripe subscription verification failed.");
 
-      if (!data.active || normalizePlan(data.plan) === "free") {
+      if (!data.active) {
         if (!automaticLoginCheck) {
           setBillingMessage(data.message || "No active paid Stripe subscription was found for that email. Make sure the Stripe billing email matches this Dungeon Calendar account email.");
         }
         return;
       }
 
-      const verifiedPlan = normalizePlan(data.plan);
-      const verifiedInterval = normalizeBillingInterval(data.billingInterval || "monthly");
+      let verifiedPlan = normalizePlan(data.plan);
+      if (verifiedPlan === "free" && expectedPlan !== "free") {
+        verifiedPlan = expectedPlan;
+      }
+      if (verifiedPlan === "free") {
+        if (!automaticLoginCheck) {
+          setBillingMessage("Stripe found an active subscription, but the app could not determine which Dungeon Calendar plan it matches. Start checkout from the paid plan button again so the app can attach the selected plan to your account.");
+        }
+        return;
+      }
+      const verifiedInterval = normalizeBillingInterval(data.billingInterval || expectedBillingInterval || "monthly");
 
       await persistPlan(verifiedPlan, verifiedInterval, {
         pendingStripePlan: "free",
@@ -1254,7 +1328,7 @@ export default function DungeonCalendarApp() {
       checkoutUrl.searchParams.set("stripe_plan", activatedPlan);
       checkoutUrl.searchParams.set("stripe_billing", activatedInterval);
       checkoutUrl.searchParams.set("stripe_success", "true");
-      rememberPendingStripePlan(activatedPlan, activatedInterval);
+      await rememberPendingStripePlan(activatedPlan, activatedInterval);
 
       if (typeof window !== "undefined") {
         window.location.assign(checkoutUrl.toString());

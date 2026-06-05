@@ -1,11 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, fetchSignInMethodsForEmail, linkWithCredential, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
+import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, signOut, updatePassword, verifyBeforeUpdateEmail } from "firebase/auth";
+import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
-import PrivacyPolicy from "./PrivacyPolicy";
-import TermsOfService from "./TermsOfService";
-
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
     <button
@@ -42,6 +39,11 @@ const navItems = [
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
+const authActionSettings = {
+  url: "https://dungeoncalendar.com",
+  handleCodeInApp: false
+};
+
 const playerColors = [
   "bg-lime-500",
   "bg-cyan-400",
@@ -58,39 +60,6 @@ const playerColors = [
 
 const defaultPlayers = [];
 
-
-function normalizeCampaignForFirestore(campaign = {}) {
-  return {
-    id: campaign.id || crypto.randomUUID(),
-    ownerId: campaign.ownerId || "",
-    dungeonMasterIds: Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : [],
-    name: campaign.name || "",
-    isEditingName: campaign.isEditingName !== false,
-    availability: campaign.availability || {},
-    unavailable: campaign.unavailable || {},
-    chosenDate: campaign.chosenDate || "",
-    sessionTime: campaign.sessionTime || "18:00",
-    sessionDuration: Number(campaign.sessionDuration || 4),
-    reminderHours: Number(campaign.reminderHours || 24),
-    memberIds: Array.isArray(campaign.memberIds) ? campaign.memberIds : [],
-    invitedEmails: Array.isArray(campaign.invitedEmails) ? campaign.invitedEmails : [],
-    inactiveMemberIds: Array.isArray(campaign.inactiveMemberIds) ? campaign.inactiveMemberIds : [],
-    updatedAt: campaign.updatedAt || new Date().toISOString()
-  };
-}
-
-function userCanSeeCampaign(user, campaign) {
-  if (!user || !campaign) return false;
-  const uid = user.id;
-  const email = normalizeEmail(user.email || "");
-  const joined = (user.campaignIds || []).includes(campaign.id);
-  const owner = campaign.ownerId === uid;
-  const dm = (campaign.dungeonMasterIds || []).includes(uid);
-  const member = (campaign.memberIds || []).includes(uid);
-  const invited = email && (campaign.invitedEmails || []).map(normalizeEmail).includes(email);
-  const inactive = (campaign.inactiveMemberIds || []).includes(uid);
-  return !inactive && (joined || owner || dm || member || invited);
-}
 
 function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
   return {
@@ -334,55 +303,6 @@ async function loadUserProfile(uid) {
   }
 }
 
-
-async function mergeUserProfilesByEmail(uid, email, profile = {}) {
-  const cleanEmail = normalizeEmail(email || profile?.email || "");
-  if (!uid || !cleanEmail) return profile || {};
-
-  let mergedProfile = {
-    ...(profile || {}),
-    id: uid,
-    email: cleanEmail,
-    linkedEmail: cleanEmail,
-    linkedProviders: Array.from(new Set([...(profile?.linkedProviders || []), ...(auth.currentUser?.providerData || []).map((item) => item.providerId)])),
-    updatedAt: new Date().toISOString()
-  };
-
-  try {
-    const snap = await getDocs(collection(db, "users"));
-    const duplicates = [];
-    snap.forEach((entry) => {
-      const data = entry.data() || {};
-      if (entry.id !== uid && normalizeEmail(data.email || data.linkedEmail || "") === cleanEmail) {
-        duplicates.push({ id: entry.id, data });
-      }
-    });
-
-    for (const duplicate of duplicates) {
-      mergedProfile = {
-        ...duplicate.data,
-        ...mergedProfile,
-        id: uid,
-        email: cleanEmail,
-        campaignIds: Array.from(new Set([...(duplicate.data.campaignIds || []), ...(mergedProfile.campaignIds || [])])),
-        lockedColorCampaignIds: Array.from(new Set([...(duplicate.data.lockedColorCampaignIds || []), ...(mergedProfile.lockedColorCampaignIds || [])])),
-        campaignCharacterNames: { ...(duplicate.data.campaignCharacterNames || {}), ...(mergedProfile.campaignCharacterNames || {}) },
-        campaignTokenImages: { ...(duplicate.data.campaignTokenImages || {}), ...(mergedProfile.campaignTokenImages || {}) },
-        linkedProviders: Array.from(new Set([...(duplicate.data.linkedProviders || []), ...(mergedProfile.linkedProviders || [])])),
-        mergedFromUserIds: Array.from(new Set([...(duplicate.data.mergedFromUserIds || []), duplicate.id, ...(mergedProfile.mergedFromUserIds || [])])),
-        updatedAt: new Date().toISOString()
-      };
-      await deleteDoc(doc(db, "users", duplicate.id)).catch((error) => console.warn("Could not delete duplicate user profile", duplicate.id, error));
-    }
-
-    await setDoc(doc(db, "users", uid), mergedProfile, { merge: true });
-  } catch (error) {
-    console.warn("Profile merge by email failed; continuing with signed-in account:", error);
-  }
-
-  return mergedProfile;
-}
-
 async function saveUserProfile(uid, profile) {
   saveCachedUserProfile(uid, profile);
   try {
@@ -489,8 +409,10 @@ export default function DungeonCalendarApp() {
   const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("dnd-calendar-remember-me") === "true");
   const [authMode, setAuthMode] = useState("login");
   const [availabilityMode, setAvailabilityMode] = useState("available");
-  const [campaigns, setCampaigns] = useState([]);
-  const [campaignsLoaded, setCampaignsLoaded] = useState(false);
+  const [campaigns, setCampaigns] = useState(() => {
+    const savedCampaigns = localStorage.getItem("dnd-calendar-campaigns");
+    return savedCampaigns ? JSON.parse(savedCampaigns) : [createCampaign()];
+  });
   const [activeCampaignId, setActiveCampaignId] = useState(() => localStorage.getItem("dnd-calendar-active-campaign") || "");
   const [newPlayer, setNewPlayer] = useState("");
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
@@ -662,7 +584,11 @@ export default function DungeonCalendarApp() {
   const activePlayer = players.find((player) => player.id === activePlayerId);
   const visibleCampaigns = useMemo(() => {
     if (!currentUser) return [];
-    return campaigns.filter((campaign) => userCanSeeCampaign(currentUser, campaign));
+    return campaigns.filter((campaign) =>
+      (currentUser.campaignIds ?? []).includes(campaign.id) ||
+      (campaign.dungeonMasterIds ?? []).includes(currentUser.id) ||
+      campaign.ownerId === currentUser.id
+    );
   }, [campaigns, currentUser]);
   const activeCampaign = visibleCampaigns.find((campaign) => campaign.id === activeCampaignId) ?? visibleCampaigns[0];
   const availability = activeCampaign?.availability ?? {};
@@ -679,8 +605,7 @@ export default function DungeonCalendarApp() {
   const activeCampaignPlayers = useMemo(() => {
     const relevantPlayers = players.filter((player) =>
       (player.campaignIds ?? []).includes(activeCampaign?.id) ||
-      activeCampaign?.dungeonMasterIds?.includes(player.id) ||
-      activeCampaign?.memberIds?.includes(player.id)
+      activeCampaign?.dungeonMasterIds?.includes(player.id)
     );
 
     return relevantPlayers.filter((player, index, list) => {
@@ -774,19 +699,6 @@ export default function DungeonCalendarApp() {
   }, [currentUserId]);
 
   useEffect(() => {
-    const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
-      const syncedCampaigns = snapshot.docs.map((item) => normalizeCampaignForFirestore({ id: item.id, ...item.data() }));
-      setCampaigns(syncedCampaigns);
-      setCampaignsLoaded(true);
-    }, (error) => {
-      console.warn("Live campaign sync failed:", error);
-      setCampaignsLoaded(true);
-    });
-
-    return () => unsubscribeCampaigns();
-  }, []);
-
-  useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
 
     // Keep campaign membership fields synced without overwriting profile settings or paid plan data.
@@ -807,16 +719,8 @@ export default function DungeonCalendarApp() {
   }, [players]);
 
   useEffect(() => {
-    if (!campaignsLoaded || !currentUserId) return;
-    campaigns.forEach((campaign) => {
-      if (!campaign?.id) return;
-      const normalized = normalizeCampaignForFirestore(campaign);
-      const canWrite = normalized.ownerId === currentUserId || (normalized.dungeonMasterIds || []).includes(currentUserId) || (normalized.memberIds || []).includes(currentUserId);
-      if (!canWrite) return;
-      setDoc(doc(db, "campaigns", normalized.id), normalized, { merge: true })
-        .catch((error) => console.warn("Failed to sync campaign to Firestore:", normalized.id, error));
-    });
-  }, [campaigns, campaignsLoaded, currentUserId]);
+    localStorage.setItem("dnd-calendar-campaigns", JSON.stringify(campaigns));
+  }, [campaigns]);
 
   useEffect(() => {
     localStorage.setItem("dnd-calendar-current-user", currentUserId);
@@ -1079,10 +983,16 @@ export default function DungeonCalendarApp() {
           plan: normalizePlan(profile?.plan || existingLocal?.plan || "free"),
           campaignIds: profile?.campaignIds || existingLocal?.campaignIds || []
         };
-        player = await mergeUserProfilesByEmail(uid, trimmedEmail, player);
       } else {
         const credential = await createUserWithEmailAndPassword(auth, trimmedEmail, loginPassword);
         uid = credential.user.uid;
+        try {
+          await sendEmailVerification(credential.user, authActionSettings);
+          setLoginError("Account created. A verification email was sent to " + trimmedEmail + ".");
+        } catch (emailError) {
+          console.warn("Email verification send failed:", emailError);
+          setLoginError("Account created, but the verification email could not be sent. You can still sign in.");
+        }
         const existingInvite = players.find((item) => normalizeEmail(item.email) === trimmedEmail);
 
         player = {
@@ -1101,7 +1011,6 @@ export default function DungeonCalendarApp() {
           lockedColorCampaignIds: existingInvite?.lockedColorCampaignIds || []
         };
 
-        player = await mergeUserProfilesByEmail(uid, trimmedEmail, player);
         await saveUserProfile(uid, player);
       }
 
@@ -1122,18 +1031,27 @@ export default function DungeonCalendarApp() {
       setPage("calendar");
       setLoginError("");
     } catch (error) {
-      if (error?.code === "auth/email-already-in-use" && auth.currentUser && normalizeEmail(auth.currentUser.email) === trimmedEmail) {
-        try {
-          const credential = EmailAuthProvider.credential(trimmedEmail, loginPassword);
-          await linkWithCredential(auth.currentUser, credential);
-          await saveUserProfile(auth.currentUser.uid, { email: trimmedEmail, linkedProviders: ["password"], updatedAt: new Date().toISOString() });
-          setLoginError("Email/password login linked to your existing account. Please log in again.");
-        } catch (linkError) {
-          setLoginError(authErrorMessage(linkError));
-        }
-      } else {
-        setLoginError(authErrorMessage(error));
-      }
+      setLoginError(authErrorMessage(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function sendPasswordResetFromLogin() {
+    const email = normalizeEmail(loginEmail);
+    if (!email) {
+      setLoginError("Enter your email address first, then select Forgot Password.");
+      return;
+    }
+
+    try {
+      setAuthBusy(true);
+      setLoginError("");
+      await sendPasswordResetEmail(auth, email, authActionSettings);
+      setLoginError("Password reset email sent to " + email + ". Check your inbox.");
+    } catch (error) {
+      console.error("Password reset email failed:", error);
+      setLoginError(authErrorMessage(error));
     } finally {
       setAuthBusy(false);
     }
@@ -1156,7 +1074,7 @@ export default function DungeonCalendarApp() {
       const profile = await loadUserProfile(uid);
       const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === email);
 
-      let player = {
+      const player = {
         ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, email),
         username: profile?.username || existingLocal?.username || displayName.toLowerCase().replace(/\s+/g, "") || email.split("@")[0] || "player",
         name: profile?.name || existingLocal?.name || displayName,
@@ -1164,12 +1082,12 @@ export default function DungeonCalendarApp() {
         color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
         plan: normalizePlan(profile?.plan || existingLocal?.plan || "free"),
         campaignIds: profile?.campaignIds || existingLocal?.campaignIds || (activeCampaign?.id ? [activeCampaign.id] : []),
-        campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {}),
-        linkedProviders: Array.from(new Set([...(profile?.linkedProviders || existingLocal?.linkedProviders || []), "google.com"]))
+        campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {})
       };
 
-      player = await mergeUserProfilesByEmail(uid, email, player);
-      await saveUserProfile(uid, player);
+      if (!profile) {
+        await saveUserProfile(uid, player);
+      }
 
       setPlayers((current) => {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
@@ -1188,25 +1106,7 @@ export default function DungeonCalendarApp() {
       setPage("calendar");
       setLoginError("");
     } catch (error) {
-      const pendingGoogleCredential = GoogleAuthProvider.credentialFromError?.(error);
-      const conflictEmail = normalizeEmail(error?.customData?.email || "");
-      if (error?.code === "auth/account-exists-with-different-credential" && pendingGoogleCredential && conflictEmail && loginPassword) {
-        try {
-          const existing = await signInWithEmailAndPassword(auth, conflictEmail, loginPassword);
-          await linkWithCredential(existing.user, pendingGoogleCredential);
-          const profile = await loadUserProfile(existing.user.uid);
-          const merged = await mergeUserProfilesByEmail(existing.user.uid, conflictEmail, profile || { email: conflictEmail, linkedProviders: ["password", "google.com"] });
-          await saveUserProfile(existing.user.uid, merged);
-          setCurrentUserId(existing.user.uid);
-          setActivePlayerId(existing.user.uid);
-          setPage("calendar");
-          setLoginError("");
-        } catch (linkError) {
-          setLoginError("Google uses the same email as an existing password account. Enter that account password in the password field, then try Continue with Google again.");
-        }
-      } else {
-        setLoginError(authErrorMessage(error));
-      }
+      setLoginError(authErrorMessage(error));
     } finally {
       setAuthBusy(false);
     }
@@ -1509,7 +1409,7 @@ export default function DungeonCalendarApp() {
       setPage("billing");
       return;
     }
-    const campaign = { ...createCampaign("", [currentUser.id], currentUser.id), memberIds: [currentUser.id] };
+    const campaign = createCampaign("", [currentUser.id], currentUser.id);
     setCampaigns((current) => [...current, campaign]);
     setPlayers((current) => current.map((player) => {
       if (player.id !== currentUser.id) return player;
@@ -1533,16 +1433,6 @@ export default function DungeonCalendarApp() {
         ? player
         : { ...player, campaignIds: [...existingCampaignIds, campaignId] };
     }));
-    setCampaigns((current) => current.map((campaign) => {
-      if (campaign.id !== campaignId) return campaign;
-      const memberIds = campaign.memberIds || [];
-      const inactiveMemberIds = (campaign.inactiveMemberIds || []).filter((id) => id !== currentUser.id);
-      return {
-        ...campaign,
-        memberIds: memberIds.includes(currentUser.id) ? memberIds : [...memberIds, currentUser.id],
-        inactiveMemberIds
-      };
-    }));
     setActiveCampaignId(campaignId);
   }
 
@@ -1563,8 +1453,7 @@ export default function DungeonCalendarApp() {
       return role === "Dungeon Master"
         ? {
             ...campaign,
-            dungeonMasterIds: currentDmIds.includes(currentUser.id) ? currentDmIds : [...currentDmIds, currentUser.id],
-            memberIds: (campaign.memberIds || []).includes(currentUser.id) ? (campaign.memberIds || []) : [...(campaign.memberIds || []), currentUser.id]
+            dungeonMasterIds: currentDmIds.includes(currentUser.id) ? currentDmIds : [...currentDmIds, currentUser.id]
           }
         : {
             ...campaign,
@@ -1603,8 +1492,6 @@ export default function DungeonCalendarApp() {
         ...campaign,
         ownerId: campaign.ownerId === currentUser.id ? "" : campaign.ownerId,
         dungeonMasterIds: removeId(campaign.dungeonMasterIds),
-        memberIds: removeId(campaign.memberIds),
-        inactiveMemberIds: [...new Set([...(campaign.inactiveMemberIds || []), currentUser.id])],
         availability: removeFromDateMap(campaign.availability),
         unavailable: removeFromDateMap(campaign.unavailable)
       };
@@ -1636,19 +1523,6 @@ export default function DungeonCalendarApp() {
     if (players.some((player) => player.name.toLowerCase() === trimmed.toLowerCase())) return;
     const player = { id: crypto.randomUUID(), role: "Player", name: trimmed, email: newPlayerEmail.trim(), password: "dndplayer", phone: newPlayerPhone.trim(), campaignIds: activeCampaign?.id ? [activeCampaign.id] : [], campaignCharacterNames: activeCampaign?.id ? { [activeCampaign.id]: "" } : {}, color: playerColors[players.length % playerColors.length] };
     setPlayers((current) => [...current, player]);
-    if (activeCampaign?.id) {
-      setCampaigns((current) => current.map((campaign) => {
-        if (campaign.id !== activeCampaign.id) return campaign;
-        const memberIds = campaign.memberIds || [];
-        const invitedEmails = campaign.invitedEmails || [];
-        const email = normalizeEmail(player.email || "");
-        return {
-          ...campaign,
-          memberIds: memberIds.includes(player.id) ? memberIds : [...memberIds, player.id],
-          invitedEmails: email && !invitedEmails.map(normalizeEmail).includes(email) ? [...invitedEmails, email] : invitedEmails
-        };
-      }));
-    }
     setNewPlayer("");
     setNewPlayerEmail("");
     setNewPlayerPhone("");
@@ -1836,7 +1710,8 @@ export default function DungeonCalendarApp() {
           setAccountMessage("This account signs in with Google. Change the login email from your Google account settings.");
           return;
         }
-        await updateEmail(auth.currentUser, nextEmail);
+        await verifyBeforeUpdateEmail(auth.currentUser, nextEmail, authActionSettings);
+        setAccountMessage("Verification email sent to " + nextEmail + ". Open that email to finish changing your login email.");
       }
 
       const updatedProfile = {
@@ -1931,11 +1806,7 @@ export default function DungeonCalendarApp() {
     setPlayers((current) => current.filter((player) => player.id !== id));
     setCampaigns((current) => current.map((campaign) => ({
       ...campaign,
-      dungeonMasterIds: (campaign.dungeonMasterIds || []).filter((playerId) => playerId !== id),
-      memberIds: (campaign.memberIds || []).filter((playerId) => playerId !== id),
-      inactiveMemberIds: [...new Set([...(campaign.inactiveMemberIds || []), id])],
-      availability: Object.fromEntries(Object.entries(campaign.availability || {}).map(([key, ids]) => [key, ids.filter((playerId) => playerId !== id)])),
-      unavailable: Object.fromEntries(Object.entries(campaign.unavailable || {}).map(([key, ids]) => [key, ids.filter((playerId) => playerId !== id)]))
+      availability: Object.fromEntries(Object.entries(campaign.availability).map(([key, ids]) => [key, ids.filter((playerId) => playerId !== id)]))
     })));
   }
 
@@ -2256,137 +2127,11 @@ export default function DungeonCalendarApp() {
             <h2 className="text-3xl font-black">Ready to start your next adventure?</h2>
             <p className="mx-auto mt-3 max-w-2xl text-zinc-300">Create a free account, invite your party, and find the best date for your next campaign session.</p>
             <Button onClick={() => navigateTo("/")} className="mt-6 rounded-xl bg-red-700 px-6 py-3 hover:bg-red-600">Create Your Free Account</Button>
-            <div className="mt-5 flex flex-wrap justify-center gap-4 text-sm text-zinc-300">
-              <button type="button" onClick={() => navigateTo("/privacy")} className="hover:text-white">Privacy Policy</button>
-              <button type="button" onClick={() => navigateTo("/terms")} className="hover:text-white">Terms of Service</button>
-            </div>
           </section>
         </main>
       </div>
     );
   }
-
-  function LegalPageShell({ title, subtitle, children }) {
-    return (
-      <div className="relative min-h-screen overflow-x-hidden text-zinc-100">
-        <AppBackground />
-        <main className="relative z-10 mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
-          <header className="flex flex-col gap-4 rounded-3xl border border-red-900/60 bg-black/60 p-5 shadow-2xl backdrop-blur md:flex-row md:items-center md:justify-between">
-            <button type="button" onClick={() => navigateTo("/")} className="text-left">
-              <DungeonCalendarLogo small />
-            </button>
-            <div className="flex flex-wrap gap-3">
-              <Button onClick={() => navigateTo("/about")} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">About</Button>
-              <Button onClick={() => navigateTo("/")} className="rounded-xl bg-red-700 hover:bg-red-600">Open App</Button>
-            </div>
-          </header>
-
-          <section className="mt-6 rounded-3xl border border-zinc-700 bg-black/70 p-6 shadow-2xl backdrop-blur sm:p-8">
-            <p className="text-sm font-bold uppercase tracking-[0.3em] text-red-300">Dungeon Calendar</p>
-            <h1 className="mt-4 text-4xl font-black leading-tight sm:text-5xl">{title}</h1>
-            <p className="mt-4 text-lg leading-8 text-zinc-300">{subtitle}</p>
-            <div className="mt-8 space-y-6 text-left text-zinc-300">
-              {children}
-            </div>
-          </section>
-        </main>
-      </div>
-    );
-  }
-
-  function PrivacyPolicyPage() {
-    return (
-      <LegalPageShell
-        title="Privacy Policy"
-        subtitle="This Privacy Policy explains how Dungeon Calendar collects, uses, stores, and protects information when you use the app and website. Last updated: June 2026."
-      >
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Information We Collect</h2>
-          <p className="mt-3 leading-7">Dungeon Calendar may collect account information such as your name, username, email address, phone number if provided, profile settings, campaign membership, character names, availability responses, campaign settings, and subscription status.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">How We Use Information</h2>
-          <ul className="mt-3 list-disc space-y-2 pl-6 leading-7">
-            <li>To create and manage user accounts.</li>
-            <li>To help Dungeon Masters and players schedule tabletop RPG sessions.</li>
-            <li>To save profile settings, campaign access, player availability, and subscription plan status.</li>
-            <li>To provide support, improve app reliability, and prevent abuse.</li>
-          </ul>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Firebase, Stripe, and Third-Party Services</h2>
-          <p className="mt-3 leading-7">Dungeon Calendar uses Firebase for authentication and cloud data storage. Subscription payments and billing are processed by Stripe. Dungeon Calendar does not store full credit card numbers on its own servers.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Data Sharing</h2>
-          <p className="mt-3 leading-7">We do not sell personal information. Information may be shared with service providers only when needed to operate Dungeon Calendar, such as Firebase for account/data services and Stripe for subscription payments.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Account Updates and Deletion</h2>
-          <p className="mt-3 leading-7">You can update profile information in User Settings. You may request help with account access, corrections, or deletion by contacting dungeoncalendarsupport@gmail.com.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Children's Privacy</h2>
-          <p className="mt-3 leading-7">Dungeon Calendar is not directed to children under 13 without appropriate parental or guardian involvement. If you believe a child has provided information improperly, contact us so we can review and respond.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Contact</h2>
-          <p className="mt-3 leading-7">For privacy questions or support requests, contact dungeoncalendarsupport@gmail.com.</p>
-        </section>
-      </LegalPageShell>
-    );
-  }
-
-  function TermsOfServicePage() {
-    return (
-      <LegalPageShell
-        title="Terms of Service"
-        subtitle="These Terms of Service describe the rules for using Dungeon Calendar. Last updated: June 2026."
-      >
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Use of Dungeon Calendar</h2>
-          <p className="mt-3 leading-7">Dungeon Calendar is a scheduling and campaign management tool for tabletop role-playing games. By using the service, you agree to use it lawfully, respectfully, and only for appropriate campaign scheduling and account management purposes.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Accounts</h2>
-          <p className="mt-3 leading-7">You are responsible for keeping your account credentials secure and for activity that occurs under your account. You agree to provide accurate account information and keep it updated.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Campaign Content</h2>
-          <p className="mt-3 leading-7">Users are responsible for campaign names, character names, availability information, invites, and other content they add to Dungeon Calendar. Do not upload or share content that is unlawful, harmful, abusive, or infringes another person's rights.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Subscriptions and Billing</h2>
-          <p className="mt-3 leading-7">Dungeon Calendar may offer free and paid subscription plans. Paid subscriptions are processed by Stripe. Subscription features, pricing, billing intervals, and cancellation options may vary by plan and may change over time.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Availability of Service</h2>
-          <p className="mt-3 leading-7">We work to keep Dungeon Calendar available and reliable, but we do not guarantee uninterrupted access. Features may be updated, changed, temporarily unavailable, or discontinued as the app improves.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Limitation of Liability</h2>
-          <p className="mt-3 leading-7">Dungeon Calendar is provided as a scheduling tool. To the fullest extent permitted by law, Dungeon Calendar is not responsible for indirect, incidental, or consequential damages related to use of the service.</p>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-5">
-          <h2 className="text-2xl font-bold text-white">Contact</h2>
-          <p className="mt-3 leading-7">For support or Terms of Service questions, contact dungeoncalendarsupport@gmail.com.</p>
-        </section>
-      </LegalPageShell>
-    );
-  }
-
 
   const Sidebar = (
     <aside className="w-full rounded-2xl border border-red-900/60 bg-black/55 p-4 shadow-[0_0_60px_rgba(0,0,0,0.7)] backdrop-blur-md sm:p-5">
@@ -2446,6 +2191,16 @@ export default function DungeonCalendarApp() {
           <div>
             <label className="text-sm text-zinc-200">Password</label>
             <input value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && login()} placeholder="Enter password" type="password" className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2" />
+            {authMode === "login" && (
+              <button
+                type="button"
+                onClick={sendPasswordResetFromLogin}
+                disabled={authBusy}
+                className="mt-2 text-sm font-semibold text-red-300 hover:text-red-200 disabled:opacity-60"
+              >
+                Forgot Password? Send reset email
+              </button>
+            )}
           </div>
 
           {authMode === "create" && (
@@ -2481,12 +2236,6 @@ export default function DungeonCalendarApp() {
           <Button onClick={() => navigateTo("/about")} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-4 text-zinc-100 hover:bg-zinc-900 hover:text-white">
             About Dungeon Calendar
           </Button>
-
-          <div className="flex flex-wrap justify-center gap-3 text-sm text-zinc-400">
-            <button type="button" onClick={() => navigateTo("/privacy")} className="hover:text-zinc-100">Privacy Policy</button>
-            <span>•</span>
-            <button type="button" onClick={() => navigateTo("/terms")} className="hover:text-zinc-100">Terms of Service</button>
-          </div>
         </div>
       ) : (
         <div className="space-y-4">
@@ -2571,12 +2320,6 @@ export default function DungeonCalendarApp() {
           </Button>
 
           <Button onClick={() => navigateTo("/about")} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-5 text-zinc-100 hover:bg-zinc-900 hover:text-white">About Dungeon Calendar</Button>
-
-          <div className="flex flex-wrap justify-center gap-3 text-sm text-zinc-400">
-            <button type="button" onClick={() => navigateTo("/privacy")} className="hover:text-zinc-100">Privacy</button>
-            <span>•</span>
-            <button type="button" onClick={() => navigateTo("/terms")} className="hover:text-zinc-100">Terms</button>
-          </div>
 
           <Button onClick={logout} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-5 text-zinc-100 hover:bg-zinc-900 hover:text-white"><LogOut className="mr-2 h-4 w-4" /> Log Out</Button>
         </div>
@@ -3822,14 +3565,6 @@ export default function DungeonCalendarApp() {
 
   if (publicRoute === "/about") {
     return AboutPage();
-  }
-
-  if (publicRoute === "/privacy") {
-    return PrivacyPolicyPage();
-  }
-
-  if (publicRoute === "/terms") {
-    return TermsOfServicePage();
   }
 
   if (!currentUser) {

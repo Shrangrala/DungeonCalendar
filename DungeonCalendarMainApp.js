@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { collection, deleteDoc, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, fetchSignInMethodsForEmail, linkWithCredential, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 import PrivacyPolicy from "./PrivacyPolicy";
@@ -332,6 +332,55 @@ async function loadUserProfile(uid) {
       return null;
     }
   }
+}
+
+
+async function mergeUserProfilesByEmail(uid, email, profile = {}) {
+  const cleanEmail = normalizeEmail(email || profile?.email || "");
+  if (!uid || !cleanEmail) return profile || {};
+
+  let mergedProfile = {
+    ...(profile || {}),
+    id: uid,
+    email: cleanEmail,
+    linkedEmail: cleanEmail,
+    linkedProviders: Array.from(new Set([...(profile?.linkedProviders || []), ...(auth.currentUser?.providerData || []).map((item) => item.providerId)])),
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    const snap = await getDocs(collection(db, "users"));
+    const duplicates = [];
+    snap.forEach((entry) => {
+      const data = entry.data() || {};
+      if (entry.id !== uid && normalizeEmail(data.email || data.linkedEmail || "") === cleanEmail) {
+        duplicates.push({ id: entry.id, data });
+      }
+    });
+
+    for (const duplicate of duplicates) {
+      mergedProfile = {
+        ...duplicate.data,
+        ...mergedProfile,
+        id: uid,
+        email: cleanEmail,
+        campaignIds: Array.from(new Set([...(duplicate.data.campaignIds || []), ...(mergedProfile.campaignIds || [])])),
+        lockedColorCampaignIds: Array.from(new Set([...(duplicate.data.lockedColorCampaignIds || []), ...(mergedProfile.lockedColorCampaignIds || [])])),
+        campaignCharacterNames: { ...(duplicate.data.campaignCharacterNames || {}), ...(mergedProfile.campaignCharacterNames || {}) },
+        campaignTokenImages: { ...(duplicate.data.campaignTokenImages || {}), ...(mergedProfile.campaignTokenImages || {}) },
+        linkedProviders: Array.from(new Set([...(duplicate.data.linkedProviders || []), ...(mergedProfile.linkedProviders || [])])),
+        mergedFromUserIds: Array.from(new Set([...(duplicate.data.mergedFromUserIds || []), duplicate.id, ...(mergedProfile.mergedFromUserIds || [])])),
+        updatedAt: new Date().toISOString()
+      };
+      await deleteDoc(doc(db, "users", duplicate.id)).catch((error) => console.warn("Could not delete duplicate user profile", duplicate.id, error));
+    }
+
+    await setDoc(doc(db, "users", uid), mergedProfile, { merge: true });
+  } catch (error) {
+    console.warn("Profile merge by email failed; continuing with signed-in account:", error);
+  }
+
+  return mergedProfile;
 }
 
 async function saveUserProfile(uid, profile) {
@@ -1030,6 +1079,7 @@ export default function DungeonCalendarApp() {
           plan: normalizePlan(profile?.plan || existingLocal?.plan || "free"),
           campaignIds: profile?.campaignIds || existingLocal?.campaignIds || []
         };
+        player = await mergeUserProfilesByEmail(uid, trimmedEmail, player);
       } else {
         const credential = await createUserWithEmailAndPassword(auth, trimmedEmail, loginPassword);
         uid = credential.user.uid;
@@ -1051,6 +1101,7 @@ export default function DungeonCalendarApp() {
           lockedColorCampaignIds: existingInvite?.lockedColorCampaignIds || []
         };
 
+        player = await mergeUserProfilesByEmail(uid, trimmedEmail, player);
         await saveUserProfile(uid, player);
       }
 
@@ -1071,7 +1122,18 @@ export default function DungeonCalendarApp() {
       setPage("calendar");
       setLoginError("");
     } catch (error) {
-      setLoginError(authErrorMessage(error));
+      if (error?.code === "auth/email-already-in-use" && auth.currentUser && normalizeEmail(auth.currentUser.email) === trimmedEmail) {
+        try {
+          const credential = EmailAuthProvider.credential(trimmedEmail, loginPassword);
+          await linkWithCredential(auth.currentUser, credential);
+          await saveUserProfile(auth.currentUser.uid, { email: trimmedEmail, linkedProviders: ["password"], updatedAt: new Date().toISOString() });
+          setLoginError("Email/password login linked to your existing account. Please log in again.");
+        } catch (linkError) {
+          setLoginError(authErrorMessage(linkError));
+        }
+      } else {
+        setLoginError(authErrorMessage(error));
+      }
     } finally {
       setAuthBusy(false);
     }
@@ -1094,7 +1156,7 @@ export default function DungeonCalendarApp() {
       const profile = await loadUserProfile(uid);
       const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === email);
 
-      const player = {
+      let player = {
         ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, email),
         username: profile?.username || existingLocal?.username || displayName.toLowerCase().replace(/\s+/g, "") || email.split("@")[0] || "player",
         name: profile?.name || existingLocal?.name || displayName,
@@ -1102,12 +1164,12 @@ export default function DungeonCalendarApp() {
         color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
         plan: normalizePlan(profile?.plan || existingLocal?.plan || "free"),
         campaignIds: profile?.campaignIds || existingLocal?.campaignIds || (activeCampaign?.id ? [activeCampaign.id] : []),
-        campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {})
+        campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {}),
+        linkedProviders: Array.from(new Set([...(profile?.linkedProviders || existingLocal?.linkedProviders || []), "google.com"]))
       };
 
-      if (!profile) {
-        await saveUserProfile(uid, player);
-      }
+      player = await mergeUserProfilesByEmail(uid, email, player);
+      await saveUserProfile(uid, player);
 
       setPlayers((current) => {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
@@ -1126,7 +1188,25 @@ export default function DungeonCalendarApp() {
       setPage("calendar");
       setLoginError("");
     } catch (error) {
-      setLoginError(authErrorMessage(error));
+      const pendingGoogleCredential = GoogleAuthProvider.credentialFromError?.(error);
+      const conflictEmail = normalizeEmail(error?.customData?.email || "");
+      if (error?.code === "auth/account-exists-with-different-credential" && pendingGoogleCredential && conflictEmail && loginPassword) {
+        try {
+          const existing = await signInWithEmailAndPassword(auth, conflictEmail, loginPassword);
+          await linkWithCredential(existing.user, pendingGoogleCredential);
+          const profile = await loadUserProfile(existing.user.uid);
+          const merged = await mergeUserProfilesByEmail(existing.user.uid, conflictEmail, profile || { email: conflictEmail, linkedProviders: ["password", "google.com"] });
+          await saveUserProfile(existing.user.uid, merged);
+          setCurrentUserId(existing.user.uid);
+          setActivePlayerId(existing.user.uid);
+          setPage("calendar");
+          setLoginError("");
+        } catch (linkError) {
+          setLoginError("Google uses the same email as an existing password account. Enter that account password in the password field, then try Continue with Google again.");
+        }
+      } else {
+        setLoginError(authErrorMessage(error));
+      }
     } finally {
       setAuthBusy(false);
     }

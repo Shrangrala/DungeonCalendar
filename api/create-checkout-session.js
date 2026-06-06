@@ -1,26 +1,25 @@
-const Stripe = require('stripe');
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2025-11-17.clover'
-});
-
 const allowedOrigins = [
-  'https://www.dungeoncalendar.com',
-  'https://dungeoncalendar.com',
-  'https://dungeoncalendarmobile.vercel.app'
+  "https://www.dungeoncalendar.com",
+  "https://dungeoncalendar.com",
+  "https://dungeoncalendarmobile.vercel.app"
 ];
 
 function setCors(req, res) {
   const origin = req.headers.origin;
 
   if (allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
+const Stripe = require('stripe');
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
+  apiVersion: '2025-11-17.clover'
+});
 
 const priceEnvByPlan = {
   adventurer: {
@@ -42,12 +41,6 @@ function getBaseUrl(req) {
 }
 
 module.exports = async function handler(req, res) {
-  setCors(req, res);
-
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed.' });
@@ -74,11 +67,11 @@ module.exports = async function handler(req, res) {
     }
 
     const baseUrl = getBaseUrl(req);
-
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
+	  allow_promotion_codes: true,
       customer_email: email || undefined,
       client_reference_id: userId,
       metadata: {

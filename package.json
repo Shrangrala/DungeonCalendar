@@ -10,7 +10,7 @@
   "dependencies": {
     "expo": "~54.0.0",
     "firebase": "^12.13.0",
-	"firebas-admin": "^12.0.0",
+	"firebas-admin": "^13.10.0",
     "lucide-react": "^1.16.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",

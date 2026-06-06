@@ -91,8 +91,8 @@ module.exports = async function handler(req, res) {
   }
 };
 
-module.exports.config = {
-  api: {
-    bodyParser: false
-  }
-};
+event = stripe.webhooks.constructEvent(
+  req.body,
+  signature,
+  process.env.STRIPE_WEBHOOK_SECRET
+);

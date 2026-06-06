@@ -41,12 +41,6 @@ function getBaseUrl(req) {
 }
 
 module.exports = async function handler(req, res) {
-  setCors(req, res);
-
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed.' });
@@ -75,7 +69,9 @@ module.exports = async function handler(req, res) {
     const baseUrl = getBaseUrl(req);
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      payment_method_types: ['card'],
+      automatic_payment_methods: {
+        enabled: true
+      },
       line_items: [{ price: priceId, quantity: 1 }],
 	  allow_promotion_codes: true,
       customer_email: email || undefined,
@@ -94,7 +90,7 @@ module.exports = async function handler(req, res) {
         }
       },
       success_url: `${baseUrl}/?stripe_success=true&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/?stripe_cancelled=true`
+      cancel_url: `${baseUrl}/?stripe_cancelled=true&checkout_cancelled=true`,
     });
 
     return res.status(200).json({ url: session.url });

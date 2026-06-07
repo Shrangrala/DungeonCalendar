@@ -79,9 +79,13 @@ module.exports = async function handler(req, res) {
     const baseUrl = getBaseUrl(req);
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      automatic_payment_methods: {
-        enabled: true
-      },
+      payment_method_types: [
+        'card',
+        'link',
+        'us_bank_account',
+        'cashapp',
+        'amazon_pay'
+      ],
       line_items: [{ price: priceId, quantity: 1 }],
 	  allow_promotion_codes: true,
       customer_email: email || undefined,

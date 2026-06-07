@@ -1206,12 +1206,12 @@ export default function DungeonCalendarApp() {
 
   const stripePaymentLinks = {
     adventurer: {
-      monthly: "https://buy.stripe.com/9B68wPb7s55jcGn7XE6Ri01",
-      yearly: "https://buy.stripe.com/9B6cN53F0fJXayfcdU6Ri03"
+      monthly: "https://buy.stripe.com/3cI9ATfnI69nayf91I6Ri07",
+      yearly: "https://buy.stripe.com/bJe28r1wS55jdKr4Ls6Ri06"
     },
     guildmaster: {
-      monthly: "https://buy.stripe.com/8x28wP0sO8hvbCja5M6Ri00",
-      yearly: "https://buy.stripe.com/cNi5kDfnI2Xb9ub2Dk6Ri02"
+      monthly: "https://buy.stripe.com/6oU28r8Zk41fayffq66Ri05",
+      yearly: "https://buy.stripe.com/28E9AT8ZkeFT0XF5Pw6Ri04"
     }
   };
 

@@ -93,13 +93,10 @@ function classNames(...parts) {
   return parts.filter(Boolean).join(" ");
 }
 
-function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isDungeonMaster = false }) {
-  if (isChosenDate) return "bg-emerald-500 text-black ring-4 ring-emerald-200 shadow-[0_0_28px_rgba(52,211,153,0.75)]";
-  if (hasDungeonMasterAvailable) return "bg-emerald-500 text-black ring-2 ring-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.65)]";
+function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isScheduledSessionDate = false, isDungeonMaster = false }) {
+  if (isChosenDate || isScheduledSessionDate) return "bg-amber-400 text-black ring-4 ring-amber-200 shadow-[0_0_28px_rgba(251,191,36,0.75)]";
   if (hasDungeonMasterUnavailable) return "bg-red-600 text-white ring-2 ring-red-200 shadow-[0_0_22px_rgba(239,68,68,0.65)]";
-  if (selectedByActive) return "bg-emerald-600 text-white ring-2 ring-emerald-300 shadow-[0_0_18px_rgba(16,185,129,0.5)]";
   if (unavailableByActive) return "bg-red-700 text-white ring-2 ring-red-300 shadow-[0_0_18px_rgba(220,38,38,0.5)]";
-  if (isDungeonMaster && ids.length > 0) return "bg-emerald-700/80 text-white ring-1 ring-emerald-400/70";
   if (isDungeonMaster && unavailableIds.length > 0) return "bg-red-800/80 text-white ring-1 ring-red-400/70";
   return "bg-zinc-950/65";
 }
@@ -634,13 +631,24 @@ export default function DungeonCalendarApp() {
   function buildRecurringSessionDates(startKey, frequency, count) {
     if (!startKey) return [];
     const safeCount = Math.min(52, Math.max(1, Number(count) || 1));
-    const dayStep = frequency === "monthly" ? 0 : frequency === "biweekly" ? 14 : 7;
+    const dayStep = frequency === "biweekly" ? 14 : 7;
     const start = new Date(`${startKey}T00:00:00`);
+    const selectedWeekday = start.getDay();
+    const selectedWeekOfMonth = Math.floor((start.getDate() - 1) / 7);
+
+    function sameWeekdayInMonth(monthIndex) {
+      const firstOfMonth = new Date(start.getFullYear(), start.getMonth() + monthIndex, 1);
+      const firstMatchingDay = 1 + ((selectedWeekday - firstOfMonth.getDay() + 7) % 7);
+      let dayOfMonth = firstMatchingDay + selectedWeekOfMonth * 7;
+      const daysInTargetMonth = new Date(firstOfMonth.getFullYear(), firstOfMonth.getMonth() + 1, 0).getDate();
+      if (dayOfMonth > daysInTargetMonth) dayOfMonth -= 7;
+      return new Date(firstOfMonth.getFullYear(), firstOfMonth.getMonth(), dayOfMonth);
+    }
 
     return Array.from({ length: safeCount }, (_, index) => {
+      if (frequency === "monthly") return dateKey(sameWeekdayInMonth(index));
       const next = new Date(start);
-      if (frequency === "monthly") next.setMonth(start.getMonth() + index);
-      else next.setDate(start.getDate() + dayStep * index);
+      next.setDate(start.getDate() + dayStep * index);
       return dateKey(next);
     });
   }
@@ -2531,14 +2539,13 @@ export default function DungeonCalendarApp() {
                       "border-r border-t border-zinc-800 text-left transition",
                       isDungeonMaster || hasDungeonMasterAvailable ? "hover:bg-zinc-900" : "cursor-not-allowed opacity-35",
                       date.getMonth() !== viewDate.getMonth() && "text-zinc-600",
-                      dateVisualState({ ids, unavailableIds, selectedByActive, unavailableByActive, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isDungeonMaster })
+                      dateVisualState({ ids, unavailableIds, selectedByActive, unavailableByActive, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isScheduledSessionDate, isDungeonMaster })
                     )}
                   >
-                    <div className="flex items-start justify-between"><span className="font-semibold">{date.getDate()}</span>{(hasDungeonMasterAvailable || hasDungeonMasterUnavailable || isChosenDate) && <Shield className="h-4 w-4" />}</div>
-                    {!compact && hasDungeonMasterAvailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-emerald-100 sm:block">DM available</div>}
+                    <div className="flex items-start justify-between"><span className="font-semibold">{date.getDate()}</span>{(hasDungeonMasterUnavailable || isChosenDate || isScheduledSessionDate) && <Shield className="h-4 w-4" />}</div>
                     {!compact && hasDungeonMasterUnavailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-red-100 sm:block">DM not available</div>}
                     {!compact && !isDungeonMaster && !hasDungeonMasterAvailable && !hasDungeonMasterUnavailable && <div className="mt-4 hidden text-xs font-semibold text-zinc-400 sm:block">Waiting for DM</div>}
-                    {!compact && isChosenDate && <div className="mt-2 rounded-md bg-emerald-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
+                    {!compact && isChosenDate && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
                     {!compact && !isChosenDate && isScheduledSessionDate && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Scheduled</div>}
                     {!compact && visibleUnavailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleUnavailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-red-950/60 px-1.5 py-1 text-[11px] font-semibold text-red-100"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM not available" : isDungeonMaster ? `${player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name} unavailable` : "You unavailable"}</span></div> : null; })}</div>}
                     {!compact && visibleAvailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleAvailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-black/35 px-1.5 py-1 text-[11px] font-semibold text-white"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM available" : isDungeonMaster ? player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name : "You available"}</span></div> : null; })}</div>}
@@ -3425,7 +3432,7 @@ export default function DungeonCalendarApp() {
                   className={classNames(
                     "aspect-square rounded-xl border border-zinc-800 p-2 text-left text-sm font-bold transition hover:scale-105",
                     date.getMonth() !== viewDate.getMonth() && "opacity-35",
-                    dateVisualState({ ids, unavailableIds, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isDungeonMaster })
+                    dateVisualState({ ids, unavailableIds, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isScheduledSessionDate: sessionScheduleDates.includes(key), isDungeonMaster })
                   )}
                 >
                   <div className="flex items-center justify-between">

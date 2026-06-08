@@ -478,6 +478,7 @@ export default function DungeonCalendarApp() {
   const [stripeAutoVerifyAttempted, setStripeAutoVerifyAttempted] = useState(false);
   const [stripeLoginVerifyUserId, setStripeLoginVerifyUserId] = useState("");
   const [publicRoute, setPublicRoute] = useState(() => typeof window !== "undefined" ? window.location.pathname : "/");
+  const lastSavedCampaignContentKeyRef = useRef("");
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 

@@ -3062,6 +3062,19 @@ export default function DungeonCalendarApp() {
               </div>
 
               <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
+                <p className="font-bold text-zinc-100">Legal</p>
+                <p className="mt-2 text-sm text-zinc-400">Review Dungeon Calendar's Privacy Policy and Terms of Service.</p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Button onClick={() => window.open("/privacy", "_blank", "noopener,noreferrer")} variant="ghost" className="rounded-xl border border-zinc-700 text-zinc-100 hover:bg-zinc-900">
+                    Privacy Policy
+                  </Button>
+                  <Button onClick={() => window.open("/terms", "_blank", "noopener,noreferrer")} variant="ghost" className="rounded-xl border border-zinc-700 text-zinc-100 hover:bg-zinc-900">
+                    Terms of Service
+                  </Button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
                 <p className="font-bold text-zinc-100">Delete Account</p>
                 <p className="mt-2 text-sm text-zinc-400">Permanently removes your account and availability from campaigns where you are not the Dungeon Master.</p>
                 <Button onClick={() => setShowDeleteConfirm(true)} variant="ghost" className="mt-4 rounded-xl border border-red-800 text-red-200 hover:bg-red-950 hover:text-white">

@@ -36,7 +36,7 @@ const navItems = [
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "players", label: "Players", icon: Users },
   { id: "results", label: "Results", icon: BarChart3 },
-  { id: "settings", label: "Settings", icon: Settings }
+  { id: "settings", label: "Campaign Settings", icon: Settings }
 ];
 
 const playerColors = [
@@ -328,37 +328,6 @@ async function saveUserProfileRequired(uid, profile) {
   }
 }
 
-async function ensureUserProfileDocument(uid, authUser, fallbackProfile = {}) {
-  if (!uid || auth.currentUser?.uid !== uid) return null;
-
-  const existing = await loadUserProfile(uid);
-  if (existing) return existing;
-
-  const email = normalizeEmail(authUser?.email || fallbackProfile.email || "");
-  const displayName = authUser?.displayName || fallbackProfile.name || email.split("@")[0] || "Adventurer";
-  const now = new Date().toISOString();
-  const profile = {
-    id: uid,
-    role: fallbackProfile.role || "Player",
-    username: fallbackProfile.username || displayName.toLowerCase().replace(/\s+/g, ""),
-    name: displayName,
-    email,
-    phone: fallbackProfile.phone || "",
-    campaignIds: fallbackProfile.campaignIds || [],
-    campaignCharacterNames: fallbackProfile.campaignCharacterNames || {},
-    campaignTokenImages: fallbackProfile.campaignTokenImages || {},
-    lockedColorCampaignIds: fallbackProfile.lockedColorCampaignIds || [],
-    color: fallbackProfile.color || "",
-    plan: normalizePlan(fallbackProfile.plan || "free"),
-    billingInterval: normalizeBillingInterval(fallbackProfile.billingInterval || "monthly"),
-    createdAt: fallbackProfile.createdAt || now,
-    updatedAt: now
-  };
-
-  await saveUserProfileRequired(uid, profile);
-  return profile;
-}
-
 async function saveUserProfileQuick(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
   saveCachedUserProfile(uid, profile);
@@ -626,6 +595,15 @@ export default function DungeonCalendarApp() {
   const sessionTime = activeCampaign?.sessionTime ?? "18:00";
   const sessionDuration = activeCampaign?.sessionDuration ?? 4;
   const reminderHours = activeCampaign?.reminderHours ?? 24;
+  const sessionAmPm = Number((sessionTime || "18:00").split(":")[0]) >= 12 ? "PM" : "AM";
+
+  function updateSessionAmPm(value) {
+    const [hourText = "18", minuteText = "00"] = (sessionTime || "18:00").split(":");
+    let hour = Number(hourText);
+    if (value === "AM" && hour >= 12) hour -= 12;
+    if (value === "PM" && hour < 12) hour += 12;
+    updateActiveCampaign(() => ({ sessionTime: `${String(hour).padStart(2, "0")}:${minuteText}` }));
+  }
   const isDungeonMaster = !!currentUser && !!activeCampaign?.dungeonMasterIds?.includes(currentUser.id);
   const activeCampaignRole = isDungeonMaster ? "Dungeon Master" : "Player";
   const activeCampaignPlayers = useMemo(() => {
@@ -670,10 +648,10 @@ export default function DungeonCalendarApp() {
       }
 
       try {
+        const profile = await loadUserProfile(user.uid);
         const localMatch = players.find((player) =>
           player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
         );
-        const profile = await ensureUserProfileDocument(user.uid, user, localMatch || {});
         const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
         setPlan(normalizePlan(profile?.plan || localMatch?.plan || firebasePlayer.plan || "free"));
         setBillingInterval(normalizeBillingInterval(profile?.billingInterval || localMatch?.billingInterval || firebasePlayer.billingInterval || "monthly"));
@@ -1091,11 +1069,7 @@ export default function DungeonCalendarApp() {
           lockedColorCampaignIds: existingInvite?.lockedColorCampaignIds || []
         };
 
-        await saveUserProfileRequired(uid, {
-          ...player,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        });
+        await saveUserProfile(uid, player);
       }
 
       setPlayers((current) => {
@@ -1241,12 +1215,12 @@ export default function DungeonCalendarApp() {
 
   const stripePaymentLinks = {
     adventurer: {
-      monthly: "https://buy.stripe.com/3cI9ATfnI69nayf91I6Ri07",
-      yearly: "https://buy.stripe.com/bJe28r1wS55jdKr4Ls6Ri06"
+      monthly: "https://buy.stripe.com/9B68wPb7s55jcGn7XE6Ri01",
+      yearly: "https://buy.stripe.com/9B6cN53F0fJXayfcdU6Ri03"
     },
     guildmaster: {
-      monthly: "https://buy.stripe.com/6oU28r8Zk41fayffq66Ri05",
-      yearly: "https://buy.stripe.com/28E9AT8ZkeFT0XF5Pw6Ri04"
+      monthly: "https://buy.stripe.com/8x28wP0sO8hvbCja5M6Ri00",
+      yearly: "https://buy.stripe.com/cNi5kDfnI2Xb9ub2Dk6Ri02"
     }
   };
 
@@ -1432,40 +1406,16 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const confirmed = window.confirm("Cancel your current paid membership in Stripe and switch to the Free plan?");
+    const confirmed = window.confirm("Cancel your current paid membership and switch to the Free plan?");
     if (!confirmed) return;
 
     try {
-      setBillingMessage("Cancelling Stripe subscription...");
-      const idToken = await auth.currentUser?.getIdToken(true);
-      if (!idToken) throw new Error("Sign in again before cancelling your subscription.");
-
-      const response = await fetch("/api/cancel-stripe-subscription", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${idToken}`
-        },
-        body: JSON.stringify({
-          subscriptionId: currentUser?.stripeSubscriptionId || "",
-          customerId: currentUser?.stripeCustomerId || "",
-          email: currentUser?.email || auth.currentUser?.email || ""
-        })
-      });
-
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || "Stripe subscription cancellation failed.");
-
-      await persistPlan("free", "monthly", {
-        stripeSubscriptionStatus: payload.status || "canceled",
-        stripeCancelledAt: new Date().toISOString(),
-        stripeCancellationSource: "app_cancel_button"
-      });
+      await persistPlan("free", "monthly");
       setSelectedPaymentPlan("");
-      setBillingMessage("Stripe subscription cancelled. Free plan is now active.");
-      setAccountMessage("Stripe subscription cancelled. You are now on the Free plan.");
+      setBillingMessage("Membership cancelled. Free plan is now active.");
+      setAccountMessage("Membership cancelled. You are now on the Free plan.");
     } catch (error) {
-      const message = error?.message || profileSaveErrorMessage(error);
+      const message = profileSaveErrorMessage(error);
       setBillingMessage(message);
       setAccountMessage(message);
     }
@@ -3106,7 +3056,59 @@ export default function DungeonCalendarApp() {
   }
 
   function SettingsPage() {
-    return <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="space-y-5 p-6"><h2 className="text-2xl font-bold">Campaign Settings</h2>{isDungeonMaster && <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><label className="text-sm text-zinc-300">Campaign Name</label>{isEditingCampaignName ? <><input value={campaignName} onChange={(event) => updateActiveCampaign(() => ({ name: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && updateActiveCampaign(() => ({ isEditingName: false }))} placeholder="Enter campaign name" className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3" /><Button onClick={() => updateActiveCampaign(() => ({ isEditingName: false }))} className="mt-3 rounded-xl bg-red-700 hover:bg-red-600">Save Campaign Name</Button></> : <div className="mt-3 flex items-center justify-between rounded-xl border border-zinc-700 bg-black/40 px-4 py-3"><span className="text-lg font-bold">{campaignName || "Unnamed Campaign"}</span><Button onClick={() => updateActiveCampaign(() => ({ isEditingName: true }))} variant="ghost" className="border border-zinc-700 hover:bg-zinc-900">Edit</Button></div>}</div>}<div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><h3 className="font-bold">Session Defaults</h3><div className="mt-3 grid gap-3 md:grid-cols-3"><input type="time" value={sessionTime} onChange={(event) => updateActiveCampaign(() => ({ sessionTime: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" /><input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" /><select value={reminderHours} onChange={(event) => updateActiveCampaign(() => ({ reminderHours: event.target.value }))} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2"><option value={1}>1 hour reminder</option><option value={6}>6 hours</option><option value={12}>12 hours</option><option value={24}>24 hours</option><option value={48}>2 days</option></select></div></div></CardContent></Card>;
+    return (
+      <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
+        <CardContent className="space-y-5 p-6">
+          <h2 className="text-2xl font-bold">Campaign Settings</h2>
+          {isDungeonMaster && (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+              <label className="text-sm text-zinc-300">Campaign Name</label>
+              {isEditingCampaignName ? (
+                <>
+                  <input value={campaignName} onChange={(event) => updateActiveCampaign(() => ({ name: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && updateActiveCampaign(() => ({ isEditingName: false }))} placeholder="Enter campaign name" className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3" />
+                  <Button onClick={() => updateActiveCampaign(() => ({ isEditingName: false }))} className="mt-3 rounded-xl bg-red-700 hover:bg-red-600">Save Campaign Name</Button>
+                </>
+              ) : (
+                <div className="mt-3 flex items-center justify-between rounded-xl border border-zinc-700 bg-black/40 px-4 py-3">
+                  <span className="text-lg font-bold">{campaignName || "Unnamed Campaign"}</span>
+                  <Button onClick={() => updateActiveCampaign(() => ({ isEditingName: true }))} variant="ghost" className="border border-zinc-700 hover:bg-zinc-900">Edit</Button>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+            <h3 className="font-bold">Session Defaults</h3>
+            <div className="mt-3 grid gap-3 md:grid-cols-4">
+              <label className="space-y-1">
+                <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Start Time</span>
+                <input type="time" value={sessionTime} onChange={(event) => updateActiveCampaign(() => ({ sessionTime: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">AM / PM</span>
+                <select value={sessionAmPm} onChange={(event) => updateSessionAmPm(event.target.value)} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2">
+                  <option value="AM">AM</option>
+                  <option value="PM">PM</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Duration</span>
+                <input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Reminder</span>
+                <select value={reminderHours} onChange={(event) => updateActiveCampaign(() => ({ reminderHours: event.target.value }))} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2">
+                  <option value={1}>1 hour reminder</option>
+                  <option value={6}>6 hours</option>
+                  <option value={12}>12 hours</option>
+                  <option value={24}>24 hours</option>
+                  <option value={48}>2 days</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
   }
 
   function UpcomingSession() {

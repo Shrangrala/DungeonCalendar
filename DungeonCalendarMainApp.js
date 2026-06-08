@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { deleteField, doc, getDoc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
@@ -599,7 +599,10 @@ export default function DungeonCalendarApp() {
   const reminderHours = activeCampaign?.reminderHours ?? 24;
   const recurringSessionFrequency = activeCampaign?.recurringSessionFrequency ?? "weekly";
   const recurringSessionCount = Number(activeCampaign?.recurringSessionCount ?? 5);
-  const sessionScheduleDates = Array.isArray(activeCampaign?.sessionScheduleDates) ? activeCampaign.sessionScheduleDates : [];
+  const generatedSessionDates = Array.isArray(activeCampaign?.generatedSessionDates) ? activeCampaign.generatedSessionDates : [];
+  const generatedAvailabilityDates = Array.isArray(activeCampaign?.generatedAvailabilityDates) ? activeCampaign.generatedAvailabilityDates : [];
+  const sessionScheduleDates = Array.isArray(activeCampaign?.sessionScheduleDates) ? activeCampaign.sessionScheduleDates : generatedSessionDates;
+  const hasGeneratedSessionDates = sessionScheduleDates.length > 0 || generatedSessionDates.length > 0 || generatedAvailabilityDates.length > 0;
   const sessionAmPm = Number((sessionTime || "18:00").split(":")[0]) >= 12 ? "PM" : "AM";
   const sessionClockTime = (() => {
     const [hourText = "18", minuteText = "00"] = (sessionTime || "18:00").split(":");
@@ -716,52 +719,64 @@ export default function DungeonCalendarApp() {
       : [];
     const nextAvailability = { ...(activeCampaign.availability || {}) };
     const nextUnavailable = { ...(activeCampaign.unavailable || {}) };
-    const firestoreDeletes = {
+    const firestorePatch = {
       sessionScheduleDates: deleteField(),
       generatedSessionDates: deleteField(),
       generatedAvailabilityDates: deleteField(),
       updatedAt: new Date().toISOString()
     };
 
+    // Only remove availability that this feature auto-added. Dates the DM manually marked
+    // before generating the recurring schedule are not listed in generatedAvailabilityDates,
+    // so they remain in Results and stay synced to Firestore.
     generatedAvailabilityDates.forEach((key) => {
       if (!dmId) return;
 
       const availableIds = Array.isArray(nextAvailability[key]) ? nextAvailability[key] : [];
-      const nextAvailableIds = availableIds.filter((id) => id !== dmId);
-      if (nextAvailableIds.length > 0) {
-        nextAvailability[key] = nextAvailableIds;
-        firestoreDeletes[`availability.${key}`] = nextAvailableIds;
-      } else {
-        delete nextAvailability[key];
-        firestoreDeletes[`availability.${key}`] = deleteField();
+      if (availableIds.includes(dmId)) {
+        const nextAvailableIds = availableIds.filter((id) => id !== dmId);
+        if (nextAvailableIds.length > 0) {
+          nextAvailability[key] = nextAvailableIds;
+          firestorePatch[`availability.${key}`] = nextAvailableIds;
+        } else {
+          delete nextAvailability[key];
+          firestorePatch[`availability.${key}`] = deleteField();
+        }
       }
 
       const unavailableIds = Array.isArray(nextUnavailable[key]) ? nextUnavailable[key] : [];
-      const nextUnavailableIds = unavailableIds.filter((id) => id !== dmId);
-      if (nextUnavailableIds.length !== unavailableIds.length) {
+      if (unavailableIds.includes(dmId)) {
+        const nextUnavailableIds = unavailableIds.filter((id) => id !== dmId);
         if (nextUnavailableIds.length > 0) {
           nextUnavailable[key] = nextUnavailableIds;
-          firestoreDeletes[`unavailable.${key}`] = nextUnavailableIds;
+          firestorePatch[`unavailable.${key}`] = nextUnavailableIds;
         } else {
           delete nextUnavailable[key];
-          firestoreDeletes[`unavailable.${key}`] = deleteField();
+          firestorePatch[`unavailable.${key}`] = deleteField();
         }
       }
     });
 
-    const nextChosenDate = generatedSessionDates.includes(activeCampaign.chosenDate) ? "" : (activeCampaign.chosenDate || "");
-    if (!nextChosenDate) firestoreDeletes.chosenDate = deleteField();
+    const activeChosenDate = activeCampaign.chosenDate || "";
+    const nextChosenDate = generatedSessionDates.includes(activeChosenDate) ? "" : activeChosenDate;
+    if (!nextChosenDate) firestorePatch.chosenDate = deleteField();
 
-    updateActiveCampaign(() => ({
-      sessionScheduleDates: [],
-      generatedSessionDates: [],
-      generatedAvailabilityDates: [],
-      chosenDate: nextChosenDate,
-      availability: nextAvailability,
-      unavailable: nextUnavailable
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== activeCampaign.id) return campaign;
+      const nextCampaign = {
+        ...campaign,
+        availability: nextAvailability,
+        unavailable: nextUnavailable,
+        chosenDate: nextChosenDate,
+        updatedAt: new Date().toISOString()
+      };
+      delete nextCampaign.sessionScheduleDates;
+      delete nextCampaign.generatedSessionDates;
+      delete nextCampaign.generatedAvailabilityDates;
+      return nextCampaign;
     }));
 
-    updateDoc(doc(db, "campaigns", activeCampaign.id), firestoreDeletes).catch((error) => {
+    updateDoc(doc(db, "campaigns", activeCampaign.id), firestorePatch).catch((error) => {
       console.warn("Failed to remove generated session dates from Firestore:", error);
     });
   }
@@ -3316,9 +3331,9 @@ export default function DungeonCalendarApp() {
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   <Button onClick={scheduleRecurringSessions} className="rounded-xl bg-amber-700 hover:bg-amber-600">Generate Session Dates</Button>
-                  {sessionScheduleDates.length > 0 && <Button onClick={clearRecurringSessionSchedule} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">Clear Generated Dates</Button>}
+                  {hasGeneratedSessionDates && <Button onClick={clearRecurringSessionSchedule} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">Clear Generated Dates</Button>}
                 </div>
-                {sessionScheduleDates.length > 0 && (
+                {hasGeneratedSessionDates && (
                   <div className="mt-4 rounded-xl border border-zinc-800 bg-black/35 p-3">
                     <p className="text-xs font-bold uppercase tracking-wide text-zinc-400">Scheduled Session Dates</p>
                     <div className="mt-2 flex flex-wrap gap-2">

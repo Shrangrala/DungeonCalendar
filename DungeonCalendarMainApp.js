@@ -34,7 +34,6 @@ const dungeonMasterId = "dungeon-master";
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: Home },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
-  { id: "players", label: "Players", icon: Users },
   { id: "results", label: "Results", icon: BarChart3 },
   { id: "settings", label: "Campaign Settings", icon: Settings }
 ];
@@ -596,6 +595,22 @@ export default function DungeonCalendarApp() {
   const sessionDuration = activeCampaign?.sessionDuration ?? 4;
   const reminderHours = activeCampaign?.reminderHours ?? 24;
   const sessionAmPm = Number((sessionTime || "18:00").split(":")[0]) >= 12 ? "PM" : "AM";
+  const sessionClockTime = (() => {
+    const [hourText = "18", minuteText = "00"] = (sessionTime || "18:00").split(":");
+    const hour24 = Number(hourText);
+    const hour12 = hour24 % 12 || 12;
+    return `${String(hour12).padStart(2, "0")}:${minuteText.padStart(2, "0").slice(0, 2)}`;
+  })();
+
+  function updateSessionClockTime(value) {
+    const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return;
+    let hour12 = Math.min(12, Math.max(1, Number(match[1])));
+    let minute = Math.min(59, Math.max(0, Number(match[2])));
+    let hour24 = hour12 % 12;
+    if (sessionAmPm === "PM") hour24 += 12;
+    updateActiveCampaign(() => ({ sessionTime: `${String(hour24).padStart(2, "0")}:${String(minute).padStart(2, "0")}` }));
+  }
 
   function updateSessionAmPm(value) {
     const [hourText = "18", minuteText = "00"] = (sessionTime || "18:00").split(":");
@@ -3057,6 +3072,7 @@ export default function DungeonCalendarApp() {
 
   function SettingsPage() {
     return (
+      <>
       <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
         <CardContent className="space-y-5 p-6">
           <h2 className="text-2xl font-bold">Campaign Settings</h2>
@@ -3081,7 +3097,7 @@ export default function DungeonCalendarApp() {
             <div className="mt-3 grid gap-3 md:grid-cols-4">
               <label className="space-y-1">
                 <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Start Time</span>
-                <input type="time" value={sessionTime} onChange={(event) => updateActiveCampaign(() => ({ sessionTime: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+                <input type="text" inputMode="numeric" placeholder="06:00" defaultValue={sessionClockTime} key={`session-time-${sessionTime}`} onBlur={(event) => updateSessionClockTime(event.target.value)} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
               </label>
               <label className="space-y-1">
                 <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">AM / PM</span>
@@ -3108,6 +3124,8 @@ export default function DungeonCalendarApp() {
           </div>
         </CardContent>
       </Card>
+      {isDungeonMaster && <div className="mt-5"><PlayersPage /></div>}
+      </>
     );
   }
 
@@ -3344,7 +3362,6 @@ export default function DungeonCalendarApp() {
   function QuickActions() {
     const actions = [
       { label: "Calendar", description: "Open the calendar and mark availability.", icon: CalendarDays, target: "calendar" },
-      ...(isDungeonMaster ? [{ label: "Manage Players", description: "Invite, text, email, or remove players.", icon: Users, target: "players" }] : []),
       { label: "View all Results", description: "Compare every proposed date.", icon: BarChart3, target: "results" },
       ...(isDungeonMaster ? [{ label: "Campaign Settings", description: "Edit campaign and reminder settings.", icon: Settings, target: "settings" }] : [])
     ];
@@ -3634,7 +3651,7 @@ export default function DungeonCalendarApp() {
   function PageContent() {
     if (page === "dashboard") return DashboardPage();
     if (page === "calendar") return CalendarGrid();
-    if (page === "players") return PlayersPage();
+    if (page === "players") return isDungeonMaster ? SettingsPage() : DashboardPage();
     if (page === "results") return ResultsPage();
     if (page === "settings") return SettingsPage();
     if (page === "account") return AccountSettingsPage();

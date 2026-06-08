@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
-import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
-import app, { auth, db } from "./firebase";
+import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
@@ -31,18 +30,6 @@ function CardContent({ children, className = "" }) {
 const dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const dungeonMasterId = "dungeon-master";
-const firebaseStorage = getStorage(app);
-const TOKEN_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
-
-function sanitizeTokenFileName(name = "token") {
-  return String(name || "token").replace(/[^a-zA-Z0-9._-]/g, "-").slice(-80) || "token";
-}
-
-function getTokenImageSrc(tokenImage) {
-  if (!tokenImage) return "";
-  if (typeof tokenImage === "string") return tokenImage;
-  return tokenImage.url || tokenImage.downloadURL || "";
-}
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: Home },
@@ -83,62 +70,6 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
     sessionDuration: 4,
     reminderHours: 24
   };
-}
-
-function normalizeList(values = []) {
-  return Array.isArray(values) ? values.filter(Boolean) : [];
-}
-
-function normalizeCampaignForSync(campaign = {}) {
-  const id = campaign.id || crypto.randomUUID();
-  const dungeonMasterIds = normalizeList(campaign.dungeonMasterIds || campaign.dmIds || []);
-  const memberIds = Array.from(new Set([...dungeonMasterIds, ...normalizeList(campaign.memberIds || campaign.members || campaign.playerIds || [])]));
-  return {
-    id,
-    ownerId: campaign.ownerId || campaign.createdBy || campaign.dmId || dungeonMasterIds[0] || "",
-    dungeonMasterIds,
-    memberIds,
-    invitedEmails: normalizeList(campaign.invitedEmails || []),
-    leftUserIds: normalizeList(campaign.leftUserIds || campaign.removedUserIds || []),
-    archived: !!campaign.archived,
-    deleted: !!campaign.deleted,
-    status: campaign.status || "active",
-    name: campaign.name || "Unnamed Campaign",
-    isEditingName: !!campaign.isEditingName,
-    availability: campaign.availability || {},
-    unavailable: campaign.unavailable || {},
-    chosenDate: campaign.chosenDate || "",
-    sessionTime: campaign.sessionTime || "18:00",
-    sessionDuration: campaign.sessionDuration || 4,
-    reminderHours: campaign.reminderHours || 24,
-    updatedAt: campaign.updatedAt || new Date().toISOString()
-  };
-}
-
-function campaignBelongsToUser(campaign, user) {
-  if (!campaign || !user) return false;
-  const normalized = normalizeCampaignForSync(campaign);
-  const uid = user.id || "";
-  const email = normalizeEmail(user.email || "");
-  if (normalized.deleted || normalized.archived || ["inactive", "deleted", "archived"].includes(normalized.status)) return false;
-  if (normalized.leftUserIds.includes(uid)) return false;
-  return normalized.ownerId === uid ||
-    normalized.dungeonMasterIds.includes(uid) ||
-    normalized.memberIds.includes(uid) ||
-    (user.campaignIds || []).includes(normalized.id) ||
-    (!!email && normalized.invitedEmails.map(normalizeEmail).includes(email));
-}
-
-async function saveCampaignToFirestore(campaign) {
-  if (!campaign?.id) return false;
-  try {
-    const normalized = normalizeCampaignForSync({ ...campaign, updatedAt: new Date().toISOString() });
-    await setDoc(doc(db, "campaigns", normalized.id), normalized, { merge: true });
-    return true;
-  } catch (error) {
-    console.warn("Firestore campaign save failed; local state will still update:", error);
-    return false;
-  }
 }
 
 function dateKey(date) {
@@ -200,7 +131,7 @@ function AppBackground() {
 function PlayerToken({ player, campaignId = "", size = "sm", className = "" }) {
   const sizeClass = size === "xl" ? "h-16 w-16" : size === "lg" ? "h-12 w-12" : size === "md" ? "h-9 w-9" : "h-6 w-6";
   const campaignTokenImage = campaignId ? player?.campaignTokenImages?.[campaignId] : "";
-  const tokenImage = getTokenImageSrc(campaignTokenImage || player?.tokenImage);
+  const tokenImage = campaignTokenImage || player?.tokenImage;
 
   if (tokenImage) {
     return (
@@ -395,6 +326,37 @@ async function saveUserProfileRequired(uid, profile) {
     await saveUserProfileViaRest(uid, profile);
     return true;
   }
+}
+
+async function ensureUserProfileDocument(uid, authUser, fallbackProfile = {}) {
+  if (!uid || auth.currentUser?.uid !== uid) return null;
+
+  const existing = await loadUserProfile(uid);
+  if (existing) return existing;
+
+  const email = normalizeEmail(authUser?.email || fallbackProfile.email || "");
+  const displayName = authUser?.displayName || fallbackProfile.name || email.split("@")[0] || "Adventurer";
+  const now = new Date().toISOString();
+  const profile = {
+    id: uid,
+    role: fallbackProfile.role || "Player",
+    username: fallbackProfile.username || displayName.toLowerCase().replace(/\s+/g, ""),
+    name: displayName,
+    email,
+    phone: fallbackProfile.phone || "",
+    campaignIds: fallbackProfile.campaignIds || [],
+    campaignCharacterNames: fallbackProfile.campaignCharacterNames || {},
+    campaignTokenImages: fallbackProfile.campaignTokenImages || {},
+    lockedColorCampaignIds: fallbackProfile.lockedColorCampaignIds || [],
+    color: fallbackProfile.color || "",
+    plan: normalizePlan(fallbackProfile.plan || "free"),
+    billingInterval: normalizeBillingInterval(fallbackProfile.billingInterval || "monthly"),
+    createdAt: fallbackProfile.createdAt || now,
+    updatedAt: now
+  };
+
+  await saveUserProfileRequired(uid, profile);
+  return profile;
 }
 
 async function saveUserProfileQuick(uid, profile) {
@@ -605,7 +567,7 @@ export default function DungeonCalendarApp() {
     return !!planFeatures[plan]?.[feature];
   }
 
-  async function updatePlayerToken(playerId, file, campaignId = activeCampaign?.id) {
+  function updatePlayerToken(playerId, file, campaignId = activeCampaign?.id) {
     if (!file || !campaignId) return;
 
     if (!hasPlanFeature("tokenUploads")) {
@@ -614,33 +576,17 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    if (!file.type?.startsWith("image/")) {
-      setBillingMessage("Please upload an image file for the token.");
-      return;
-    }
-
-    if (file.size > TOKEN_IMAGE_MAX_BYTES) {
-      setBillingMessage("Token images must be 2 MB or smaller.");
-      return;
-    }
-
-    try {
-      const safeName = sanitizeTokenFileName(file.name);
-      const tokenRef = ref(firebaseStorage, `token-images/${campaignId}/${playerId}-${Date.now()}-${safeName}`);
-      await uploadBytes(tokenRef, file, { contentType: file.type || "image/jpeg" });
-      const downloadUrl = await getDownloadURL(tokenRef);
-
+    const reader = new FileReader();
+    reader.onload = () => {
       setPlayers((current) => current.map((player) => player.id === playerId ? {
         ...player,
         campaignTokenImages: {
           ...(player.campaignTokenImages || {}),
-          [campaignId]: downloadUrl
+          [campaignId]: reader.result
         }
       } : player));
-    } catch (error) {
-      console.error("Token image upload failed:", error);
-      setBillingMessage("Token image upload failed. Please try again.");
-    }
+    };
+    reader.readAsDataURL(file);
   }
 
   function removePlayerToken(playerId, campaignId = activeCampaign?.id) {
@@ -724,10 +670,10 @@ export default function DungeonCalendarApp() {
       }
 
       try {
-        const profile = await loadUserProfile(user.uid);
         const localMatch = players.find((player) =>
           player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
         );
+        const profile = await ensureUserProfileDocument(user.uid, user, localMatch || {});
         const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
         setPlan(normalizePlan(profile?.plan || localMatch?.plan || firebasePlayer.plan || "free"));
         setBillingInterval(normalizeBillingInterval(profile?.billingInterval || localMatch?.billingInterval || firebasePlayer.billingInterval || "monthly"));
@@ -777,38 +723,6 @@ export default function DungeonCalendarApp() {
 
     return () => unsubscribeProfile();
   }, [currentUserId]);
-
-  useEffect(() => {
-    if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return undefined;
-
-    const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
-      const remoteCampaigns = snapshot.docs
-        .map((entry) => normalizeCampaignForSync({ id: entry.id, ...entry.data() }))
-        .filter((campaign) => campaignBelongsToUser(campaign, currentUser));
-
-      if (!remoteCampaigns.length) return;
-
-      setCampaigns((current) => {
-        const merged = new Map();
-        current.map(normalizeCampaignForSync).forEach((campaign) => merged.set(campaign.id, campaign));
-        remoteCampaigns.forEach((campaign) => merged.set(campaign.id, { ...(merged.get(campaign.id) || {}), ...campaign }));
-        return Array.from(merged.values());
-      });
-
-      if (!activeCampaignId || !remoteCampaigns.some((campaign) => campaign.id === activeCampaignId)) {
-        setActiveCampaignId(remoteCampaigns[0].id);
-      }
-    }, (error) => {
-      console.warn("Live campaign sync failed:", error);
-    });
-
-    return () => unsubscribeCampaigns();
-  }, [authProfileLoaded, currentUserId, currentUser?.id, currentUser?.email, JSON.stringify(currentUser?.campaignIds || []), activeCampaignId]);
-
-  useEffect(() => {
-    if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
-    visibleCampaigns.forEach((campaign) => saveCampaignToFirestore(campaign));
-  }, [authProfileLoaded, currentUserId, currentUser?.id, currentUser?.email, JSON.stringify(currentUser?.campaignIds || []), JSON.stringify(visibleCampaigns)]);
 
   useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
@@ -1177,7 +1091,11 @@ export default function DungeonCalendarApp() {
           lockedColorCampaignIds: existingInvite?.lockedColorCampaignIds || []
         };
 
-        await saveUserProfile(uid, player);
+        await saveUserProfileRequired(uid, {
+          ...player,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
       }
 
       setPlayers((current) => {
@@ -1322,15 +1240,14 @@ export default function DungeonCalendarApp() {
 
 
   const stripePaymentLinks = {
-   guildmaster: {
-   monthly: "https://buy.stripe.com/6oU28r8Zk41fayffq66Ri05",
-   yearly: "https://buy.stripe.com/28E9AT8ZkeFT0XF5Pw6Ri04"
-   },
-
-   adventurer: {
-   monthly: "https://buy.stripe.com/3cI9ATfnI69nayf91I6Ri07",
-   yearly: "https://buy.stripe.com/bJe28r1wS55jdKr4Ls6Ri06"
-   }
+    adventurer: {
+      monthly: "https://buy.stripe.com/3cI9ATfnI69nayf91I6Ri07",
+      yearly: "https://buy.stripe.com/bJe28r1wS55jdKr4Ls6Ri06"
+    },
+    guildmaster: {
+      monthly: "https://buy.stripe.com/6oU28r8Zk41fayffq66Ri05",
+      yearly: "https://buy.stripe.com/28E9AT8ZkeFT0XF5Pw6Ri04"
+    }
   };
 
   function getStripePaymentLink(planId, interval = selectedBillingInterval) {
@@ -1515,16 +1432,40 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const confirmed = window.confirm("Cancel your current paid membership and switch to the Free plan?");
+    const confirmed = window.confirm("Cancel your current paid membership in Stripe and switch to the Free plan?");
     if (!confirmed) return;
 
     try {
-      await persistPlan("free", "monthly");
+      setBillingMessage("Cancelling Stripe subscription...");
+      const idToken = await auth.currentUser?.getIdToken(true);
+      if (!idToken) throw new Error("Sign in again before cancelling your subscription.");
+
+      const response = await fetch("/api/cancel-stripe-subscription", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`
+        },
+        body: JSON.stringify({
+          subscriptionId: currentUser?.stripeSubscriptionId || "",
+          customerId: currentUser?.stripeCustomerId || "",
+          email: currentUser?.email || auth.currentUser?.email || ""
+        })
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Stripe subscription cancellation failed.");
+
+      await persistPlan("free", "monthly", {
+        stripeSubscriptionStatus: payload.status || "canceled",
+        stripeCancelledAt: new Date().toISOString(),
+        stripeCancellationSource: "app_cancel_button"
+      });
       setSelectedPaymentPlan("");
-      setBillingMessage("Membership cancelled. Free plan is now active.");
-      setAccountMessage("Membership cancelled. You are now on the Free plan.");
+      setBillingMessage("Stripe subscription cancelled. Free plan is now active.");
+      setAccountMessage("Stripe subscription cancelled. You are now on the Free plan.");
     } catch (error) {
-      const message = profileSaveErrorMessage(error);
+      const message = error?.message || profileSaveErrorMessage(error);
       setBillingMessage(message);
       setAccountMessage(message);
     }
@@ -3060,19 +3001,6 @@ export default function DungeonCalendarApp() {
               <div>
                 <h3 className="text-2xl font-bold">Account Security</h3>
                 <p className="mt-1 text-sm text-zinc-400">Control high-impact account actions.</p>
-              </div>
-
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
-                <p className="font-bold text-zinc-100">Legal</p>
-                <p className="mt-2 text-sm text-zinc-400">Review Dungeon Calendar's Privacy Policy and Terms of Service.</p>
-                <div className="mt-4 flex flex-wrap gap-3">
-                  <Button onClick={() => window.open("/privacy", "_blank", "noopener,noreferrer")} variant="ghost" className="rounded-xl border border-zinc-700 text-zinc-100 hover:bg-zinc-900">
-                    Privacy Policy
-                  </Button>
-                  <Button onClick={() => window.open("/terms", "_blank", "noopener,noreferrer")} variant="ghost" className="rounded-xl border border-zinc-700 text-zinc-100 hover:bg-zinc-900">
-                    Terms of Service
-                  </Button>
-                </div>
               </div>
 
               <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">

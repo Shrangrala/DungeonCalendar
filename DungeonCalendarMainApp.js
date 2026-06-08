@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import app, { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -83,6 +83,62 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
     sessionDuration: 4,
     reminderHours: 24
   };
+}
+
+function normalizeList(values = []) {
+  return Array.isArray(values) ? values.filter(Boolean) : [];
+}
+
+function normalizeCampaignForSync(campaign = {}) {
+  const id = campaign.id || crypto.randomUUID();
+  const dungeonMasterIds = normalizeList(campaign.dungeonMasterIds || campaign.dmIds || []);
+  const memberIds = Array.from(new Set([...dungeonMasterIds, ...normalizeList(campaign.memberIds || campaign.members || campaign.playerIds || [])]));
+  return {
+    id,
+    ownerId: campaign.ownerId || campaign.createdBy || campaign.dmId || dungeonMasterIds[0] || "",
+    dungeonMasterIds,
+    memberIds,
+    invitedEmails: normalizeList(campaign.invitedEmails || []),
+    leftUserIds: normalizeList(campaign.leftUserIds || campaign.removedUserIds || []),
+    archived: !!campaign.archived,
+    deleted: !!campaign.deleted,
+    status: campaign.status || "active",
+    name: campaign.name || "Unnamed Campaign",
+    isEditingName: !!campaign.isEditingName,
+    availability: campaign.availability || {},
+    unavailable: campaign.unavailable || {},
+    chosenDate: campaign.chosenDate || "",
+    sessionTime: campaign.sessionTime || "18:00",
+    sessionDuration: campaign.sessionDuration || 4,
+    reminderHours: campaign.reminderHours || 24,
+    updatedAt: campaign.updatedAt || new Date().toISOString()
+  };
+}
+
+function campaignBelongsToUser(campaign, user) {
+  if (!campaign || !user) return false;
+  const normalized = normalizeCampaignForSync(campaign);
+  const uid = user.id || "";
+  const email = normalizeEmail(user.email || "");
+  if (normalized.deleted || normalized.archived || ["inactive", "deleted", "archived"].includes(normalized.status)) return false;
+  if (normalized.leftUserIds.includes(uid)) return false;
+  return normalized.ownerId === uid ||
+    normalized.dungeonMasterIds.includes(uid) ||
+    normalized.memberIds.includes(uid) ||
+    (user.campaignIds || []).includes(normalized.id) ||
+    (!!email && normalized.invitedEmails.map(normalizeEmail).includes(email));
+}
+
+async function saveCampaignToFirestore(campaign) {
+  if (!campaign?.id) return false;
+  try {
+    const normalized = normalizeCampaignForSync({ ...campaign, updatedAt: new Date().toISOString() });
+    await setDoc(doc(db, "campaigns", normalized.id), normalized, { merge: true });
+    return true;
+  } catch (error) {
+    console.warn("Firestore campaign save failed; local state will still update:", error);
+    return false;
+  }
 }
 
 function dateKey(date) {
@@ -721,6 +777,38 @@ export default function DungeonCalendarApp() {
 
     return () => unsubscribeProfile();
   }, [currentUserId]);
+
+  useEffect(() => {
+    if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return undefined;
+
+    const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
+      const remoteCampaigns = snapshot.docs
+        .map((entry) => normalizeCampaignForSync({ id: entry.id, ...entry.data() }))
+        .filter((campaign) => campaignBelongsToUser(campaign, currentUser));
+
+      if (!remoteCampaigns.length) return;
+
+      setCampaigns((current) => {
+        const merged = new Map();
+        current.map(normalizeCampaignForSync).forEach((campaign) => merged.set(campaign.id, campaign));
+        remoteCampaigns.forEach((campaign) => merged.set(campaign.id, { ...(merged.get(campaign.id) || {}), ...campaign }));
+        return Array.from(merged.values());
+      });
+
+      if (!activeCampaignId || !remoteCampaigns.some((campaign) => campaign.id === activeCampaignId)) {
+        setActiveCampaignId(remoteCampaigns[0].id);
+      }
+    }, (error) => {
+      console.warn("Live campaign sync failed:", error);
+    });
+
+    return () => unsubscribeCampaigns();
+  }, [authProfileLoaded, currentUserId, currentUser?.id, currentUser?.email, JSON.stringify(currentUser?.campaignIds || []), activeCampaignId]);
+
+  useEffect(() => {
+    if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
+    visibleCampaigns.forEach((campaign) => saveCampaignToFirestore(campaign));
+  }, [authProfileLoaded, currentUserId, currentUser?.id, currentUser?.email, JSON.stringify(currentUser?.campaignIds || []), JSON.stringify(visibleCampaigns)]);
 
   useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;

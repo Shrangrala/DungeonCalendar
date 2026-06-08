@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
-import { auth, db } from "./firebase";
+import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
+import app, { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
@@ -30,6 +31,18 @@ function CardContent({ children, className = "" }) {
 const dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const dungeonMasterId = "dungeon-master";
+const firebaseStorage = getStorage(app);
+const TOKEN_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+
+function sanitizeTokenFileName(name = "token") {
+  return String(name || "token").replace(/[^a-zA-Z0-9._-]/g, "-").slice(-80) || "token";
+}
+
+function getTokenImageSrc(tokenImage) {
+  if (!tokenImage) return "";
+  if (typeof tokenImage === "string") return tokenImage;
+  return tokenImage.url || tokenImage.downloadURL || "";
+}
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: Home },
@@ -131,7 +144,7 @@ function AppBackground() {
 function PlayerToken({ player, campaignId = "", size = "sm", className = "" }) {
   const sizeClass = size === "xl" ? "h-16 w-16" : size === "lg" ? "h-12 w-12" : size === "md" ? "h-9 w-9" : "h-6 w-6";
   const campaignTokenImage = campaignId ? player?.campaignTokenImages?.[campaignId] : "";
-  const tokenImage = campaignTokenImage || player?.tokenImage;
+  const tokenImage = getTokenImageSrc(campaignTokenImage || player?.tokenImage);
 
   if (tokenImage) {
     return (
@@ -536,7 +549,7 @@ export default function DungeonCalendarApp() {
     return !!planFeatures[plan]?.[feature];
   }
 
-  function updatePlayerToken(playerId, file, campaignId = activeCampaign?.id) {
+  async function updatePlayerToken(playerId, file, campaignId = activeCampaign?.id) {
     if (!file || !campaignId) return;
 
     if (!hasPlanFeature("tokenUploads")) {
@@ -545,17 +558,33 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
+    if (!file.type?.startsWith("image/")) {
+      setBillingMessage("Please upload an image file for the token.");
+      return;
+    }
+
+    if (file.size > TOKEN_IMAGE_MAX_BYTES) {
+      setBillingMessage("Token images must be 2 MB or smaller.");
+      return;
+    }
+
+    try {
+      const safeName = sanitizeTokenFileName(file.name);
+      const tokenRef = ref(firebaseStorage, `token-images/${campaignId}/${playerId}-${Date.now()}-${safeName}`);
+      await uploadBytes(tokenRef, file, { contentType: file.type || "image/jpeg" });
+      const downloadUrl = await getDownloadURL(tokenRef);
+
       setPlayers((current) => current.map((player) => player.id === playerId ? {
         ...player,
         campaignTokenImages: {
           ...(player.campaignTokenImages || {}),
-          [campaignId]: reader.result
+          [campaignId]: downloadUrl
         }
       } : player));
-    };
-    reader.readAsDataURL(file);
+    } catch (error) {
+      console.error("Token image upload failed:", error);
+      setBillingMessage("Token image upload failed. Please try again.");
+    }
   }
 
   function removePlayerToken(playerId, campaignId = activeCampaign?.id) {
@@ -1206,12 +1235,12 @@ export default function DungeonCalendarApp() {
 
   const stripePaymentLinks = {
     adventurer: {
-      monthly: "https://buy.stripe.com/3cI9ATfnI69nayf91I6Ri07",
-      yearly: "https://buy.stripe.com/bJe28r1wS55jdKr4Ls6Ri06"
+      monthly: "https://buy.stripe.com/9B68wPb7s55jcGn7XE6Ri01",
+      yearly: "https://buy.stripe.com/9B6cN53F0fJXayfcdU6Ri03"
     },
     guildmaster: {
-      monthly: "https://buy.stripe.com/6oU28r8Zk41fayffq66Ri05",
-      yearly: "https://buy.stripe.com/28E9AT8ZkeFT0XF5Pw6Ri04"
+      monthly: "https://buy.stripe.com/8x28wP0sO8hvbCja5M6Ri00",
+      yearly: "https://buy.stripe.com/cNi5kDfnI2Xb9ub2Dk6Ri02"
     }
   };
 

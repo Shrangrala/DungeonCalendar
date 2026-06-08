@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { collection, deleteField, doc, getDoc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
@@ -108,6 +108,12 @@ function sanitizeCampaignForFirestore(campaign = {}) {
     ...campaign,
     unavailable: removeDungeonMastersFromUnavailable(campaign.unavailable || {}, dungeonMasterIds)
   };
+}
+
+function campaignContentKey(campaign = {}) {
+  const clean = sanitizeCampaignForFirestore(campaign);
+  const { updatedAt, membershipSyncedAt, ...rest } = clean;
+  return JSON.stringify(rest);
 }
 
 function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isScheduledSessionDate = false, isDungeonMaster = false, hideSuggestedAvailability = false }) {
@@ -974,13 +980,21 @@ export default function DungeonCalendarApp() {
   useEffect(() => {
     if (!authProfileLoaded || !campaignsRemoteReady || !activeCampaign || !currentUserId || !activeCampaign.dungeonMasterIds?.includes(currentUserId)) return undefined;
 
+    const contentKey = campaignContentKey(activeCampaign);
+    if (lastSavedCampaignContentKeyRef.current === contentKey) return undefined;
+
     const timer = setTimeout(() => {
       const cleanCampaign = JSON.parse(JSON.stringify(sanitizeCampaignForFirestore({
         ...activeCampaign,
         updatedAt: new Date().toISOString()
       })));
+      const cleanContentKey = campaignContentKey(cleanCampaign);
+
+      if (lastSavedCampaignContentKeyRef.current === cleanContentKey) return;
+      lastSavedCampaignContentKeyRef.current = cleanContentKey;
 
       setDoc(doc(db, "campaigns", activeCampaign.id), cleanCampaign, { merge: false }).catch((error) => {
+        lastSavedCampaignContentKeyRef.current = "";
         console.warn("Failed to sync campaign to Firestore:", error);
       });
     }, 350);

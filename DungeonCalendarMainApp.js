@@ -660,37 +660,37 @@ export default function DungeonCalendarApp() {
     }
 
     const datesToSchedule = buildRecurringSessionDates(chosenDate, recurringSessionFrequency, recurringSessionCount);
-    const dmId = currentUser?.id;
 
-    updateActiveCampaign((campaign) => {
-      const nextAvailability = { ...(campaign.availability || {}) };
-      const nextUnavailable = { ...(campaign.unavailable || {}) };
-
-      datesToSchedule.forEach((key) => {
-        if (dmId) nextAvailability[key] = Array.from(new Set([...(nextAvailability[key] || []), dmId]));
-        if (dmId) nextUnavailable[key] = (nextUnavailable[key] || []).filter((id) => id !== dmId);
-      });
-
-      return {
-        recurringSessionFrequency,
-        recurringSessionCount,
-        sessionScheduleDates: datesToSchedule,
-        chosenDate: datesToSchedule[0] || chosenDate,
-        availability: nextAvailability,
-        unavailable: nextUnavailable
-      };
-    });
+    updateActiveCampaign(() => ({
+      recurringSessionFrequency,
+      recurringSessionCount,
+      sessionScheduleDates: datesToSchedule,
+      chosenDate: datesToSchedule[0] || chosenDate
+    }));
   }
 
   function clearRecurringSessionSchedule() {
     if (!isDungeonMaster || !activeCampaign) return;
     const datesToRemove = Array.isArray(activeCampaign.sessionScheduleDates) ? activeCampaign.sessionScheduleDates : [];
+    const dmId = currentUser?.id;
     const nextAvailability = { ...(activeCampaign.availability || {}) };
     const nextUnavailable = { ...(activeCampaign.unavailable || {}) };
+    const firestoreDeletes = {};
+
     datesToRemove.forEach((key) => {
-      delete nextAvailability[key];
-      delete nextUnavailable[key];
+      const availableIds = Array.isArray(nextAvailability[key]) ? nextAvailability[key] : [];
+      const unavailableIds = Array.isArray(nextUnavailable[key]) ? nextUnavailable[key] : [];
+
+      if (dmId && availableIds.length === 1 && availableIds[0] === dmId) {
+        delete nextAvailability[key];
+        firestoreDeletes[`availability.${key}`] = deleteField();
+      }
+      if (dmId && unavailableIds.length === 1 && unavailableIds[0] === dmId) {
+        delete nextUnavailable[key];
+        firestoreDeletes[`unavailable.${key}`] = deleteField();
+      }
     });
+
     const nextChosenDate = datesToRemove.includes(activeCampaign.chosenDate) ? "" : (activeCampaign.chosenDate || "");
     updateActiveCampaign(() => ({
       sessionScheduleDates: [],
@@ -699,11 +699,9 @@ export default function DungeonCalendarApp() {
       unavailable: nextUnavailable
     }));
     if (datesToRemove.length) {
-      const deletes = { sessionScheduleDates: [], chosenDate: nextChosenDate, updatedAt: new Date().toISOString() };
-      datesToRemove.forEach((key) => {
-        deletes[`availability.${key}`] = deleteField();
-        deletes[`unavailable.${key}`] = deleteField();
-      });
+      const deletes = { ...firestoreDeletes, sessionScheduleDates: deleteField(), updatedAt: new Date().toISOString() };
+      if (!nextChosenDate) deletes.chosenDate = deleteField();
+      else deletes.chosenDate = nextChosenDate;
       updateDoc(doc(db, "campaigns", activeCampaign.id), deletes).catch((error) => console.warn("Failed to delete generated date fields:", error));
     }
   }
@@ -2533,14 +2531,15 @@ export default function DungeonCalendarApp() {
                 const key = dateKey(date);
                 const ids = availability[key] ?? [];
                 const hasDungeonMasterAvailableRaw = ids.some((id) => isDungeonMasterResponse(id));
-                const isChosenDate = key === chosenDate;
-                const hasDungeonMasterAvailable = !chosenDate || isChosenDate ? hasDungeonMasterAvailableRaw : false;
                 const isScheduledSessionDate = sessionScheduleDates.includes(key);
-                const selectedByActive = ids.includes(activePlayerId);
+                const hasFinalDates = !!chosenDate || sessionScheduleDates.length > 0;
+                const isChosenDate = key === chosenDate || isScheduledSessionDate;
+                const hasDungeonMasterAvailable = !hasFinalDates && hasDungeonMasterAvailableRaw;
+                const selectedByActive = !hasFinalDates && ids.includes(activePlayerId);
                 const unavailableIds = unavailable[key] ?? [];
                 const hasDungeonMasterUnavailableRaw = unavailableIds.some((id) => isDungeonMasterResponse(id));
-                const hasDungeonMasterUnavailable = !chosenDate || isChosenDate ? hasDungeonMasterUnavailableRaw : false;
-                const unavailableByActive = unavailableIds.includes(activePlayerId);
+                const hasDungeonMasterUnavailable = !hasFinalDates && hasDungeonMasterUnavailableRaw;
+                const unavailableByActive = !hasFinalDates && unavailableIds.includes(activePlayerId);
                 const visibleAvailableIds = visibleResponseIds(ids);
                 const visibleUnavailableIds = visibleResponseIds(unavailableIds);
                 return (
@@ -2560,7 +2559,7 @@ export default function DungeonCalendarApp() {
                     {!compact && hasDungeonMasterAvailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-emerald-100 sm:block">DM available</div>}
                     {!compact && hasDungeonMasterUnavailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-red-100 sm:block">DM not available</div>}
                     {!compact && !isDungeonMaster && !hasDungeonMasterAvailable && !hasDungeonMasterUnavailable && <div className="mt-4 hidden text-xs font-semibold text-zinc-400 sm:block">Waiting for DM</div>}
-                    {!compact && isChosenDate && <div className="mt-2 rounded-md bg-emerald-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
+                    {!compact && isChosenDate && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
                     {!compact && !isChosenDate && isScheduledSessionDate && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Scheduled</div>}
                     {!compact && visibleUnavailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleUnavailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-red-950/60 px-1.5 py-1 text-[11px] font-semibold text-red-100"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM not available" : isDungeonMaster ? `${player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name} unavailable` : "You unavailable"}</span></div> : null; })}</div>}
                     {!compact && visibleAvailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleAvailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-black/35 px-1.5 py-1 text-[11px] font-semibold text-white"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM available" : isDungeonMaster ? player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name : "You available"}</span></div> : null; })}</div>}

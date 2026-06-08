@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { deleteField, doc, getDoc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
+import { collection, deleteField, doc, getDoc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
@@ -91,6 +91,23 @@ function buildMonth(year, month) {
 
 function classNames(...parts) {
   return parts.filter(Boolean).join(" ");
+}
+
+function removeDungeonMastersFromUnavailable(unavailable = {}, dungeonMasterIds = []) {
+  const dmIds = new Set(dungeonMasterIds || []);
+  return Object.fromEntries(
+    Object.entries(unavailable || {})
+      .map(([key, ids]) => [key, Array.isArray(ids) ? ids.filter((id) => !dmIds.has(id)) : []])
+      .filter(([, ids]) => ids.length > 0)
+  );
+}
+
+function sanitizeCampaignForFirestore(campaign = {}) {
+  const dungeonMasterIds = campaign.dungeonMasterIds || [];
+  return {
+    ...campaign,
+    unavailable: removeDungeonMastersFromUnavailable(campaign.unavailable || {}, dungeonMasterIds)
+  };
 }
 
 function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isScheduledSessionDate = false, isDungeonMaster = false, hideSuggestedAvailability = false }) {
@@ -410,6 +427,7 @@ export default function DungeonCalendarApp() {
     const savedCampaigns = localStorage.getItem("dnd-calendar-campaigns");
     return savedCampaigns ? JSON.parse(savedCampaigns) : [createCampaign()];
   });
+  const [campaignsRemoteReady, setCampaignsRemoteReady] = useState(false);
   const [activeCampaignId, setActiveCampaignId] = useState(() => localStorage.getItem("dnd-calendar-active-campaign") || "");
   const [newPlayer, setNewPlayer] = useState("");
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
@@ -588,9 +606,9 @@ export default function DungeonCalendarApp() {
     );
   }, [campaigns, currentUser]);
   const activeCampaign = visibleCampaigns.find((campaign) => campaign.id === activeCampaignId) ?? visibleCampaigns[0];
-  const availability = activeCampaign?.availability ?? {};
-  const unavailable = activeCampaign?.unavailable ?? {};
   const dungeonMasterIds = activeCampaign?.dungeonMasterIds ?? [];
+  const availability = activeCampaign?.availability ?? {};
+  const unavailable = removeDungeonMastersFromUnavailable(activeCampaign?.unavailable ?? {}, dungeonMasterIds);
   const campaignName = activeCampaign?.name ?? "";
   const isEditingCampaignName = activeCampaign?.isEditingName ?? true;
   const chosenDate = activeCampaign?.chosenDate ?? "";
@@ -879,6 +897,57 @@ export default function DungeonCalendarApp() {
   }, [currentUserId]);
 
   useEffect(() => {
+    if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return undefined;
+
+    setCampaignsRemoteReady(false);
+
+    const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
+      const userEmail = normalizeEmail(currentUser.email || "");
+      const remoteCampaigns = snapshot.docs
+        .map((campaignSnapshot) => {
+          const data = campaignSnapshot.data() || {};
+          const normalized = {
+            ...createCampaign(),
+            ...data,
+            id: campaignSnapshot.id,
+            dungeonMasterIds: data.dungeonMasterIds || [],
+            memberIds: data.memberIds || [],
+            invitedEmails: data.invitedEmails || [],
+            leftUserIds: data.leftUserIds || [],
+            availability: data.availability || {},
+            unavailable: removeDungeonMastersFromUnavailable(data.unavailable || {}, data.dungeonMasterIds || []),
+            sessionScheduleDates: data.sessionScheduleDates || [],
+            generatedSessionDates: data.generatedSessionDates || [],
+            generatedAvailabilityDates: data.generatedAvailabilityDates || []
+          };
+          return normalized;
+        })
+        .filter((campaign) => {
+          if (campaign.deleted || campaign.archived || campaign.status === "deleted" || campaign.status === "archived" || campaign.status === "inactive") return false;
+          if ((campaign.leftUserIds || []).includes(currentUserId)) return false;
+          return (currentUser.campaignIds || []).includes(campaign.id) ||
+            campaign.ownerId === currentUserId ||
+            (campaign.dungeonMasterIds || []).includes(currentUserId) ||
+            (campaign.memberIds || []).includes(currentUserId) ||
+            (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail));
+        });
+
+      // Firestore is the shared source of truth for campaign data, so changes made
+      // in Mobile are reflected on Main without requiring a refresh.
+      setCampaigns(remoteCampaigns);
+      if (remoteCampaigns.length && (!activeCampaignId || !remoteCampaigns.some((campaign) => campaign.id === activeCampaignId))) {
+        setActiveCampaignId(remoteCampaigns[0].id);
+      }
+      setCampaignsRemoteReady(true);
+    }, (error) => {
+      console.warn("Live campaign sync failed; using cached main-app campaigns:", error);
+      setCampaignsRemoteReady(true);
+    });
+
+    return () => unsubscribeCampaigns();
+  }, [authProfileLoaded, currentUserId, currentUser?.email, JSON.stringify(currentUser?.campaignIds || []), activeCampaignId]);
+
+  useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
 
     // Keep campaign membership fields synced without overwriting profile settings or paid plan data.
@@ -903,13 +972,13 @@ export default function DungeonCalendarApp() {
   }, [campaigns]);
 
   useEffect(() => {
-    if (!authProfileLoaded || !activeCampaign || !currentUserId || !activeCampaign.dungeonMasterIds?.includes(currentUserId)) return undefined;
+    if (!authProfileLoaded || !campaignsRemoteReady || !activeCampaign || !currentUserId || !activeCampaign.dungeonMasterIds?.includes(currentUserId)) return undefined;
 
     const timer = setTimeout(() => {
-      const cleanCampaign = JSON.parse(JSON.stringify({
+      const cleanCampaign = JSON.parse(JSON.stringify(sanitizeCampaignForFirestore({
         ...activeCampaign,
         updatedAt: new Date().toISOString()
-      }));
+      })));
 
       setDoc(doc(db, "campaigns", activeCampaign.id), cleanCampaign, { merge: false }).catch((error) => {
         console.warn("Failed to sync campaign to Firestore:", error);
@@ -917,7 +986,7 @@ export default function DungeonCalendarApp() {
     }, 350);
 
     return () => clearTimeout(timer);
-  }, [authProfileLoaded, activeCampaign, currentUserId]);
+  }, [authProfileLoaded, campaignsRemoteReady, activeCampaign, currentUserId]);
 
   useEffect(() => {
     localStorage.setItem("dnd-calendar-current-user", currentUserId);
@@ -1202,7 +1271,11 @@ export default function DungeonCalendarApp() {
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
 
   function updateActiveCampaign(updater) {
-    setCampaigns((current) => current.map((campaign) => campaign.id === activeCampaign.id ? { ...campaign, ...updater(campaign) } : campaign));
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== activeCampaign.id) return campaign;
+      const nextCampaign = { ...campaign, ...updater(campaign) };
+      return sanitizeCampaignForFirestore(nextCampaign);
+    }));
   }
 
   async function login() {
@@ -2056,7 +2129,7 @@ export default function DungeonCalendarApp() {
       const isAvailable = availableList.includes(activePlayer.id);
       const isUnavailable = unavailableList.includes(activePlayer.id);
 
-      if (availabilityMode === "available") {
+      if (isDungeonMaster || availabilityMode === "available") {
         return {
           availability: {
             ...campaign.availability,

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -1196,7 +1196,55 @@ export default function DungeonCalendarApp() {
 
   async function ensureFirestoreCampaignForUser(uid, player) {
     const existingCampaignIds = Array.isArray(player?.campaignIds) ? player.campaignIds.filter(Boolean) : [];
-    if (existingCampaignIds.length > 0) return player;
+    const cleanEmail = normalizeEmail(player?.email || auth.currentUser?.email || "");
+    const claimedCampaignIds = new Set(existingCampaignIds);
+
+    if (cleanEmail) {
+      try {
+        const campaignSnapshots = await getDocs(collection(db, "campaigns"));
+        for (const entry of campaignSnapshots.docs) {
+          const campaign = normalizeCampaignForSync({ id: entry.id, ...entry.data() });
+          const invitedByEmail = (campaign.invitedEmails || []).map(normalizeEmail).includes(cleanEmail);
+          const invitedPlayer = (campaign.invitedPlayers || []).find((item) => normalizeEmail(item.email || "") === cleanEmail);
+          if (!invitedByEmail && !invitedPlayer) continue;
+
+          const nextInvitedPlayers = (campaign.invitedPlayers || []).map((item) => {
+            if (normalizeEmail(item.email || "") !== cleanEmail) return item;
+            return campaignPlayerRecord({ ...item, ...player, id: uid, email: cleanEmail, invitePending: false }, campaign.id);
+          });
+
+          const placeholderIds = new Set((campaign.invitedPlayers || [])
+            .filter((item) => normalizeEmail(item.email || "") === cleanEmail)
+            .map((item) => item.id)
+            .filter(Boolean));
+
+          const nextCampaign = normalizeCampaignForSync({
+            ...campaign,
+            memberIds: Array.from(new Set([...(campaign.memberIds || []).filter((id) => !placeholderIds.has(id)), uid])),
+            invitedEmails: Array.from(new Set([...(campaign.invitedEmails || []), cleanEmail].filter(Boolean).map(normalizeEmail))),
+            invitedPlayers: nextInvitedPlayers.length ? nextInvitedPlayers : [campaignPlayerRecord({ ...player, id: uid, email: cleanEmail, invitePending: false }, campaign.id)]
+          });
+
+          await saveCampaignToFirestore(nextCampaign);
+          claimedCampaignIds.add(campaign.id);
+        }
+      } catch (error) {
+        console.warn("Failed to claim campaign invites by email:", error);
+      }
+    }
+
+    if (claimedCampaignIds.size > 0) {
+      const updatedPlayer = { ...player, campaignIds: Array.from(claimedCampaignIds) };
+      await saveUserProfile(uid, {
+        campaignIds: updatedPlayer.campaignIds,
+        campaignCharacterNames: updatedPlayer.campaignCharacterNames || {},
+        lockedColorCampaignIds: updatedPlayer.lockedColorCampaignIds || [],
+        campaignTokenImages: updatedPlayer.campaignTokenImages || {},
+        role: updatedPlayer.role || "Player",
+        color: updatedPlayer.color || ""
+      });
+      return updatedPlayer;
+    }
 
     const campaign = normalizeCampaignForSync({
       ...createCampaign("", [uid], uid),

@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, inMemoryPersistence, setPersistence } from "firebase/auth";
+import { browserLocalPersistence, getAuth, setPersistence } from "firebase/auth";
 import { initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
@@ -16,7 +16,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
-setPersistence(auth, inMemoryPersistence).catch((error) => console.warn("Firebase Auth memory persistence failed:", error));
+setPersistence(auth, browserLocalPersistence).catch((error) => console.warn("Firebase Auth local persistence failed:", error));
 export const db = initializeFirestore(app, {
   experimentalAutoDetectLongPolling: true,
   useFetchStreams: false

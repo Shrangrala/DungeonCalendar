@@ -656,16 +656,21 @@ export default function DungeonCalendarApp() {
 
       setCampaigns((current) => current.map((campaign) => {
         if (campaign.id !== campaignId) return campaign;
-        const existingCampaignPlayer = (campaign.invitedPlayers || []).find((player) => player.id === playerId) || tokenPlayerRecord || players.find((player) => player.id === playerId);
-        const updatedCampaignPlayer = campaignPlayerRecord({
-          ...(existingCampaignPlayer || { id: playerId, name: "Player" }),
-          campaignTokenImages: {
-            ...((existingCampaignPlayer || {}).campaignTokenImages || {}),
-            [campaignId]: tokenUrl
-          }
-        }, campaignId);
+
+        const nextInvitedPlayers = (campaign.invitedPlayers || []).map((player) => {
+          if (player.id !== playerId) return player;
+          return campaignPlayerRecord({
+            ...player,
+            campaignTokenImages: {
+              ...(player.campaignTokenImages || {}),
+              [campaignId]: tokenUrl
+            }
+          }, campaignId);
+        });
+
         const nextCampaign = normalizeCampaignForSync({
-          ...upsertCampaignPlayer(campaign, updatedCampaignPlayer),
+          ...campaign,
+          invitedPlayers: nextInvitedPlayers,
           playerTokenImages: {
             ...(campaign.playerTokenImages || {}),
             [playerId]: tokenUrl
@@ -860,8 +865,7 @@ export default function DungeonCalendarApp() {
       campaignCharacterNames: currentUser.campaignCharacterNames || {},
       lockedColorCampaignIds: currentUser.lockedColorCampaignIds || [],
       color: currentUser.color || "",
-      campaignTokenImages: currentUser.campaignTokenImages || {},
-      membershipSyncedAt: new Date().toISOString()
+      campaignTokenImages: currentUser.campaignTokenImages || {}
     }).catch((error) => console.error("Failed to sync web membership profile:", error));
   }, [authProfileLoaded, currentUserId, currentUser?.campaignIds, currentUser?.campaignCharacterNames, currentUser?.lockedColorCampaignIds, currentUser?.color, currentUser?.campaignTokenImages, currentUser?.role]);
 

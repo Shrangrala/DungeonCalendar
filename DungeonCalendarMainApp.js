@@ -34,9 +34,8 @@ const dungeonMasterId = "dungeon-master";
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: Home },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
-  { id: "players", label: "Players", icon: Users },
   { id: "results", label: "Results", icon: BarChart3 },
-  { id: "settings", label: "Settings", icon: Settings }
+  { id: "settings", label: "Campaign Settings", icon: Settings }
 ];
 
 const playerColors = [
@@ -450,6 +449,10 @@ function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
 export default function DungeonCalendarApp() {
   const today = new Date();
   const [page, setPage] = useState("dashboard");
+
+  useEffect(() => {
+    if (page === "players") setPage("settings");
+  }, [page]);
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const [players, setPlayers] = useState(() => {
     const savedPlayers = localStorage.getItem("dnd-calendar-players");
@@ -3882,7 +3885,6 @@ export default function DungeonCalendarApp() {
   function PageContent() {
     if (page === "dashboard") return DashboardPage();
     if (page === "calendar") return CalendarGrid();
-    if (page === "players") return PlayersPage();
     if (page === "results") return ResultsPage();
     if (page === "settings") return SettingsPage();
     if (page === "account") return AccountSettingsPage();

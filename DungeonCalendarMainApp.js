@@ -64,7 +64,6 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
     isEditingName: true,
     availability: {},
     unavailable: {},
-    players: [],
     chosenDate: "",
     sessionTime: "18:00",
     sessionDuration: 4,
@@ -107,6 +106,9 @@ function sanitizeCampaignForFirestore(campaign = {}) {
   const dungeonMasterIds = campaign.dungeonMasterIds || [];
   return {
     ...campaign,
+    memberIds: Array.isArray(campaign.memberIds) ? campaign.memberIds : [],
+    invitedEmails: Array.isArray(campaign.invitedEmails) ? campaign.invitedEmails : [],
+    invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
     unavailable: removeDungeonMastersFromUnavailable(campaign.unavailable || {}, dungeonMasterIds)
   };
 }
@@ -809,16 +811,26 @@ export default function DungeonCalendarApp() {
   const isDungeonMaster = !!currentUser && !!activeCampaign?.dungeonMasterIds?.includes(currentUser.id);
   const activeCampaignRole = isDungeonMaster ? "Dungeon Master" : "Player";
   const activeCampaignPlayers = useMemo(() => {
-    const campaignId = activeCampaign?.id;
-    const embeddedPlayers = Array.isArray(activeCampaign?.players) ? activeCampaign.players : [];
-    const relevantPlayers = [
-      ...players.filter((player) =>
-        (player.campaignIds ?? []).includes(campaignId) ||
-        activeCampaign?.dungeonMasterIds?.includes(player.id) ||
-        activeCampaign?.memberIds?.includes(player.id)
-      ),
-      ...embeddedPlayers
-    ];
+    const campaignInvitedPlayers = (activeCampaign?.invitedPlayers || []).map((player) => ({
+      id: player.id || `invite-${normalizeEmail(player.email || player.name || crypto.randomUUID())}`,
+      role: player.role || "Player",
+      name: player.name || player.email || "Invited Player",
+      username: player.username || (player.name || player.email || "player").toLowerCase().replace(/\s+/g, ""),
+      email: normalizeEmail(player.email || ""),
+      phone: player.phone || "",
+      password: player.password || "dndplayer",
+      invitePending: player.invitePending !== false,
+      campaignIds: Array.from(new Set([...(player.campaignIds || []), activeCampaign?.id].filter(Boolean))),
+      campaignCharacterNames: player.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {}),
+      color: player.color || playerColors[0],
+      lockedColorCampaignIds: player.lockedColorCampaignIds || [],
+      campaignTokenImages: player.campaignTokenImages || {}
+    }));
+    const mergedPlayers = [...players, ...campaignInvitedPlayers];
+    const relevantPlayers = mergedPlayers.filter((player) =>
+      (player.campaignIds ?? []).includes(activeCampaign?.id) ||
+      activeCampaign?.dungeonMasterIds?.includes(player.id)
+    );
 
     return relevantPlayers.filter((player, index, list) => {
       const key = player.email?.toLowerCase() || player.name?.toLowerCase() || player.id;
@@ -927,7 +939,7 @@ export default function DungeonCalendarApp() {
             dungeonMasterIds: data.dungeonMasterIds || [],
             memberIds: data.memberIds || [],
             invitedEmails: data.invitedEmails || [],
-            players: Array.isArray(data.players) ? data.players : [],
+            invitedPlayers: Array.isArray(data.invitedPlayers) ? data.invitedPlayers : [],
             leftUserIds: data.leftUserIds || [],
             availability: data.availability || {},
             unavailable: removeDungeonMastersFromUnavailable(data.unavailable || {}, data.dungeonMasterIds || []),
@@ -1846,38 +1858,45 @@ export default function DungeonCalendarApp() {
 
   function addPlayer() {
     const trimmed = newPlayer.trim();
-    if (!trimmed || !isDungeonMaster || !activeCampaign?.id) return;
-    const email = newPlayerEmail.trim();
-    const duplicateKey = email.toLowerCase() || trimmed.toLowerCase();
-    if (activeCampaignPlayers.some((player) => (player.email?.toLowerCase() || player.name?.toLowerCase()) === duplicateKey)) return;
+    if (!trimmed || !isDungeonMaster || !activeCampaign) return;
+    const cleanEmail = normalizeEmail(newPlayerEmail);
+    const duplicate = activeCampaignPlayers.some((player) =>
+      player.name?.toLowerCase() === trimmed.toLowerCase() ||
+      (!!cleanEmail && normalizeEmail(player.email) === cleanEmail)
+    );
+    if (duplicate) return;
+
     const player = {
       id: crypto.randomUUID(),
       role: "Player",
       name: trimmed,
-      email,
+      username: trimmed.toLowerCase().replace(/\s+/g, ""),
+      email: cleanEmail,
       password: "dndplayer",
       phone: newPlayerPhone.trim(),
       invitePending: true,
       campaignIds: [activeCampaign.id],
       campaignCharacterNames: { [activeCampaign.id]: "" },
-      color: playerColors[(activeCampaignPlayers.length || players.length) % playerColors.length],
+      color: playerColors[players.length % playerColors.length],
       lockedColorCampaignIds: [],
       campaignTokenImages: {}
     };
 
     setPlayers((current) => [...current.filter((item) => item.id !== player.id), player]);
-    setCampaigns((current) => current.map((campaign) => {
-      if (campaign.id !== activeCampaign.id) return campaign;
-      const existingPlayers = Array.isArray(campaign.players) ? campaign.players : [];
-      return {
-        ...campaign,
-        memberIds: Array.from(new Set([...(campaign.memberIds || []), player.id])),
-        invitedEmails: email ? Array.from(new Set([...(campaign.invitedEmails || []), email.toLowerCase()])) : (campaign.invitedEmails || []),
-        players: [...existingPlayers.filter((item) => item.id !== player.id), player],
-        updatedAt: new Date().toISOString()
-      };
-    }));
-
+    const nextCampaign = sanitizeCampaignForFirestore({
+      ...activeCampaign,
+      memberIds: Array.from(new Set([...(activeCampaign.memberIds || []), player.id])),
+      invitedEmails: cleanEmail ? Array.from(new Set([...(activeCampaign.invitedEmails || []).map(normalizeEmail), cleanEmail])) : (activeCampaign.invitedEmails || []),
+      invitedPlayers: [
+        ...(activeCampaign.invitedPlayers || []).filter((item) => normalizeEmail(item.email) !== cleanEmail && item.id !== player.id),
+        player
+      ],
+      updatedAt: new Date().toISOString()
+    });
+    setCampaigns((current) => current.map((campaign) => campaign.id === activeCampaign.id ? nextCampaign : campaign));
+    setDoc(doc(db, "campaigns", activeCampaign.id), nextCampaign, { merge: true }).catch((error) => {
+      console.warn("Failed to sync invited player to Firestore:", error);
+    });
     setNewPlayer("");
     setNewPlayerEmail("");
     setNewPlayerPhone("");
@@ -2817,9 +2836,9 @@ export default function DungeonCalendarApp() {
           <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
             <CardContent className="space-y-3 p-6">
               <h2 className="text-2xl font-bold">Invite Players</h2>
-              <input value={newPlayer} onChange={(event) => setNewPlayer(event.target.value)} placeholder="Player name" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
-              <input value={newPlayerEmail} onChange={(event) => setNewPlayerEmail(event.target.value)} placeholder="Email optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
-              <input value={newPlayerPhone} onChange={(event) => setNewPlayerPhone(event.target.value)} placeholder="Phone optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <input value={newPlayer} onInput={(event) => setNewPlayer(event.currentTarget.value)} onChange={(event) => setNewPlayer(event.target.value)} placeholder="Player name" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <input value={newPlayerEmail} onInput={(event) => setNewPlayerEmail(event.currentTarget.value)} onChange={(event) => setNewPlayerEmail(event.target.value)} placeholder="Email optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <input value={newPlayerPhone} onInput={(event) => setNewPlayerPhone(event.currentTarget.value)} onChange={(event) => setNewPlayerPhone(event.target.value)} placeholder="Phone optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
               <Button onClick={addPlayer} className="w-full rounded-xl bg-red-700 hover:bg-red-600"><Plus className="mr-2 h-4 w-4" /> Add Invite</Button>
             </CardContent>
           </Card>

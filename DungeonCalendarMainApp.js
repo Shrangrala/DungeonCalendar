@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
-import { auth, db } from "./firebase";
+import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
+import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
@@ -614,7 +615,7 @@ export default function DungeonCalendarApp() {
     return !!planFeatures[plan]?.[feature];
   }
 
-  function updatePlayerToken(playerId, file, campaignId = activeCampaign?.id) {
+  async function updatePlayerToken(playerId, file, campaignId = activeCampaign?.id) {
     if (!file || !campaignId) return;
 
     if (!hasPlanFeature("tokenUploads")) {
@@ -623,9 +624,22 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const tokenUrl = reader.result;
+    if (!file.type?.startsWith("image/")) {
+      setBillingMessage("Token uploads must be image files.");
+      return;
+    }
+
+    if (file.size >= 2 * 1024 * 1024) {
+      setBillingMessage("Token images must be under 2 MB.");
+      return;
+    }
+
+    try {
+      const safeName = `${playerId}-${Date.now()}-${(file.name || "token-image").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const tokenPath = `token-images/${campaignId}/${safeName}`;
+      const uploadRef = storageRef(storage, tokenPath);
+      const snapshot = await uploadBytes(uploadRef, file, { contentType: file.type });
+      const tokenUrl = await getDownloadURL(snapshot.ref);
       let tokenPlayerRecord = null;
 
       setPlayers((current) => current.map((player) => {
@@ -660,8 +674,10 @@ export default function DungeonCalendarApp() {
         saveCampaignToFirestore(nextCampaign);
         return nextCampaign;
       }));
-    };
-    reader.readAsDataURL(file);
+    } catch (error) {
+      console.error("Token image upload failed", error);
+      setBillingMessage("Token image upload failed. Check Firebase Storage rules and try again.");
+    }
   }
 
   function removePlayerToken(playerId, campaignId = activeCampaign?.id) {

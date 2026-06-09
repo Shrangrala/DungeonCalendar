@@ -215,8 +215,8 @@ function classNames(...parts) {
   return parts.filter(Boolean).join(" ");
 }
 
-function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isDungeonMaster = false }) {
-  if (isChosenDate) return "bg-amber-400 text-black ring-4 ring-amber-100 shadow-[0_0_30px_rgba(251,191,36,0.85)]";
+function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isGeneratedSession = false, isDungeonMaster = false }) {
+  if (isChosenDate || isGeneratedSession) return "bg-amber-400 text-black ring-4 ring-amber-100 shadow-[0_0_30px_rgba(251,191,36,0.85)]";
   if (hasDungeonMasterAvailable) return "bg-emerald-500 text-black ring-2 ring-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.65)]";
   if (hasDungeonMasterUnavailable) return "bg-red-600 text-white ring-2 ring-red-200 shadow-[0_0_22px_rgba(239,68,68,0.65)]";
   if (selectedByActive) return "bg-emerald-600 text-white ring-2 ring-emerald-300 shadow-[0_0_18px_rgba(16,185,129,0.5)]";
@@ -2707,7 +2707,8 @@ export default function DungeonCalendarApp() {
               {dates.map((date) => {
                 const key = dateKey(date);
                 const isChosenDate = key === chosenDate;
-                const showOnlyFinal = !!chosenDate && !isChosenDate;
+                const isGeneratedSession = (activeCampaign?.generatedSessionDates || []).includes(key);
+                const showOnlyFinal = !!chosenDate && !isChosenDate && !isGeneratedSession;
                 const ids = showOnlyFinal ? [] : (availability[key] ?? []);
                 const hasDungeonMasterAvailable = ids.some((id) => isDungeonMasterResponse(id));
                 const selectedByActive = ids.includes(activePlayerId);
@@ -2726,14 +2727,14 @@ export default function DungeonCalendarApp() {
                       "border-r border-t border-zinc-800 text-left transition",
                       isDungeonMaster || hasDungeonMasterAvailable ? "hover:bg-zinc-900" : "cursor-not-allowed opacity-35",
                       date.getMonth() !== viewDate.getMonth() && "text-zinc-600",
-                      dateVisualState({ ids, unavailableIds, selectedByActive, unavailableByActive, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isDungeonMaster })
+                      dateVisualState({ ids, unavailableIds, selectedByActive, unavailableByActive, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isGeneratedSession, isDungeonMaster })
                     )}
                   >
-                    <div className="flex items-start justify-between"><span className="font-semibold">{date.getDate()}</span>{(hasDungeonMasterAvailable || hasDungeonMasterUnavailable || isChosenDate) && <Shield className="h-4 w-4" />}</div>
+                    <div className="flex items-start justify-between"><span className="font-semibold">{date.getDate()}</span>{(hasDungeonMasterAvailable || hasDungeonMasterUnavailable || isChosenDate || isGeneratedSession) && <Shield className="h-4 w-4" />}</div>
                     {!compact && hasDungeonMasterAvailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-emerald-100 sm:block">DM available</div>}
                     {!compact && hasDungeonMasterUnavailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-red-100 sm:block">DM not available</div>}
                     {!compact && !isDungeonMaster && !hasDungeonMasterAvailable && !hasDungeonMasterUnavailable && <div className="mt-4 hidden text-xs font-semibold text-zinc-400 sm:block">Waiting for DM</div>}
-                    {!compact && isChosenDate && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
+                    {!compact && (isChosenDate || isGeneratedSession) && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">{isChosenDate ? "Final" : "Generated"}</div>}
                     {!compact && visibleUnavailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleUnavailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-red-950/60 px-1.5 py-1 text-[11px] font-semibold text-red-100"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM not available" : isDungeonMaster ? `${player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name} unavailable` : "You unavailable"}</span></div> : null; })}</div>}
                     {!compact && visibleAvailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleAvailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-black/35 px-1.5 py-1 text-[11px] font-semibold text-white"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM available" : isDungeonMaster ? player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name : "You available"}</span></div> : null; })}</div>}
                   </button>
@@ -3397,6 +3398,24 @@ export default function DungeonCalendarApp() {
                 </label>
               </div>
             </div>
+
+            {isDungeonMaster && (
+              <div className="rounded-xl border border-amber-800 bg-amber-950/20 p-4">
+                <h3 className="font-bold text-amber-100">Recurring Sessions</h3>
+                <p className="mt-1 text-sm text-zinc-400">Generate future sessions from the selected final date. Generated dates keep the same weekday as the final date.</p>
+                <div className="mt-3 flex flex-wrap items-end gap-3">
+                  <div className="min-w-[210px] flex-1">
+                    <p className="text-xs uppercase tracking-wider text-amber-300">Final Date</p>
+                    <p className="font-bold text-amber-100">{chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No final date selected"}</p>
+                  </div>
+                  <label className="text-sm text-zinc-300">How often<select value={recurringCadence} onChange={(event) => setRecurringCadence(event.target.value)} className="mt-1 block rounded-xl border border-zinc-700 bg-black px-3 py-2 text-white"><option value="weekly">Weekly</option><option value="biweekly">Bi-weekly</option><option value="monthly">Monthly</option></select></label>
+                  <label className="text-sm text-zinc-300">How many sessions<input value={recurringSessionCount} onChange={(event) => setRecurringSessionCount(event.target.value)} type="number" min="1" max="52" className="mt-1 block w-32 rounded-xl border border-zinc-700 bg-black px-3 py-2 text-white" /></label>
+                  <Button onClick={generateRecurringSessions} disabled={!chosenDate} className="rounded-xl bg-amber-600 hover:bg-amber-500">Generate Dates</Button>
+                  <Button onClick={removeGeneratedSessions} disabled={(activeCampaign?.generatedSessionDates || []).length === 0} variant="ghost" className="rounded-xl border border-red-800 text-red-200 hover:bg-red-950">Remove Generated Sessions</Button>
+                </div>
+                {(activeCampaign?.generatedSessionDates || []).length > 0 && <p className="mt-3 text-sm text-amber-100">Generated sessions: {(activeCampaign.generatedSessionDates || []).map((key) => new Date(key + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })).join(", ")}</p>}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -3644,11 +3663,13 @@ export default function DungeonCalendarApp() {
           <div className="grid grid-cols-7 gap-2">
             {previewDates.map((date) => {
               const key = dateKey(date);
-              const ids = availability[key] ?? [];
-              const unavailableIds = unavailable[key] ?? [];
+              const isChosenDate = key === chosenDate;
+              const isGeneratedSession = (activeCampaign?.generatedSessionDates || []).includes(key);
+              const showOnlyFinal = !!chosenDate && !isChosenDate && !isGeneratedSession;
+              const ids = showOnlyFinal ? [] : (availability[key] ?? []);
+              const unavailableIds = showOnlyFinal ? [] : (unavailable[key] ?? []);
               const hasDungeonMasterAvailable = ids.some((id) => isDungeonMasterResponse(id));
               const hasDungeonMasterUnavailable = unavailableIds.some((id) => isDungeonMasterResponse(id));
-              const isChosenDate = key === chosenDate;
               return (
                 <button
                   key={key}
@@ -3656,12 +3677,12 @@ export default function DungeonCalendarApp() {
                   className={classNames(
                     "aspect-square rounded-xl border border-zinc-800 p-2 text-left text-sm font-bold transition hover:scale-105",
                     date.getMonth() !== viewDate.getMonth() && "opacity-35",
-                    dateVisualState({ ids, unavailableIds, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isDungeonMaster })
+                    dateVisualState({ ids, unavailableIds, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isGeneratedSession, isDungeonMaster })
                   )}
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-bold">{date.getDate()}</span>
-                    {isChosenDate ? <Shield className="h-3 w-3" /> : (hasDungeonMasterAvailable || hasDungeonMasterUnavailable) && <Shield className="h-3 w-3" />}
+                    {(isChosenDate || isGeneratedSession) ? <Shield className="h-3 w-3" /> : (hasDungeonMasterAvailable || hasDungeonMasterUnavailable) && <Shield className="h-3 w-3" />}
                   </div>
                 </button>
               );

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
+import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
@@ -54,7 +54,6 @@ const playerColors = [
 ];
 
 const defaultPlayers = [];
-setPersistence(auth, browserLocalPersistence).catch((error) => console.warn("Auth persistence setup failed:", error));
 
 
 function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
@@ -993,7 +992,7 @@ export default function DungeonCalendarApp() {
     return pending;
   }
 
-  function syncPendingStripeActivationFromStorage() {
+  function syncPendingStripeActivationFromProfile() {
     const pending = readPendingStripePlan();
     if (!pending?.plan || normalizePlan(pending.plan) === "free") {
       setPendingStripeActivation(null);
@@ -1056,7 +1055,7 @@ export default function DungeonCalendarApp() {
     const pending = readPendingStripePlan();
     const pendingUserMatches = !pending?.uid || pending.uid === currentUser.id;
 
-    syncPendingStripeActivationFromStorage();
+    syncPendingStripeActivationFromProfile();
 
     if (pending && !pendingUserMatches) {
       if (stripeSuccess || urlPlan) {
@@ -1087,7 +1086,7 @@ export default function DungeonCalendarApp() {
     if (!currentUser || auth.currentUser?.uid !== currentUser.id) return undefined;
 
     const refreshPending = () => {
-      const pending = syncPendingStripeActivationFromStorage();
+      const pending = syncPendingStripeActivationFromProfile();
       if (pending?.plan && normalizePlan(pending.plan) !== "free" && !stripeAutoVerifyAttempted) {
         setPage("billing");
         setStripeAutoVerifyAttempted(true);

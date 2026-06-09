@@ -817,7 +817,6 @@ export default function DungeonCalendarApp() {
       if (!snapshot.exists()) return;
 
       const profile = snapshot.data();
-      saveCachedUserProfile(currentUserId, profile);
       const syncedPlayer = firebaseProfileToPlayer(currentUserId, profile, auth.currentUser?.email || "");
 
       setPlan(normalizePlan(profile?.plan || syncedPlayer.plan || "free"));
@@ -1348,7 +1347,6 @@ export default function DungeonCalendarApp() {
       updatedAt: new Date().toISOString()
     };
 
-    saveCachedUserProfile(currentUser.id, planPayload);
     setPlan(safePlan);
     setBillingInterval(safeBillingInterval);
     setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan, billingInterval: safeBillingInterval, ...extraProfileFields } : player));
@@ -1966,7 +1964,6 @@ export default function DungeonCalendarApp() {
         updatedAt: new Date().toISOString()
       };
 
-      saveCachedUserProfile(currentUser.id, profileUpdatePayload);
       setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedProfile : player));
       setAccountUsername(updatedProfile.username || "");
       setAccountName(updatedProfile.name || "");

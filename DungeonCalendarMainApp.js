@@ -1138,13 +1138,22 @@ export default function DungeonCalendarApp() {
 
   function updateActiveCampaign(updater) {
     if (!activeCampaign?.id) return;
-    let nextActiveCampaign = null;
-    setCampaigns((current) => current.map((campaign) => {
-      if (campaign.id !== activeCampaign.id) return campaign;
-      nextActiveCampaign = normalizeCampaignForSync({ ...campaign, ...updater(campaign) });
-      return nextActiveCampaign;
-    }));
-    if (nextActiveCampaign) saveCampaignToFirestore(nextActiveCampaign);
+
+    // Build the campaign to save from the current active campaign immediately.
+    // Relying on the setState callback to assign nextActiveCampaign can be skipped
+    // or delayed by React batching, which made Main App changes appear locally but
+    // never reach Firestore.
+    const patch = typeof updater === "function" ? updater(activeCampaign) : updater;
+    const nextActiveCampaign = normalizeCampaignForSync({
+      ...activeCampaign,
+      ...(patch || {})
+    });
+
+    setCampaigns((current) => current.map((campaign) =>
+      campaign.id === activeCampaign.id ? { ...campaign, ...nextActiveCampaign } : campaign
+    ));
+
+    saveCampaignToFirestore(nextActiveCampaign);
   }
 
   async function login() {
@@ -2000,12 +2009,36 @@ export default function DungeonCalendarApp() {
   }
 
   function removePlayer(id) {
-    if (!isDungeonMaster) return;
+    if (!isDungeonMaster || !activeCampaign?.id) return;
+
     setPlayers((current) => current.filter((player) => player.id !== id));
-    setCampaigns((current) => current.map((campaign) => ({
-      ...campaign,
-      availability: Object.fromEntries(Object.entries(campaign.availability).map(([key, ids]) => [key, ids.filter((playerId) => playerId !== id)]))
-    })));
+
+    const nextAvailability = Object.fromEntries(
+      Object.entries(activeCampaign.availability || {})
+        .map(([key, ids]) => [key, (ids || []).filter((playerId) => playerId !== id)])
+        .filter(([, ids]) => ids.length > 0)
+    );
+    const nextUnavailable = Object.fromEntries(
+      Object.entries(activeCampaign.unavailable || {})
+        .map(([key, ids]) => [key, (ids || []).filter((playerId) => playerId !== id)])
+        .filter(([, ids]) => ids.length > 0)
+    );
+    const nextCampaign = normalizeCampaignForSync({
+      ...activeCampaign,
+      memberIds: (activeCampaign.memberIds || []).filter((playerId) => playerId !== id),
+      invitedPlayers: (activeCampaign.invitedPlayers || []).filter((player) => player.id !== id),
+      invitedEmails: (activeCampaign.invitedEmails || []).filter((email) => {
+        const removedPlayer = players.find((player) => player.id === id);
+        return normalizeEmail(email) !== normalizeEmail(removedPlayer?.email || "");
+      }),
+      availability: nextAvailability,
+      unavailable: nextUnavailable
+    });
+
+    setCampaigns((current) => current.map((campaign) =>
+      campaign.id === activeCampaign.id ? nextCampaign : campaign
+    ));
+    saveCampaignToFirestore(nextCampaign);
   }
 
   function toggleAvailability(date) {

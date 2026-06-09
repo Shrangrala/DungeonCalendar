@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
+import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
@@ -54,6 +54,7 @@ const playerColors = [
 ];
 
 const defaultPlayers = [];
+setPersistence(auth, browserLocalPersistence).catch((error) => console.warn("Auth persistence setup failed:", error));
 
 
 function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
@@ -880,35 +881,38 @@ export default function DungeonCalendarApp() {
         (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail))
       );
 
-      if (visibleRemoteCampaigns.length) {
-        setCampaigns((current) => {
-          const remoteIds = new Set(visibleRemoteCampaigns.map((campaign) => campaign.id));
-          const remainingLocal = current.filter((campaign) => !remoteIds.has(campaign.id));
-          return [...remainingLocal, ...visibleRemoteCampaigns];
-        });
+      setCampaigns(visibleRemoteCampaigns);
 
-        const remotePlayers = visibleRemoteCampaigns.flatMap((campaign) => (campaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaign.id)));
-        if (remotePlayers.length) {
-          setPlayers((current) => {
-            const merged = [...current];
-            remotePlayers.forEach((remotePlayer) => {
-              const key = normalizeEmail(remotePlayer.email || "") || remotePlayer.id;
-              const index = merged.findIndex((player) => (normalizeEmail(player.email || "") || player.id) === key);
-              if (index >= 0) {
-                merged[index] = {
-                  ...merged[index],
-                  ...remotePlayer,
-                  campaignIds: Array.from(new Set([...(merged[index].campaignIds || []), ...(remotePlayer.campaignIds || [])])),
-                  campaignCharacterNames: { ...(merged[index].campaignCharacterNames || {}), ...(remotePlayer.campaignCharacterNames || {}) },
-                  campaignTokenImages: { ...(merged[index].campaignTokenImages || {}), ...(remotePlayer.campaignTokenImages || {}) }
-                };
-              } else {
-                merged.push(remotePlayer);
-              }
-            });
-            return merged;
-          });
-        }
+      const currentCampaignIds = new Set(visibleRemoteCampaigns.map((campaign) => campaign.id));
+      const remotePlayers = visibleRemoteCampaigns.flatMap((campaign) => (campaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaign.id)));
+      setPlayers((current) => {
+        const base = current
+          .filter((player) => player.id === currentUserId || player.id === auth.currentUser?.uid)
+          .map((player) => ({
+            ...player,
+            campaignIds: (player.campaignIds || []).filter((campaignId) => currentCampaignIds.has(campaignId))
+          }));
+        const merged = [...base];
+        remotePlayers.forEach((remotePlayer) => {
+          const key = normalizeEmail(remotePlayer.email || "") || remotePlayer.id;
+          const index = merged.findIndex((player) => (normalizeEmail(player.email || "") || player.id) === key);
+          if (index >= 0) {
+            merged[index] = {
+              ...merged[index],
+              ...remotePlayer,
+              campaignIds: Array.from(new Set([...(merged[index].campaignIds || []).filter((campaignId) => currentCampaignIds.has(campaignId)), ...(remotePlayer.campaignIds || [])])),
+              campaignCharacterNames: { ...(merged[index].campaignCharacterNames || {}), ...(remotePlayer.campaignCharacterNames || {}) },
+              campaignTokenImages: { ...(merged[index].campaignTokenImages || {}), ...(remotePlayer.campaignTokenImages || {}) }
+            };
+          } else {
+            merged.push(remotePlayer);
+          }
+        });
+        return merged;
+      });
+
+      if (visibleRemoteCampaigns.length && (!activeCampaignId || !visibleRemoteCampaigns.some((campaign) => campaign.id === activeCampaignId))) {
+        setActiveCampaignId(visibleRemoteCampaigns[0].id);
       }
       setTimeout(() => { loadingCampaignsFromFirestoreRef.current = false; }, 0);
     }, (error) => console.warn("Campaign live sync failed:", error));
@@ -3963,6 +3967,10 @@ export default function DungeonCalendarApp() {
 
   if (publicRoute === "/about") {
     return AboutPage();
+  }
+
+  if (!authProfileLoaded) {
+    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-3 py-5 sm:px-6 sm:py-10"><div className="rounded-2xl border border-zinc-800 bg-black/70 p-6 text-center text-zinc-200">Checking saved login...</div></main></div>;
   }
 
   if (!currentUser) {

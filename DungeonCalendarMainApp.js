@@ -720,7 +720,6 @@ export default function DungeonCalendarApp() {
     if (!currentUser) return [];
     const userEmail = normalizeEmail(currentUser.email || "");
     return campaigns.map(normalizeCampaignForSync).filter((campaign) =>
-      (currentUser.campaignIds ?? []).includes(campaign.id) ||
       (campaign.memberIds ?? []).includes(currentUser.id) ||
       (campaign.dungeonMasterIds ?? []).includes(currentUser.id) ||
       campaign.ownerId === currentUser.id ||
@@ -745,7 +744,6 @@ export default function DungeonCalendarApp() {
     const campaignRecords = (activeCampaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaignId));
     const relevantPlayers = [
       ...players.filter((player) =>
-        (player.campaignIds ?? []).includes(campaignId) ||
         (activeCampaign.memberIds ?? []).includes(player.id) ||
         activeCampaign?.dungeonMasterIds?.includes(player.id)
       ),
@@ -876,7 +874,6 @@ export default function DungeonCalendarApp() {
       const remoteCampaigns = snapshot.docs.map((item) => normalizeCampaignForSync({ id: item.id, ...item.data() }));
       const userEmail = normalizeEmail(currentUser.email || "");
       const visibleRemoteCampaigns = remoteCampaigns.filter((campaign) =>
-        (currentUser.campaignIds || []).includes(campaign.id) ||
         (campaign.memberIds || []).includes(currentUserId) ||
         (campaign.dungeonMasterIds || []).includes(currentUserId) ||
         campaign.ownerId === currentUserId ||

@@ -36,7 +36,7 @@ const navItems = [
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "players", label: "Players", icon: Users },
   { id: "results", label: "Results", icon: BarChart3 },
-  { id: "settings", label: "Settings", icon: Settings }
+  { id: "settings", label: "Campaign Settings", icon: Settings }
 ];
 
 const playerColors = [
@@ -76,6 +76,14 @@ function normalizeArray(values = []) {
   return Array.isArray(values) ? values.filter(Boolean) : [];
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function normalizeCampaignForSync(campaign = {}) {
   const id = campaign.id || crypto.randomUUID();
   return {
@@ -103,7 +111,7 @@ function campaignSyncKey(campaign = {}) {
   delete copy.updatedAt;
   delete copy.membershipSyncedAt;
   delete copy.cachedAt;
-  return JSON.stringify(copy, Object.keys(copy).sort());
+  return stableStringify(copy);
 }
 
 const lastSavedCampaignKeys = new Map();
@@ -3184,7 +3192,123 @@ export default function DungeonCalendarApp() {
   }
 
   function SettingsPage() {
-    return <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="space-y-5 p-6"><h2 className="text-2xl font-bold">Campaign Settings</h2>{isDungeonMaster && <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><label className="text-sm text-zinc-300">Campaign Name</label>{isEditingCampaignName ? <><input value={campaignName} onChange={(event) => updateActiveCampaign(() => ({ name: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && updateActiveCampaign(() => ({ isEditingName: false }))} placeholder="Enter campaign name" className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3" /><Button onClick={() => updateActiveCampaign(() => ({ isEditingName: false }))} className="mt-3 rounded-xl bg-red-700 hover:bg-red-600">Save Campaign Name</Button></> : <div className="mt-3 flex items-center justify-between rounded-xl border border-zinc-700 bg-black/40 px-4 py-3"><span className="text-lg font-bold">{campaignName || "Unnamed Campaign"}</span><Button onClick={() => updateActiveCampaign(() => ({ isEditingName: true }))} variant="ghost" className="border border-zinc-700 hover:bg-zinc-900">Edit</Button></div>}</div>}<div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><h3 className="font-bold">Session Defaults</h3><div className="mt-3 grid gap-3 md:grid-cols-3"><input type="time" value={sessionTime} onChange={(event) => updateActiveCampaign(() => ({ sessionTime: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" /><input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" /><select value={reminderHours} onChange={(event) => updateActiveCampaign(() => ({ reminderHours: event.target.value }))} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2"><option value={1}>1 hour reminder</option><option value={6}>6 hours</option><option value={12}>12 hours</option><option value={24}>24 hours</option><option value={48}>2 days</option></select></div></div></CardContent></Card>;
+    return (
+      <div className="space-y-5">
+        <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
+          <CardContent className="space-y-5 p-6">
+            <h2 className="text-2xl font-bold">Campaign Settings</h2>
+            {isDungeonMaster && (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+                <label className="text-sm font-bold text-zinc-300">Campaign Name</label>
+                {isEditingCampaignName ? (
+                  <>
+                    <input value={campaignName} onChange={(event) => updateActiveCampaign(() => ({ name: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && updateActiveCampaign(() => ({ isEditingName: false }))} placeholder="Enter campaign name" className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3" />
+                    <Button onClick={() => updateActiveCampaign(() => ({ isEditingName: false }))} className="mt-3 rounded-xl bg-red-700 hover:bg-red-600">Save Campaign Name</Button>
+                  </>
+                ) : (
+                  <div className="mt-3 flex items-center justify-between rounded-xl border border-zinc-700 bg-black/40 px-4 py-3">
+                    <span className="text-lg font-bold">{campaignName || "Unnamed Campaign"}</span>
+                    <Button onClick={() => updateActiveCampaign(() => ({ isEditingName: true }))} variant="ghost" className="border border-zinc-700 hover:bg-zinc-900">Edit</Button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+              <h3 className="font-bold">Session Defaults</h3>
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Start Time</span>
+                  <input type="time" value={sessionTime} onChange={(event) => updateActiveCampaign(() => ({ sessionTime: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Duration</span>
+                  <input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Reminder Time</span>
+                  <select value={reminderHours} onChange={(event) => updateActiveCampaign(() => ({ reminderHours: event.target.value }))} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2">
+                    <option value={1}>1 hour reminder</option>
+                    <option value={6}>6 hours</option>
+                    <option value={12}>12 hours</option>
+                    <option value={24}>24 hours</option>
+                    <option value={48}>2 days</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {isDungeonMaster && hasPlanFeature("playerInvites") && (
+          <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
+            <CardContent className="space-y-3 p-6">
+              <h2 className="text-2xl font-bold">Invite Players</h2>
+              <p className="text-sm text-zinc-400">Players belong to this campaign. Only Dungeon Masters can invite or remove them.</p>
+              <input value={newPlayer} onChange={(event) => setNewPlayer(event.target.value)} placeholder="Player name" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <input value={newPlayerEmail} onChange={(event) => setNewPlayerEmail(event.target.value)} placeholder="Email optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <input value={newPlayerPhone} onChange={(event) => setNewPlayerPhone(event.target.value)} placeholder="Phone optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <Button onClick={addPlayer} className="w-full rounded-xl bg-red-700 hover:bg-red-600"><Plus className="mr-2 h-4 w-4" /> Add Invite</Button>
+            </CardContent>
+          </Card>
+        )}
+
+        <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
+          <CardContent className="p-6">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-bold">Campaign Players</h2>
+                <p className="text-sm text-zinc-400">Manage campaign members, invite sharing, token images, and removals.</p>
+              </div>
+              {hasPlanFeature("tokenUploads") && <span className="rounded-full border border-amber-700 bg-amber-950/40 px-3 py-1 text-xs font-bold text-amber-200">Token Uploads Enabled</span>}
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              {activeCampaignPlayers.map((player) => {
+                const isDmPlayer = activeCampaign?.dungeonMasterIds?.includes(player.id);
+                const displayName = player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name;
+
+                return (
+                  <div key={player.id} className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <button onClick={() => isDungeonMaster ? setActivePlayerId(player.id) : setActivePlayerId(currentUserId)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                        <PlayerToken player={player} campaignId={activeCampaign?.id} size="md" />
+                        <span className="min-w-0">
+                          <b className="block truncate text-base text-zinc-100">{displayName}</b>
+                          {player?.campaignCharacterNames?.[activeCampaign?.id] && <span className="block truncate text-sm text-zinc-400">Player: {player.name}</span>}
+                          <span className="block text-xs text-zinc-500">{isDmPlayer ? "Dungeon Master" : "Player"}</span>
+                        </span>
+                      </button>
+
+                      <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+                        {isDungeonMaster && hasPlanFeature("tokenUploads") && (
+                          <div className="flex flex-col gap-2">
+                            <label className="cursor-pointer rounded-lg border border-amber-700 px-3 py-2 text-center text-xs font-bold text-amber-200 hover:bg-amber-950/40">
+                              Upload Token
+                              <input type="file" accept="image/*" className="hidden" onChange={(event) => updatePlayerToken(player.id, event.target.files?.[0], activeCampaign?.id)} />
+                            </label>
+                            {player.campaignTokenImages?.[activeCampaign?.id] && <button onClick={() => removePlayerToken(player.id, activeCampaign?.id)} className="rounded-lg border border-red-800 px-3 py-2 text-xs font-bold text-red-200 hover:bg-red-950/50">Remove Token</button>}
+                          </div>
+                        )}
+                        {isDungeonMaster && !isDmPlayer && <button onClick={() => removePlayer(player.id)} className="rounded-lg p-2 text-zinc-400 hover:bg-red-950 hover:text-red-200" title="Remove player"><Trash2 className="h-4 w-4" /></button>}
+                      </div>
+                    </div>
+
+                    {isDungeonMaster && !isDmPlayer && (
+                      <div className="mt-4 grid gap-2 border-t border-zinc-800 pt-3 sm:grid-cols-3">
+                        {player.email && <button type="button" onClick={() => openEmailInvitePopup(player)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-700 bg-blue-950/50 px-3 py-2 text-xs font-black text-blue-100 shadow-lg shadow-blue-950/20 hover:bg-blue-900/70"><Mail className="h-3 w-3" /> Email</button>}
+                        {player.phone && <a href={`sms:${player.phone}?&body=${encodeURIComponent(getInviteMessage(player.name))}`} className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-700 bg-emerald-950/50 px-3 py-2 text-xs font-black text-emerald-100 shadow-lg shadow-emerald-950/20 hover:bg-emerald-900/70"><MessageSquare className="h-3 w-3" /> Text</a>}
+                        <button onClick={() => navigator.clipboard.writeText(getLoginLink(player.name))} className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-700 bg-amber-950/50 px-3 py-2 text-xs font-black text-amber-100 shadow-lg shadow-amber-950/20 hover:bg-amber-900/70"><Copy className="h-3 w-3" /> Copy Link</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   function UpcomingSession() {
@@ -3420,7 +3544,6 @@ export default function DungeonCalendarApp() {
   function QuickActions() {
     const actions = [
       { label: "Calendar", description: "Open the calendar and mark availability.", icon: CalendarDays, target: "calendar" },
-      ...(isDungeonMaster ? [{ label: "Manage Players", description: "Invite, text, email, or remove players.", icon: Users, target: "players" }] : []),
       { label: "View all Results", description: "Compare every proposed date.", icon: BarChart3, target: "results" },
       ...(isDungeonMaster ? [{ label: "Campaign Settings", description: "Edit campaign and reminder settings.", icon: Settings, target: "settings" }] : [])
     ];

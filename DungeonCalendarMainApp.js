@@ -785,7 +785,8 @@ export default function DungeonCalendarApp() {
         const localMatch = players.find((player) =>
           player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
         );
-        const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
+        let firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
+        firebasePlayer = await ensureFirestoreCampaignForUser(user.uid, firebasePlayer);
         setPlan(normalizePlan(profile?.plan || localMatch?.plan || firebasePlayer.plan || "free"));
         setBillingInterval(normalizeBillingInterval(profile?.billingInterval || localMatch?.billingInterval || firebasePlayer.billingInterval || "monthly"));
 
@@ -1174,6 +1175,39 @@ export default function DungeonCalendarApp() {
 
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
 
+  async function ensureFirestoreCampaignForUser(uid, player) {
+    const existingCampaignIds = Array.isArray(player?.campaignIds) ? player.campaignIds.filter(Boolean) : [];
+    if (existingCampaignIds.length > 0) return player;
+
+    const campaign = normalizeCampaignForSync({
+      ...createCampaign("", [uid], uid),
+      memberIds: [uid]
+    });
+
+    await saveCampaignToFirestore(campaign);
+
+    const updatedPlayer = {
+      ...player,
+      campaignIds: [campaign.id],
+      campaignCharacterNames: player?.campaignCharacterNames || {},
+      lockedColorCampaignIds: player?.lockedColorCampaignIds || [],
+      campaignTokenImages: player?.campaignTokenImages || {}
+    };
+
+    await saveUserProfile(uid, {
+      campaignIds: updatedPlayer.campaignIds,
+      campaignCharacterNames: updatedPlayer.campaignCharacterNames,
+      lockedColorCampaignIds: updatedPlayer.lockedColorCampaignIds,
+      campaignTokenImages: updatedPlayer.campaignTokenImages,
+      role: updatedPlayer.role || "Player",
+      color: updatedPlayer.color || ""
+    });
+
+    setCampaigns((current) => current.some((item) => item.id === campaign.id) ? current : [...current, campaign]);
+    setActiveCampaignId(campaign.id);
+    return updatedPlayer;
+  }
+
   function updateActiveCampaign(updater) {
     if (!activeCampaign?.id) return;
     setCampaigns((current) => current.map((campaign) => {
@@ -1243,6 +1277,8 @@ export default function DungeonCalendarApp() {
         await saveUserProfile(uid, player);
       }
 
+      player = await ensureFirestoreCampaignForUser(uid, player);
+
       setPlayers((current) => {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== trimmedEmail);
         return [...withoutDuplicate, player];
@@ -1280,7 +1316,7 @@ export default function DungeonCalendarApp() {
       const profile = await loadUserProfile(uid);
       const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === email);
 
-      const player = {
+      let player = {
         ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, email),
         username: profile?.username || existingLocal?.username || displayName.toLowerCase().replace(/\s+/g, "") || email.split("@")[0] || "player",
         name: profile?.name || existingLocal?.name || displayName,
@@ -1294,6 +1330,8 @@ export default function DungeonCalendarApp() {
       if (!profile) {
         await saveUserProfile(uid, player);
       }
+
+      player = await ensureFirestoreCampaignForUser(uid, player);
 
       setPlayers((current) => {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
@@ -3914,6 +3952,24 @@ export default function DungeonCalendarApp() {
 
   if (!currentUser) {
     return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-3 py-5 sm:px-6 sm:py-10"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
+  }
+
+  if (visibleCampaigns.length === 0) {
+    return (
+      <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100">
+        <AppBackground />
+        <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] gap-4 overflow-visible px-3 py-4 sm:px-5 sm:py-6 lg:grid-cols-[300px_minmax(0,1fr)] lg:gap-6 lg:px-6">
+          {Sidebar}
+          <section className="w-full min-w-0 space-y-4 sm:space-y-5">
+            <div className="rounded-2xl border border-zinc-800 bg-black/55 p-6 text-zinc-100 shadow-2xl backdrop-blur">
+              <h2 className="text-2xl font-bold">No campaign calendar found</h2>
+              <p className="mt-2 text-zinc-300">Create a Firestore-backed campaign calendar to continue.</p>
+              <Button onClick={addCampaign} className="mt-5 rounded-xl bg-red-700 hover:bg-red-600"><Plus className="mr-2 h-4 w-4" /> Add Campaign</Button>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
   }
 
   return (

@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { collection, deleteField, doc, getDoc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
@@ -34,9 +34,8 @@ const dungeonMasterId = "dungeon-master";
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: Home },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
-  { id: "players", label: "Players", icon: Users },
   { id: "results", label: "Results", icon: BarChart3 },
-  { id: "settings", label: "Settings", icon: Settings }
+  { id: "settings", label: "Campaign Settings", icon: Settings }
 ];
 
 const playerColors = [
@@ -61,71 +60,19 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
     id: crypto.randomUUID(),
     ownerId,
     dungeonMasterIds,
-    memberIds: dungeonMasterIds,
-    invitedEmails: [],
-    invitedPlayers: [],
     name,
     isEditingName: true,
     availability: {},
     unavailable: {},
+    players: [],
     chosenDate: "",
     sessionTime: "18:00",
     sessionDuration: 4,
-    reminderHours: 24
+    reminderHours: 24,
+    recurringSessionFrequency: "weekly",
+    recurringSessionCount: 5,
+    sessionScheduleDates: []
   };
-}
-
-function normalizeList(values = []) {
-  return Array.isArray(values) ? values.filter(Boolean) : [];
-}
-
-function normalizeInvitedPlayer(player = {}) {
-  return {
-    id: player.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
-    role: player.role || "Player",
-    name: player.name || "Invited Player",
-    username: player.username || String(player.name || "player").toLowerCase().replace(/\s+/g, ""),
-    email: normalizeEmail(player.email || ""),
-    phone: player.phone || "",
-    password: player.password || "dndplayer",
-    invitePending: player.invitePending !== false,
-    campaignIds: normalizeList(player.campaignIds),
-    campaignCharacterNames: player.campaignCharacterNames || {},
-    color: player.color || playerColors[0],
-    lockedColorCampaignIds: normalizeList(player.lockedColorCampaignIds),
-    campaignTokenImages: player.campaignTokenImages || {}
-  };
-}
-
-function normalizeCampaign(campaign = {}) {
-  const id = campaign.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
-  return {
-    ...campaign,
-    id,
-    ownerId: campaign.ownerId || campaign.createdBy || campaign.dmId || "",
-    dungeonMasterIds: normalizeList(campaign.dungeonMasterIds || campaign.dmIds || []),
-    memberIds: normalizeList(campaign.memberIds || campaign.members || campaign.playerIds || []),
-    invitedEmails: normalizeList(campaign.invitedEmails || []),
-    invitedPlayers: normalizeList(campaign.invitedPlayers || []).map((player) => normalizeInvitedPlayer({ ...player, campaignIds: [...new Set([...(player.campaignIds || []), id])] })),
-    availability: campaign.availability || {},
-    unavailable: campaign.unavailable || {},
-    chosenDate: campaign.chosenDate || "",
-    sessionTime: campaign.sessionTime || "18:00",
-    sessionDuration: campaign.sessionDuration || 4,
-    reminderHours: campaign.reminderHours || 24
-  };
-}
-
-async function saveCampaignToFirestore(campaign) {
-  if (!campaign?.id) return false;
-  try {
-    const normalized = normalizeCampaign({ ...campaign, updatedAt: new Date().toISOString() });
-    await setDoc(doc(db, "campaigns", normalized.id), normalized, { merge: true });
-    return true;
-  } catch (error) {
-    console.error("Failed to save campaign to Firestore:", error);
-    return false;
-  }
 }
 
 function dateKey(date) {
@@ -147,14 +94,37 @@ function classNames(...parts) {
   return parts.filter(Boolean).join(" ");
 }
 
-function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isDungeonMaster = false }) {
-  if (isChosenDate) return "bg-emerald-500 text-black ring-4 ring-emerald-200 shadow-[0_0_28px_rgba(52,211,153,0.75)]";
-  if (hasDungeonMasterAvailable) return "bg-emerald-500 text-black ring-2 ring-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.65)]";
-  if (hasDungeonMasterUnavailable) return "bg-red-600 text-white ring-2 ring-red-200 shadow-[0_0_22px_rgba(239,68,68,0.65)]";
-  if (selectedByActive) return "bg-emerald-600 text-white ring-2 ring-emerald-300 shadow-[0_0_18px_rgba(16,185,129,0.5)]";
-  if (unavailableByActive) return "bg-red-700 text-white ring-2 ring-red-300 shadow-[0_0_18px_rgba(220,38,38,0.5)]";
-  if (isDungeonMaster && ids.length > 0) return "bg-emerald-700/80 text-white ring-1 ring-emerald-400/70";
-  if (isDungeonMaster && unavailableIds.length > 0) return "bg-red-800/80 text-white ring-1 ring-red-400/70";
+function removeDungeonMastersFromUnavailable(unavailable = {}, dungeonMasterIds = []) {
+  const dmIds = new Set(dungeonMasterIds || []);
+  return Object.fromEntries(
+    Object.entries(unavailable || {})
+      .map(([key, ids]) => [key, Array.isArray(ids) ? ids.filter((id) => !dmIds.has(id)) : []])
+      .filter(([, ids]) => ids.length > 0)
+  );
+}
+
+function sanitizeCampaignForFirestore(campaign = {}) {
+  const dungeonMasterIds = campaign.dungeonMasterIds || [];
+  return {
+    ...campaign,
+    unavailable: removeDungeonMastersFromUnavailable(campaign.unavailable || {}, dungeonMasterIds)
+  };
+}
+
+function campaignContentKey(campaign = {}) {
+  const clean = sanitizeCampaignForFirestore(campaign);
+  const { updatedAt, membershipSyncedAt, ...rest } = clean;
+  return JSON.stringify(rest);
+}
+
+function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isScheduledSessionDate = false, isDungeonMaster = false, hideSuggestedAvailability = false }) {
+  if (isChosenDate || isScheduledSessionDate) return "bg-amber-400 text-black ring-4 ring-amber-200 shadow-[0_0_28px_rgba(251,191,36,0.75)]";
+  if (hasDungeonMasterUnavailable && !hideSuggestedAvailability) return "bg-red-600 text-white ring-2 ring-red-200 shadow-[0_0_22px_rgba(239,68,68,0.65)]";
+  if (unavailableByActive && !hideSuggestedAvailability) return "bg-red-700 text-white ring-2 ring-red-300 shadow-[0_0_18px_rgba(220,38,38,0.5)]";
+  if (isDungeonMaster && unavailableIds.length > 0 && !hideSuggestedAvailability) return "bg-red-800/80 text-white ring-1 ring-red-400/70";
+  if (hasDungeonMasterAvailable && !hideSuggestedAvailability) return "bg-emerald-500 text-black ring-2 ring-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.65)]";
+  if (selectedByActive && !hideSuggestedAvailability) return "bg-emerald-600 text-white ring-2 ring-emerald-300 shadow-[0_0_18px_rgba(16,185,129,0.5)]";
+  if (isDungeonMaster && ids.length > 0 && !hideSuggestedAvailability) return "bg-emerald-700/80 text-white ring-1 ring-emerald-400/70";
   return "bg-zinc-950/65";
 }
 
@@ -464,6 +434,7 @@ export default function DungeonCalendarApp() {
     const savedCampaigns = localStorage.getItem("dnd-calendar-campaigns");
     return savedCampaigns ? JSON.parse(savedCampaigns) : [createCampaign()];
   });
+  const [campaignsRemoteReady, setCampaignsRemoteReady] = useState(false);
   const [activeCampaignId, setActiveCampaignId] = useState(() => localStorage.getItem("dnd-calendar-active-campaign") || "");
   const [newPlayer, setNewPlayer] = useState("");
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
@@ -508,6 +479,7 @@ export default function DungeonCalendarApp() {
   const [stripeAutoVerifyAttempted, setStripeAutoVerifyAttempted] = useState(false);
   const [stripeLoginVerifyUserId, setStripeLoginVerifyUserId] = useState("");
   const [publicRoute, setPublicRoute] = useState(() => typeof window !== "undefined" ? window.location.pathname : "/");
+  const lastSavedCampaignContentKeyRef = useRef("");
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -635,34 +607,218 @@ export default function DungeonCalendarApp() {
   const activePlayer = players.find((player) => player.id === activePlayerId);
   const visibleCampaigns = useMemo(() => {
     if (!currentUser) return [];
-    return campaigns.map(normalizeCampaign).filter((campaign) =>
+    return campaigns.filter((campaign) =>
       (currentUser.campaignIds ?? []).includes(campaign.id) ||
-      (campaign.memberIds ?? []).includes(currentUser.id) ||
       (campaign.dungeonMasterIds ?? []).includes(currentUser.id) ||
-      campaign.ownerId === currentUser.id ||
-      (!!currentUser.email && (campaign.invitedEmails ?? []).map(normalizeEmail).includes(normalizeEmail(currentUser.email)))
+      campaign.ownerId === currentUser.id
     );
   }, [campaigns, currentUser]);
   const activeCampaign = visibleCampaigns.find((campaign) => campaign.id === activeCampaignId) ?? visibleCampaigns[0];
-  const availability = activeCampaign?.availability ?? {};
-  const unavailable = activeCampaign?.unavailable ?? {};
   const dungeonMasterIds = activeCampaign?.dungeonMasterIds ?? [];
+  const availability = activeCampaign?.availability ?? {};
+  const unavailable = removeDungeonMastersFromUnavailable(activeCampaign?.unavailable ?? {}, dungeonMasterIds);
   const campaignName = activeCampaign?.name ?? "";
   const isEditingCampaignName = activeCampaign?.isEditingName ?? true;
   const chosenDate = activeCampaign?.chosenDate ?? "";
   const sessionTime = activeCampaign?.sessionTime ?? "18:00";
   const sessionDuration = activeCampaign?.sessionDuration ?? 4;
   const reminderHours = activeCampaign?.reminderHours ?? 24;
+  const recurringSessionFrequency = activeCampaign?.recurringSessionFrequency ?? "weekly";
+  const recurringSessionCount = Number(activeCampaign?.recurringSessionCount ?? 5);
+  const generatedSessionDates = Array.isArray(activeCampaign?.generatedSessionDates) ? activeCampaign.generatedSessionDates : [];
+  const generatedAvailabilityDates = Array.isArray(activeCampaign?.generatedAvailabilityDates) ? activeCampaign.generatedAvailabilityDates : [];
+  const sessionScheduleDates = Array.isArray(activeCampaign?.sessionScheduleDates) ? activeCampaign.sessionScheduleDates : generatedSessionDates;
+  const hasGeneratedSessionDates = sessionScheduleDates.length > 0 || generatedSessionDates.length > 0 || generatedAvailabilityDates.length > 0;
+  const sessionAmPm = Number((sessionTime || "18:00").split(":")[0]) >= 12 ? "PM" : "AM";
+  const sessionClockTime = (() => {
+    const [hourText = "18", minuteText = "00"] = (sessionTime || "18:00").split(":");
+    const hour24 = Number(hourText);
+    const hour12 = hour24 % 12 || 12;
+    return `${String(hour12).padStart(2, "0")}:${minuteText.padStart(2, "0").slice(0, 2)}`;
+  })();
+
+  function updateSessionClockTime(value) {
+    const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return;
+    let hour12 = Math.min(12, Math.max(1, Number(match[1])));
+    let minute = Math.min(59, Math.max(0, Number(match[2])));
+    let hour24 = hour12 % 12;
+    if (sessionAmPm === "PM") hour24 += 12;
+    updateActiveCampaign(() => ({ sessionTime: `${String(hour24).padStart(2, "0")}:${String(minute).padStart(2, "0")}` }));
+  }
+
+  function updateSessionAmPm(value) {
+    const [hourText = "18", minuteText = "00"] = (sessionTime || "18:00").split(":");
+    let hour = Number(hourText);
+    if (value === "AM" && hour >= 12) hour -= 12;
+    if (value === "PM" && hour < 12) hour += 12;
+    updateActiveCampaign(() => ({ sessionTime: `${String(hour).padStart(2, "0")}:${minuteText}` }));
+  }
+
+  function formatSessionScheduleDate(key) {
+    if (!key) return "";
+    return new Date(`${key}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function buildRecurringSessionDates(startKey, frequency, count) {
+    if (!startKey) return [];
+    const safeCount = Math.min(52, Math.max(1, Number(count) || 1));
+    const dayStep = frequency === "biweekly" ? 14 : 7;
+    const start = new Date(`${startKey}T00:00:00`);
+    const selectedWeekday = start.getDay();
+    const selectedWeekOfMonth = Math.floor((start.getDate() - 1) / 7);
+
+    function sameWeekdayInMonth(monthIndex) {
+      const firstOfMonth = new Date(start.getFullYear(), start.getMonth() + monthIndex, 1);
+      const firstMatchingDay = 1 + ((selectedWeekday - firstOfMonth.getDay() + 7) % 7);
+      let dayOfMonth = firstMatchingDay + selectedWeekOfMonth * 7;
+      const daysInTargetMonth = new Date(firstOfMonth.getFullYear(), firstOfMonth.getMonth() + 1, 0).getDate();
+      if (dayOfMonth > daysInTargetMonth) dayOfMonth -= 7;
+      return new Date(firstOfMonth.getFullYear(), firstOfMonth.getMonth(), dayOfMonth);
+    }
+
+    return Array.from({ length: safeCount }, (_, index) => {
+      if (frequency === "monthly") return dateKey(sameWeekdayInMonth(index));
+      const next = new Date(start);
+      next.setDate(start.getDate() + dayStep * index);
+      return dateKey(next);
+    });
+  }
+
+  function scheduleRecurringSessions() {
+    if (!isDungeonMaster) return;
+
+    if (plan !== "guildmaster") {
+      setBillingMessage("Recurring session scheduling is available on the Guildmaster plan.");
+      setPage("billing");
+      return;
+    }
+
+    if (!chosenDate) {
+      setBillingMessage("Choose the first session date on the calendar, then create the recurring schedule.");
+      setPage("calendar");
+      return;
+    }
+
+    const datesToSchedule = buildRecurringSessionDates(chosenDate, recurringSessionFrequency, recurringSessionCount);
+    const dmId = currentUser?.id;
+
+    updateActiveCampaign((campaign) => {
+      const nextAvailability = { ...(campaign.availability || {}) };
+      const nextUnavailable = { ...(campaign.unavailable || {}) };
+      const autoAddedAvailabilityDates = [];
+
+      datesToSchedule.forEach((key) => {
+        const existingAvailableIds = Array.isArray(nextAvailability[key]) ? nextAvailability[key] : [];
+        const dmWasAlreadyAvailable = !!dmId && existingAvailableIds.includes(dmId);
+
+        if (dmId && !dmWasAlreadyAvailable) {
+          nextAvailability[key] = Array.from(new Set([...existingAvailableIds, dmId]));
+          autoAddedAvailabilityDates.push(key);
+        }
+
+        if (dmId) nextUnavailable[key] = (nextUnavailable[key] || []).filter((id) => id !== dmId);
+      });
+
+      return {
+        recurringSessionFrequency,
+        recurringSessionCount,
+        sessionScheduleDates: datesToSchedule,
+        generatedSessionDates: datesToSchedule,
+        generatedAvailabilityDates: autoAddedAvailabilityDates,
+        chosenDate: datesToSchedule[0] || chosenDate,
+        availability: nextAvailability,
+        unavailable: nextUnavailable
+      };
+    });
+  }
+
+  function clearRecurringSessionSchedule() {
+    if (!isDungeonMaster || !activeCampaign) return;
+
+    const dmId = currentUser?.id;
+    const generatedSessionDates = Array.isArray(activeCampaign.generatedSessionDates)
+      ? activeCampaign.generatedSessionDates
+      : (Array.isArray(activeCampaign.sessionScheduleDates) ? activeCampaign.sessionScheduleDates : []);
+    const generatedAvailabilityDates = Array.isArray(activeCampaign.generatedAvailabilityDates)
+      ? activeCampaign.generatedAvailabilityDates
+      : [];
+    const nextAvailability = { ...(activeCampaign.availability || {}) };
+    const nextUnavailable = { ...(activeCampaign.unavailable || {}) };
+    const firestorePatch = {
+      sessionScheduleDates: deleteField(),
+      generatedSessionDates: deleteField(),
+      generatedAvailabilityDates: deleteField(),
+      updatedAt: new Date().toISOString()
+    };
+
+    // Only remove availability that this feature auto-added. Dates the DM manually marked
+    // before generating the recurring schedule are not listed in generatedAvailabilityDates,
+    // so they remain in Results and stay synced to Firestore.
+    generatedAvailabilityDates.forEach((key) => {
+      if (!dmId) return;
+
+      const availableIds = Array.isArray(nextAvailability[key]) ? nextAvailability[key] : [];
+      if (availableIds.includes(dmId)) {
+        const nextAvailableIds = availableIds.filter((id) => id !== dmId);
+        if (nextAvailableIds.length > 0) {
+          nextAvailability[key] = nextAvailableIds;
+          firestorePatch[`availability.${key}`] = nextAvailableIds;
+        } else {
+          delete nextAvailability[key];
+          firestorePatch[`availability.${key}`] = deleteField();
+        }
+      }
+
+      const unavailableIds = Array.isArray(nextUnavailable[key]) ? nextUnavailable[key] : [];
+      if (unavailableIds.includes(dmId)) {
+        const nextUnavailableIds = unavailableIds.filter((id) => id !== dmId);
+        if (nextUnavailableIds.length > 0) {
+          nextUnavailable[key] = nextUnavailableIds;
+          firestorePatch[`unavailable.${key}`] = nextUnavailableIds;
+        } else {
+          delete nextUnavailable[key];
+          firestorePatch[`unavailable.${key}`] = deleteField();
+        }
+      }
+    });
+
+    const activeChosenDate = activeCampaign.chosenDate || "";
+    const nextChosenDate = generatedSessionDates.includes(activeChosenDate) ? "" : activeChosenDate;
+    if (!nextChosenDate) firestorePatch.chosenDate = deleteField();
+
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== activeCampaign.id) return campaign;
+      const nextCampaign = {
+        ...campaign,
+        availability: nextAvailability,
+        unavailable: nextUnavailable,
+        chosenDate: nextChosenDate,
+        updatedAt: new Date().toISOString()
+      };
+      delete nextCampaign.sessionScheduleDates;
+      delete nextCampaign.generatedSessionDates;
+      delete nextCampaign.generatedAvailabilityDates;
+      return nextCampaign;
+    }));
+
+    updateDoc(doc(db, "campaigns", activeCampaign.id), firestorePatch).catch((error) => {
+      console.warn("Failed to remove generated session dates from Firestore:", error);
+    });
+  }
   const isDungeonMaster = !!currentUser && !!activeCampaign?.dungeonMasterIds?.includes(currentUser.id);
   const activeCampaignRole = isDungeonMaster ? "Dungeon Master" : "Player";
   const activeCampaignPlayers = useMemo(() => {
-    const campaignInvites = (activeCampaign?.invitedPlayers || []).map((player) => normalizeInvitedPlayer({ ...player, campaignIds: [...new Set([...(player.campaignIds || []), activeCampaign?.id].filter(Boolean))] }));
-    const combinedPlayers = [...players, ...campaignInvites];
-    const relevantPlayers = combinedPlayers.filter((player) =>
-      (player.campaignIds ?? []).includes(activeCampaign?.id) ||
-      activeCampaign?.memberIds?.includes(player.id) ||
-      activeCampaign?.dungeonMasterIds?.includes(player.id)
-    );
+    const campaignId = activeCampaign?.id;
+    const embeddedPlayers = Array.isArray(activeCampaign?.players) ? activeCampaign.players : [];
+    const relevantPlayers = [
+      ...players.filter((player) =>
+        (player.campaignIds ?? []).includes(campaignId) ||
+        activeCampaign?.dungeonMasterIds?.includes(player.id) ||
+        activeCampaign?.memberIds?.includes(player.id)
+      ),
+      ...embeddedPlayers
+    ];
 
     return relevantPlayers.filter((player, index, list) => {
       const key = player.email?.toLowerCase() || player.name?.toLowerCase() || player.id;
@@ -755,44 +911,56 @@ export default function DungeonCalendarApp() {
   }, [currentUserId]);
 
   useEffect(() => {
-    if (!currentUserId || !currentUser) return undefined;
+    if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return undefined;
+
+    setCampaignsRemoteReady(false);
 
     const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
+      const userEmail = normalizeEmail(currentUser.email || "");
       const remoteCampaigns = snapshot.docs
-        .map((docSnapshot) => normalizeCampaign({ id: docSnapshot.id, ...docSnapshot.data() }))
-        .filter((campaign) =>
-          (currentUser.campaignIds || []).includes(campaign.id) ||
-          (campaign.memberIds || []).includes(currentUser.id) ||
-          (campaign.dungeonMasterIds || []).includes(currentUser.id) ||
-          campaign.ownerId === currentUser.id ||
-          (!!currentUser.email && (campaign.invitedEmails || []).map(normalizeEmail).includes(normalizeEmail(currentUser.email)))
-        );
-
-      setCampaigns((current) => {
-        const merged = new Map(current.map((campaign) => [campaign.id, normalizeCampaign(campaign)]));
-        remoteCampaigns.forEach((campaign) => merged.set(campaign.id, campaign));
-        return Array.from(merged.values());
-      });
-
-      const remoteInvites = remoteCampaigns.flatMap((campaign) =>
-        (campaign.invitedPlayers || []).map((player) => normalizeInvitedPlayer({
-          ...player,
-          campaignIds: [...new Set([...(player.campaignIds || []), campaign.id])],
-          campaignCharacterNames: { ...(player.campaignCharacterNames || {}), [campaign.id]: player.campaignCharacterNames?.[campaign.id] || "" }
-        }))
-      );
-
-      if (remoteInvites.length) {
-        setPlayers((current) => {
-          const byId = new Map(current.map((player) => [player.id, player]));
-          remoteInvites.forEach((player) => byId.set(player.id, { ...(byId.get(player.id) || {}), ...player }));
-          return Array.from(byId.values());
+        .map((campaignSnapshot) => {
+          const data = campaignSnapshot.data() || {};
+          const normalized = {
+            ...createCampaign(),
+            ...data,
+            id: campaignSnapshot.id,
+            dungeonMasterIds: data.dungeonMasterIds || [],
+            memberIds: data.memberIds || [],
+            invitedEmails: data.invitedEmails || [],
+            players: Array.isArray(data.players) ? data.players : [],
+            leftUserIds: data.leftUserIds || [],
+            availability: data.availability || {},
+            unavailable: removeDungeonMastersFromUnavailable(data.unavailable || {}, data.dungeonMasterIds || []),
+            sessionScheduleDates: data.sessionScheduleDates || [],
+            generatedSessionDates: data.generatedSessionDates || [],
+            generatedAvailabilityDates: data.generatedAvailabilityDates || []
+          };
+          return normalized;
+        })
+        .filter((campaign) => {
+          if (campaign.deleted || campaign.archived || campaign.status === "deleted" || campaign.status === "archived" || campaign.status === "inactive") return false;
+          if ((campaign.leftUserIds || []).includes(currentUserId)) return false;
+          return (currentUser.campaignIds || []).includes(campaign.id) ||
+            campaign.ownerId === currentUserId ||
+            (campaign.dungeonMasterIds || []).includes(currentUserId) ||
+            (campaign.memberIds || []).includes(currentUserId) ||
+            (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail));
         });
+
+      // Firestore is the shared source of truth for campaign data, so changes made
+      // in Mobile are reflected on Main without requiring a refresh.
+      setCampaigns(remoteCampaigns);
+      if (remoteCampaigns.length && (!activeCampaignId || !remoteCampaigns.some((campaign) => campaign.id === activeCampaignId))) {
+        setActiveCampaignId(remoteCampaigns[0].id);
       }
-    }, (error) => console.warn("Campaign live sync failed:", error));
+      setCampaignsRemoteReady(true);
+    }, (error) => {
+      console.warn("Live campaign sync failed; using cached main-app campaigns:", error);
+      setCampaignsRemoteReady(true);
+    });
 
     return () => unsubscribeCampaigns();
-  }, [currentUserId, currentUser?.email, currentUser?.campaignIds]);
+  }, [authProfileLoaded, currentUserId, currentUser?.email, JSON.stringify(currentUser?.campaignIds || []), activeCampaignId]);
 
   useEffect(() => {
     if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
@@ -817,6 +985,31 @@ export default function DungeonCalendarApp() {
   useEffect(() => {
     localStorage.setItem("dnd-calendar-campaigns", JSON.stringify(campaigns));
   }, [campaigns]);
+
+  useEffect(() => {
+    if (!authProfileLoaded || !campaignsRemoteReady || !activeCampaign || !currentUserId || !activeCampaign.dungeonMasterIds?.includes(currentUserId)) return undefined;
+
+    const contentKey = campaignContentKey(activeCampaign);
+    if (lastSavedCampaignContentKeyRef.current === contentKey) return undefined;
+
+    const timer = setTimeout(() => {
+      const cleanCampaign = JSON.parse(JSON.stringify(sanitizeCampaignForFirestore({
+        ...activeCampaign,
+        updatedAt: new Date().toISOString()
+      })));
+      const cleanContentKey = campaignContentKey(cleanCampaign);
+
+      if (lastSavedCampaignContentKeyRef.current === cleanContentKey) return;
+      lastSavedCampaignContentKeyRef.current = cleanContentKey;
+
+      setDoc(doc(db, "campaigns", activeCampaign.id), cleanCampaign, { merge: false }).catch((error) => {
+        lastSavedCampaignContentKeyRef.current = "";
+        console.warn("Failed to sync campaign to Firestore:", error);
+      });
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [authProfileLoaded, campaignsRemoteReady, activeCampaign, currentUserId]);
 
   useEffect(() => {
     localStorage.setItem("dnd-calendar-current-user", currentUserId);
@@ -1101,7 +1294,11 @@ export default function DungeonCalendarApp() {
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
 
   function updateActiveCampaign(updater) {
-    setCampaigns((current) => current.map((campaign) => campaign.id === activeCampaign.id ? { ...campaign, ...updater(campaign) } : campaign));
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== activeCampaign.id) return campaign;
+      const nextCampaign = { ...campaign, ...updater(campaign) };
+      return sanitizeCampaignForFirestore(nextCampaign);
+    }));
   }
 
   async function login() {
@@ -1650,31 +1847,37 @@ export default function DungeonCalendarApp() {
   function addPlayer() {
     const trimmed = newPlayer.trim();
     if (!trimmed || !isDungeonMaster || !activeCampaign?.id) return;
-    if (activeCampaignPlayers.some((player) => player.name?.toLowerCase() === trimmed.toLowerCase())) return;
-
-    const player = normalizeInvitedPlayer({
+    const email = newPlayerEmail.trim();
+    const duplicateKey = email.toLowerCase() || trimmed.toLowerCase();
+    if (activeCampaignPlayers.some((player) => (player.email?.toLowerCase() || player.name?.toLowerCase()) === duplicateKey)) return;
+    const player = {
       id: crypto.randomUUID(),
       role: "Player",
       name: trimmed,
-      email: newPlayerEmail.trim(),
+      email,
       password: "dndplayer",
       phone: newPlayerPhone.trim(),
       invitePending: true,
       campaignIds: [activeCampaign.id],
       campaignCharacterNames: { [activeCampaign.id]: "" },
-      color: playerColors[players.length % playerColors.length]
-    });
-
-    const nextCampaign = normalizeCampaign({
-      ...activeCampaign,
-      memberIds: [...new Set([...(activeCampaign.memberIds || []), player.id])],
-      invitedEmails: player.email ? [...new Set([...(activeCampaign.invitedEmails || []), normalizeEmail(player.email)])] : (activeCampaign.invitedEmails || []),
-      invitedPlayers: [...(activeCampaign.invitedPlayers || []).filter((item) => item.id !== player.id), player]
-    });
+      color: playerColors[(activeCampaignPlayers.length || players.length) % playerColors.length],
+      lockedColorCampaignIds: [],
+      campaignTokenImages: {}
+    };
 
     setPlayers((current) => [...current.filter((item) => item.id !== player.id), player]);
-    setCampaigns((current) => current.map((campaign) => campaign.id === activeCampaign.id ? nextCampaign : campaign));
-    saveCampaignToFirestore(nextCampaign);
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== activeCampaign.id) return campaign;
+      const existingPlayers = Array.isArray(campaign.players) ? campaign.players : [];
+      return {
+        ...campaign,
+        memberIds: Array.from(new Set([...(campaign.memberIds || []), player.id])),
+        invitedEmails: email ? Array.from(new Set([...(campaign.invitedEmails || []), email.toLowerCase()])) : (campaign.invitedEmails || []),
+        players: [...existingPlayers.filter((item) => item.id !== player.id), player],
+        updatedAt: new Date().toISOString()
+      };
+    }));
+
     setNewPlayer("");
     setNewPlayerEmail("");
     setNewPlayerPhone("");
@@ -1977,7 +2180,7 @@ export default function DungeonCalendarApp() {
       const isAvailable = availableList.includes(activePlayer.id);
       const isUnavailable = unavailableList.includes(activePlayer.id);
 
-      if (availabilityMode === "available") {
+      if (isDungeonMaster || availabilityMode === "available") {
         return {
           availability: {
             ...campaign.availability,
@@ -2543,14 +2746,17 @@ export default function DungeonCalendarApp() {
               {dates.map((date) => {
                 const key = dateKey(date);
                 const ids = availability[key] ?? [];
-                const hasDungeonMasterAvailable = ids.some((id) => isDungeonMasterResponse(id));
                 const isChosenDate = key === chosenDate;
-                const selectedByActive = ids.includes(activePlayerId);
+                const isScheduledSessionDate = sessionScheduleDates.includes(key);
+                const hasFinalDates = !!chosenDate || sessionScheduleDates.length > 0;
+                const hideSuggestedAvailability = hasFinalDates && !isChosenDate && !isScheduledSessionDate;
+                const hasDungeonMasterAvailable = !hideSuggestedAvailability && ids.some((id) => isDungeonMasterResponse(id));
+                const selectedByActive = !hideSuggestedAvailability && ids.includes(activePlayerId);
                 const unavailableIds = unavailable[key] ?? [];
-                const hasDungeonMasterUnavailable = unavailableIds.some((id) => isDungeonMasterResponse(id));
-                const unavailableByActive = unavailableIds.includes(activePlayerId);
-                const visibleAvailableIds = visibleResponseIds(ids);
-                const visibleUnavailableIds = visibleResponseIds(unavailableIds);
+                const hasDungeonMasterUnavailable = !hideSuggestedAvailability && unavailableIds.some((id) => isDungeonMasterResponse(id));
+                const unavailableByActive = !hideSuggestedAvailability && unavailableIds.includes(activePlayerId);
+                const visibleAvailableIds = hideSuggestedAvailability ? [] : visibleResponseIds(ids);
+                const visibleUnavailableIds = hideSuggestedAvailability ? [] : visibleResponseIds(unavailableIds);
                 return (
                   <button
                     key={key}
@@ -2561,14 +2767,14 @@ export default function DungeonCalendarApp() {
                       "border-r border-t border-zinc-800 text-left transition",
                       isDungeonMaster || hasDungeonMasterAvailable ? "hover:bg-zinc-900" : "cursor-not-allowed opacity-35",
                       date.getMonth() !== viewDate.getMonth() && "text-zinc-600",
-                      dateVisualState({ ids, unavailableIds, selectedByActive, unavailableByActive, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isDungeonMaster })
+                      dateVisualState({ ids, unavailableIds, selectedByActive, unavailableByActive, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isScheduledSessionDate, isDungeonMaster, hideSuggestedAvailability })
                     )}
                   >
-                    <div className="flex items-start justify-between"><span className="font-semibold">{date.getDate()}</span>{(hasDungeonMasterAvailable || hasDungeonMasterUnavailable || isChosenDate) && <Shield className="h-4 w-4" />}</div>
-                    {!compact && hasDungeonMasterAvailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-emerald-100 sm:block">DM available</div>}
+                    <div className="flex items-start justify-between"><span className="font-semibold">{date.getDate()}</span>{(hasDungeonMasterUnavailable || isChosenDate || isScheduledSessionDate) && <Shield className="h-4 w-4" />}</div>
                     {!compact && hasDungeonMasterUnavailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-red-100 sm:block">DM not available</div>}
                     {!compact && !isDungeonMaster && !hasDungeonMasterAvailable && !hasDungeonMasterUnavailable && <div className="mt-4 hidden text-xs font-semibold text-zinc-400 sm:block">Waiting for DM</div>}
-                    {!compact && isChosenDate && <div className="mt-2 rounded-md bg-emerald-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
+                    {!compact && isChosenDate && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
+                    {!compact && !isChosenDate && isScheduledSessionDate && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Scheduled</div>}
                     {!compact && visibleUnavailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleUnavailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-red-950/60 px-1.5 py-1 text-[11px] font-semibold text-red-100"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM not available" : isDungeonMaster ? `${player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name} unavailable` : "You unavailable"}</span></div> : null; })}</div>}
                     {!compact && visibleAvailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleAvailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-black/35 px-1.5 py-1 text-[11px] font-semibold text-white"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM available" : isDungeonMaster ? player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name : "You available"}</span></div> : null; })}</div>}
                   </button>
@@ -2611,9 +2817,9 @@ export default function DungeonCalendarApp() {
           <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
             <CardContent className="space-y-3 p-6">
               <h2 className="text-2xl font-bold">Invite Players</h2>
-              <input type="text" value={newPlayer} onChange={(event) => setNewPlayer(event.target.value)} placeholder="Player name" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
-              <input type="email" value={newPlayerEmail} onChange={(event) => setNewPlayerEmail(event.target.value)} placeholder="Email optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
-              <input type="tel" value={newPlayerPhone} onChange={(event) => setNewPlayerPhone(event.target.value)} placeholder="Phone optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <input value={newPlayer} onChange={(event) => setNewPlayer(event.target.value)} placeholder="Player name" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <input value={newPlayerEmail} onChange={(event) => setNewPlayerEmail(event.target.value)} placeholder="Email optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+              <input value={newPlayerPhone} onChange={(event) => setNewPlayerPhone(event.target.value)} placeholder="Phone optional" className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
               <Button onClick={addPlayer} className="w-full rounded-xl bg-red-700 hover:bg-red-600"><Plus className="mr-2 h-4 w-4" /> Add Invite</Button>
             </CardContent>
           </Card>
@@ -3170,7 +3376,103 @@ export default function DungeonCalendarApp() {
   }
 
   function SettingsPage() {
-    return <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="space-y-5 p-6"><h2 className="text-2xl font-bold">Campaign Settings</h2>{isDungeonMaster && <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><label className="text-sm text-zinc-300">Campaign Name</label>{isEditingCampaignName ? <><input value={campaignName} onChange={(event) => updateActiveCampaign(() => ({ name: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && updateActiveCampaign(() => ({ isEditingName: false }))} placeholder="Enter campaign name" className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3" /><Button onClick={() => updateActiveCampaign(() => ({ isEditingName: false }))} className="mt-3 rounded-xl bg-red-700 hover:bg-red-600">Save Campaign Name</Button></> : <div className="mt-3 flex items-center justify-between rounded-xl border border-zinc-700 bg-black/40 px-4 py-3"><span className="text-lg font-bold">{campaignName || "Unnamed Campaign"}</span><Button onClick={() => updateActiveCampaign(() => ({ isEditingName: true }))} variant="ghost" className="border border-zinc-700 hover:bg-zinc-900">Edit</Button></div>}</div>}<div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><h3 className="font-bold">Session Defaults</h3><div className="mt-3 grid gap-3 md:grid-cols-3"><input type="time" value={sessionTime} onChange={(event) => updateActiveCampaign(() => ({ sessionTime: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" /><input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" /><select value={reminderHours} onChange={(event) => updateActiveCampaign(() => ({ reminderHours: event.target.value }))} className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2"><option value={1}>1 hour reminder</option><option value={6}>6 hours</option><option value={12}>12 hours</option><option value={24}>24 hours</option><option value={48}>2 days</option></select></div></div></CardContent></Card>;
+    return (
+      <>
+      <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
+        <CardContent className="space-y-5 p-6">
+          <h2 className="text-2xl font-bold">Campaign Settings</h2>
+          {isDungeonMaster && (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+              <label className="text-sm text-zinc-300">Campaign Name</label>
+              {isEditingCampaignName ? (
+                <>
+                  <input value={campaignName} onChange={(event) => updateActiveCampaign(() => ({ name: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && updateActiveCampaign(() => ({ isEditingName: false }))} placeholder="Enter campaign name" className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3" />
+                  <Button onClick={() => updateActiveCampaign(() => ({ isEditingName: false }))} className="mt-3 rounded-xl bg-red-700 hover:bg-red-600">Save Campaign Name</Button>
+                </>
+              ) : (
+                <div className="mt-3 flex items-center justify-between rounded-xl border border-zinc-700 bg-black/40 px-4 py-3">
+                  <span className="text-lg font-bold">{campaignName || "Unnamed Campaign"}</span>
+                  <Button onClick={() => updateActiveCampaign(() => ({ isEditingName: true }))} variant="ghost" className="border border-zinc-700 hover:bg-zinc-900">Edit</Button>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+            <h3 className="font-bold">Session Defaults</h3>
+            <div className="mt-3 grid gap-3 md:grid-cols-4">
+              <label className="space-y-1">
+                <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Start Time</span>
+                <input type="text" inputMode="numeric" placeholder="06:00" defaultValue={sessionClockTime} key={`session-time-${sessionTime}`} onBlur={(event) => updateSessionClockTime(event.target.value)} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">AM / PM</span>
+                <select value={sessionAmPm} onChange={(event) => updateSessionAmPm(event.target.value)} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2">
+                  <option value="AM">AM</option>
+                  <option value="PM">PM</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Duration</span>
+                <input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Reminder</span>
+                <select value={reminderHours} onChange={(event) => updateActiveCampaign(() => ({ reminderHours: event.target.value }))} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2">
+                  <option value={1}>1 hour reminder</option>
+                  <option value={6}>6 hours</option>
+                  <option value={12}>12 hours</option>
+                  <option value={24}>24 hours</option>
+                  <option value={48}>2 days</option>
+                </select>
+              </label>
+            </div>
+            {isDungeonMaster && (
+              <div className="mt-5 rounded-xl border border-amber-900/60 bg-amber-950/20 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h4 className="font-bold text-amber-100">Guildmaster Recurring Sessions</h4>
+                    <p className="mt-1 text-sm text-zinc-400">Choose the first session date on the calendar, then generate weekly, bi-weekly, or monthly session dates from it.</p>
+                  </div>
+                  {plan !== "guildmaster" && <span className="rounded-full border border-amber-700 px-3 py-1 text-xs font-bold text-amber-200">Guildmaster only</span>}
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <label className="space-y-1">
+                    <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Repeat Every</span>
+                    <select value={recurringSessionFrequency} onChange={(event) => updateActiveCampaign(() => ({ recurringSessionFrequency: event.target.value }))} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2">
+                      <option value="weekly">Weekly</option>
+                      <option value="biweekly">Bi-weekly</option>
+                      <option value="monthly">Monthly</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">Number of Sessions</span>
+                    <input type="number" min="1" max="52" value={recurringSessionCount} onChange={(event) => updateActiveCampaign(() => ({ recurringSessionCount: event.target.value }))} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+                  </label>
+                  <div className="space-y-1">
+                    <span className="block text-xs font-bold uppercase tracking-wide text-zinc-400">First Date</span>
+                    <div className="rounded-xl border border-zinc-700 bg-black/60 px-3 py-2 text-sm text-zinc-200">{chosenDate ? formatSessionScheduleDate(chosenDate) : "Choose a date on Calendar"}</div>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button onClick={scheduleRecurringSessions} className="rounded-xl bg-amber-700 hover:bg-amber-600">Generate Session Dates</Button>
+                  {hasGeneratedSessionDates && <Button onClick={clearRecurringSessionSchedule} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">Clear Generated Dates</Button>}
+                </div>
+                {hasGeneratedSessionDates && (
+                  <div className="mt-4 rounded-xl border border-zinc-800 bg-black/35 p-3">
+                    <p className="text-xs font-bold uppercase tracking-wide text-zinc-400">Scheduled Session Dates</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {sessionScheduleDates.map((key) => <span key={key} className="rounded-full bg-zinc-800 px-3 py-1 text-xs font-bold text-zinc-100">{formatSessionScheduleDate(key)}</span>)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+      {isDungeonMaster && <div className="mt-5"><PlayersPage /></div>}
+      </>
+    );
   }
 
   function UpcomingSession() {
@@ -3348,9 +3650,12 @@ export default function DungeonCalendarApp() {
               const key = dateKey(date);
               const ids = availability[key] ?? [];
               const unavailableIds = unavailable[key] ?? [];
-              const hasDungeonMasterAvailable = ids.some((id) => isDungeonMasterResponse(id));
-              const hasDungeonMasterUnavailable = unavailableIds.some((id) => isDungeonMasterResponse(id));
               const isChosenDate = key === chosenDate;
+              const isScheduledSessionDate = sessionScheduleDates.includes(key);
+              const hasFinalDates = !!chosenDate || sessionScheduleDates.length > 0;
+              const hideSuggestedAvailability = hasFinalDates && !isChosenDate && !isScheduledSessionDate;
+              const hasDungeonMasterAvailable = !hideSuggestedAvailability && ids.some((id) => isDungeonMasterResponse(id));
+              const hasDungeonMasterUnavailable = !hideSuggestedAvailability && unavailableIds.some((id) => isDungeonMasterResponse(id));
               return (
                 <button
                   key={key}
@@ -3358,7 +3663,7 @@ export default function DungeonCalendarApp() {
                   className={classNames(
                     "aspect-square rounded-xl border border-zinc-800 p-2 text-left text-sm font-bold transition hover:scale-105",
                     date.getMonth() !== viewDate.getMonth() && "opacity-35",
-                    dateVisualState({ ids, unavailableIds, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isDungeonMaster })
+                    dateVisualState({ ids, unavailableIds, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isScheduledSessionDate, isDungeonMaster, hideSuggestedAvailability })
                   )}
                 >
                   <div className="flex items-center justify-between">
@@ -3406,7 +3711,6 @@ export default function DungeonCalendarApp() {
   function QuickActions() {
     const actions = [
       { label: "Calendar", description: "Open the calendar and mark availability.", icon: CalendarDays, target: "calendar" },
-      ...(isDungeonMaster ? [{ label: "Manage Players", description: "Invite, text, email, or remove players.", icon: Users, target: "players" }] : []),
       { label: "View all Results", description: "Compare every proposed date.", icon: BarChart3, target: "results" },
       ...(isDungeonMaster ? [{ label: "Campaign Settings", description: "Edit campaign and reminder settings.", icon: Settings, target: "settings" }] : [])
     ];
@@ -3696,7 +4000,7 @@ export default function DungeonCalendarApp() {
   function PageContent() {
     if (page === "dashboard") return DashboardPage();
     if (page === "calendar") return CalendarGrid();
-    if (page === "players") return PlayersPage();
+    if (page === "players") return isDungeonMaster ? SettingsPage() : DashboardPage();
     if (page === "results") return ResultsPage();
     if (page === "settings") return SettingsPage();
     if (page === "account") return AccountSettingsPage();

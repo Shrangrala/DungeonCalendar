@@ -486,6 +486,7 @@ export default function DungeonCalendarApp() {
     if (page === "players") setPage("settings");
   }, [page]);
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const dates = useMemo(() => buildMonth(viewDate.getFullYear(), viewDate.getMonth()), [viewDate]);
   const [players, setPlayers] = useState(defaultPlayers);
   const [currentUserId, setCurrentUserId] = useState("");
   const [activePlayerId, setActivePlayerId] = useState("");

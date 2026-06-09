@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
+import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
+import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -209,9 +209,8 @@ function classNames(...parts) {
   return parts.filter(Boolean).join(" ");
 }
 
-function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, hasChosenDate = false, isDungeonMaster = false }) {
-  if (isChosenDate) return "bg-yellow-400 text-black ring-4 ring-yellow-100 shadow-[0_0_28px_rgba(250,204,21,0.75)]";
-  if (hasChosenDate) return "bg-zinc-950/65";
+function dateVisualState({ ids = [], unavailableIds = [], selectedByActive = false, unavailableByActive = false, hasDungeonMasterAvailable = false, hasDungeonMasterUnavailable = false, isChosenDate = false, isDungeonMaster = false }) {
+  if (isChosenDate) return "bg-emerald-500 text-black ring-4 ring-emerald-200 shadow-[0_0_28px_rgba(52,211,153,0.75)]";
   if (hasDungeonMasterAvailable) return "bg-emerald-500 text-black ring-2 ring-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.65)]";
   if (hasDungeonMasterUnavailable) return "bg-red-600 text-white ring-2 ring-red-200 shadow-[0_0_22px_rgba(239,68,68,0.65)]";
   if (selectedByActive) return "bg-emerald-600 text-white ring-2 ring-emerald-300 shadow-[0_0_18px_rgba(16,185,129,0.5)]";
@@ -361,18 +360,31 @@ function normalizeBillingInterval(interval = "monthly") {
 }
 
 
+function loadCachedUserProfile(uid) {
+  return null;
+}
+
+function saveCachedUserProfile(uid, profile = {}) {
+  // App profile data is stored only in Firebase/Firestore.
+}
 
 async function loadUserProfile(uid) {
+  const cached = loadCachedUserProfile(uid);
   try {
     const snap = await Promise.race([
       getDoc(doc(db, "users", uid)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Profile load timed out.")), 3000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Profile load timed out; using cached profile.")), 3000))
     ]);
-    return snap.exists() ? snap.data() : null;
+    const profile = snap.exists() ? snap.data() : null;
+    if (profile) saveCachedUserProfile(uid, profile);
+    return profile || cached || null;
   } catch (error) {
-    console.warn("Firestore SDK profile load failed; trying REST fallback:", error);
+    console.warn("Firestore SDK profile load failed; trying cache/REST fallback:", error);
+    if (cached) return cached;
     try {
-      return await loadUserProfileViaRest(uid);
+      const restProfile = await loadUserProfileViaRest(uid);
+      if (restProfile) saveCachedUserProfile(uid, restProfile);
+      return restProfile;
     } catch (restError) {
       console.warn("Firestore REST profile load failed; continuing with Firebase Auth only:", restError);
       return null;
@@ -381,6 +393,7 @@ async function loadUserProfile(uid) {
 }
 
 async function saveUserProfile(uid, profile) {
+  saveCachedUserProfile(uid, profile);
   try {
     await setDoc(doc(db, "users", uid), profile, { merge: true });
     return true;
@@ -398,6 +411,7 @@ async function saveUserProfile(uid, profile) {
 
 async function saveUserProfileRequired(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
+  saveCachedUserProfile(uid, profile);
   try {
     await setDoc(doc(db, "users", uid), profile, { merge: true });
     return true;
@@ -410,6 +424,7 @@ async function saveUserProfileRequired(uid, profile) {
 
 async function saveUserProfileQuick(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
+  saveCachedUserProfile(uid, profile);
   const savePromise = setDoc(doc(db, "users", uid), profile, { merge: true });
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => reject(new Error("Profile save timed out. Check your connection and try again.")), 4500);
@@ -481,7 +496,7 @@ export default function DungeonCalendarApp() {
   const [loginError, setLoginError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authProfileLoaded, setAuthProfileLoaded] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [authMode, setAuthMode] = useState("login");
   const [availabilityMode, setAvailabilityMode] = useState("available");
   const [campaigns, setCampaigns] = useState([]);
@@ -616,7 +631,7 @@ export default function DungeonCalendarApp() {
   }
 
   async function updatePlayerToken(playerId, file, campaignId = activeCampaign?.id) {
-    if (!file || !campaignId) return;
+    if (!file || !campaignId || !playerId) return;
 
     if (!hasPlanFeature("tokenUploads")) {
       setBillingMessage("Custom player token images are included with the Guildmaster plan.");
@@ -624,53 +639,38 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    if (!file.type?.startsWith("image/")) {
-      setBillingMessage("Token uploads must be image files.");
-      return;
-    }
-
-    if (file.size >= 2 * 1024 * 1024) {
-      setBillingMessage("Token images must be under 2 MB.");
-      return;
-    }
-
     try {
-      const safeName = `${playerId}-${Date.now()}-${(file.name || "token-image").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-      const tokenPath = `token-images/${campaignId}/${safeName}`;
-      const uploadRef = storageRef(storage, tokenPath);
-      const snapshot = await uploadBytes(uploadRef, file, { contentType: file.type });
-      const tokenUrl = await getDownloadURL(snapshot.ref);
-      let tokenPlayerRecord = null;
+      const safeFileName = `${playerId}-${Date.now()}-${String(file.name || "token").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const tokenImageRef = storageRef(storage, `token-images/${campaignId}/${safeFileName}`);
+      await uploadBytes(tokenImageRef, file, { contentType: file.type || "image/png" });
+      const tokenUrl = await getDownloadURL(tokenImageRef);
 
       setPlayers((current) => current.map((player) => {
         if (player.id !== playerId) return player;
-        tokenPlayerRecord = {
+        return {
           ...player,
           campaignTokenImages: {
             ...(player.campaignTokenImages || {}),
             [campaignId]: tokenUrl
           }
         };
-        return tokenPlayerRecord;
       }));
 
       setCampaigns((current) => current.map((campaign) => {
         if (campaign.id !== campaignId) return campaign;
-
-        const nextInvitedPlayers = (campaign.invitedPlayers || []).map((player) => {
+        const updatedInvitedPlayers = (campaign.invitedPlayers || []).map((player) => {
           if (player.id !== playerId) return player;
-          return campaignPlayerRecord({
+          return {
             ...player,
             campaignTokenImages: {
               ...(player.campaignTokenImages || {}),
               [campaignId]: tokenUrl
             }
-          }, campaignId);
+          };
         });
-
         const nextCampaign = normalizeCampaignForSync({
           ...campaign,
-          invitedPlayers: nextInvitedPlayers,
+          invitedPlayers: updatedInvitedPlayers,
           playerTokenImages: {
             ...(campaign.playerTokenImages || {}),
             [playerId]: tokenUrl
@@ -680,8 +680,8 @@ export default function DungeonCalendarApp() {
         return nextCampaign;
       }));
     } catch (error) {
-      console.error("Token image upload failed", error);
-      setBillingMessage("Token image upload failed. Check Firebase Storage rules and try again.");
+      console.error("Token upload failed:", error);
+      setBillingMessage(error?.message || "Token upload failed. Check Firebase Storage rules and try again.");
     }
   }
 
@@ -725,6 +725,7 @@ export default function DungeonCalendarApp() {
     if (!currentUser) return [];
     const userEmail = normalizeEmail(currentUser.email || "");
     return campaigns.map(normalizeCampaignForSync).filter((campaign) =>
+      (currentUser.campaignIds ?? []).includes(campaign.id) ||
       (campaign.memberIds ?? []).includes(currentUser.id) ||
       (campaign.dungeonMasterIds ?? []).includes(currentUser.id) ||
       campaign.ownerId === currentUser.id ||
@@ -749,6 +750,7 @@ export default function DungeonCalendarApp() {
     const campaignRecords = (activeCampaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaignId));
     const relevantPlayers = [
       ...players.filter((player) =>
+        (player.campaignIds ?? []).includes(campaignId) ||
         (activeCampaign.memberIds ?? []).includes(player.id) ||
         activeCampaign?.dungeonMasterIds?.includes(player.id)
       ),
@@ -795,6 +797,8 @@ export default function DungeonCalendarApp() {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setAuthProfileLoaded(false);
       if (!user) {
+        setCurrentUserId("");
+        setActivePlayerId("");
         setAuthProfileLoaded(true);
         return;
       }
@@ -804,8 +808,7 @@ export default function DungeonCalendarApp() {
         const localMatch = players.find((player) =>
           player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
         );
-        let firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
-        firebasePlayer = await ensureFirestoreCampaignForUser(user.uid, firebasePlayer);
+        const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
         setPlan(normalizePlan(profile?.plan || localMatch?.plan || firebasePlayer.plan || "free"));
         setBillingInterval(normalizeBillingInterval(profile?.billingInterval || localMatch?.billingInterval || firebasePlayer.billingInterval || "monthly"));
 
@@ -819,6 +822,7 @@ export default function DungeonCalendarApp() {
         setCurrentUserId(user.uid);
         setActivePlayerId(user.uid);
         if (firebasePlayer.campaignIds?.[0]) setActiveCampaignId(firebasePlayer.campaignIds[0]);
+        setPage("calendar");
       } catch (error) {
         console.error("Failed to restore Firebase login:", error);
       } finally {
@@ -837,6 +841,7 @@ export default function DungeonCalendarApp() {
       if (!snapshot.exists()) return;
 
       const profile = snapshot.data();
+      saveCachedUserProfile(currentUserId, profile);
       const syncedPlayer = firebaseProfileToPlayer(currentUserId, profile, auth.currentUser?.email || "");
 
       setPlan(normalizePlan(profile?.plan || syncedPlayer.plan || "free"));
@@ -854,21 +859,6 @@ export default function DungeonCalendarApp() {
     return () => unsubscribeProfile();
   }, [currentUserId]);
 
-  useEffect(() => {
-    if (!authProfileLoaded || !currentUserId || !currentUser || auth.currentUser?.uid !== currentUserId) return;
-
-    // Keep campaign membership fields synced without overwriting profile settings or paid plan data.
-    // Username, name, email, phone, plan, and billingInterval are only written by explicit account/plan actions.
-    saveUserProfile(currentUserId, {
-      role: currentUser.role || "Player",
-      campaignIds: currentUser.campaignIds || [],
-      campaignCharacterNames: currentUser.campaignCharacterNames || {},
-      lockedColorCampaignIds: currentUser.lockedColorCampaignIds || [],
-      color: currentUser.color || "",
-      campaignTokenImages: currentUser.campaignTokenImages || {}
-    }).catch((error) => console.error("Failed to sync web membership profile:", error));
-  }, [authProfileLoaded, currentUserId, currentUser?.campaignIds, currentUser?.campaignCharacterNames, currentUser?.lockedColorCampaignIds, currentUser?.color, currentUser?.campaignTokenImages, currentUser?.role]);
-
 
   useEffect(() => {
     if (!currentUserId || !currentUser) return undefined;
@@ -878,44 +868,42 @@ export default function DungeonCalendarApp() {
       const remoteCampaigns = snapshot.docs.map((item) => normalizeCampaignForSync({ id: item.id, ...item.data() }));
       const userEmail = normalizeEmail(currentUser.email || "");
       const visibleRemoteCampaigns = remoteCampaigns.filter((campaign) =>
+        (currentUser.campaignIds || []).includes(campaign.id) ||
         (campaign.memberIds || []).includes(currentUserId) ||
         (campaign.dungeonMasterIds || []).includes(currentUserId) ||
         campaign.ownerId === currentUserId ||
         (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail))
       );
 
-      setCampaigns(visibleRemoteCampaigns);
-
-      const currentCampaignIds = new Set(visibleRemoteCampaigns.map((campaign) => campaign.id));
-      const remotePlayers = visibleRemoteCampaigns.flatMap((campaign) => (campaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaign.id)));
-      setPlayers((current) => {
-        const base = current
-          .filter((player) => player.id === currentUserId || player.id === auth.currentUser?.uid)
-          .map((player) => ({
-            ...player,
-            campaignIds: (player.campaignIds || []).filter((campaignId) => currentCampaignIds.has(campaignId))
-          }));
-        const merged = [...base];
-        remotePlayers.forEach((remotePlayer) => {
-          const key = normalizeEmail(remotePlayer.email || "") || remotePlayer.id;
-          const index = merged.findIndex((player) => (normalizeEmail(player.email || "") || player.id) === key);
-          if (index >= 0) {
-            merged[index] = {
-              ...merged[index],
-              ...remotePlayer,
-              campaignIds: Array.from(new Set([...(merged[index].campaignIds || []).filter((campaignId) => currentCampaignIds.has(campaignId)), ...(remotePlayer.campaignIds || [])])),
-              campaignCharacterNames: { ...(merged[index].campaignCharacterNames || {}), ...(remotePlayer.campaignCharacterNames || {}) },
-              campaignTokenImages: { ...(merged[index].campaignTokenImages || {}), ...(remotePlayer.campaignTokenImages || {}) }
-            };
-          } else {
-            merged.push(remotePlayer);
-          }
+      if (visibleRemoteCampaigns.length) {
+        setCampaigns((current) => {
+          const remoteIds = new Set(visibleRemoteCampaigns.map((campaign) => campaign.id));
+          const remainingLocal = current.filter((campaign) => !remoteIds.has(campaign.id));
+          return [...remainingLocal, ...visibleRemoteCampaigns];
         });
-        return merged;
-      });
 
-      if (visibleRemoteCampaigns.length && (!activeCampaignId || !visibleRemoteCampaigns.some((campaign) => campaign.id === activeCampaignId))) {
-        setActiveCampaignId(visibleRemoteCampaigns[0].id);
+        const remotePlayers = visibleRemoteCampaigns.flatMap((campaign) => (campaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaign.id)));
+        if (remotePlayers.length) {
+          setPlayers((current) => {
+            const merged = [...current];
+            remotePlayers.forEach((remotePlayer) => {
+              const key = normalizeEmail(remotePlayer.email || "") || remotePlayer.id;
+              const index = merged.findIndex((player) => (normalizeEmail(player.email || "") || player.id) === key);
+              if (index >= 0) {
+                merged[index] = {
+                  ...merged[index],
+                  ...remotePlayer,
+                  campaignIds: Array.from(new Set([...(merged[index].campaignIds || []), ...(remotePlayer.campaignIds || [])])),
+                  campaignCharacterNames: { ...(merged[index].campaignCharacterNames || {}), ...(remotePlayer.campaignCharacterNames || {}) },
+                  campaignTokenImages: { ...(merged[index].campaignTokenImages || {}), ...(remotePlayer.campaignTokenImages || {}) }
+                };
+              } else {
+                merged.push(remotePlayer);
+              }
+            });
+            return merged;
+          });
+        }
       }
       setTimeout(() => { loadingCampaignsFromFirestoreRef.current = false; }, 0);
     }, (error) => console.warn("Campaign live sync failed:", error));
@@ -932,6 +920,8 @@ export default function DungeonCalendarApp() {
       if (campaign.id) saveCampaignToFirestore(campaign);
     });
   }, [campaigns, currentUserId]);
+
+
 
 
   useEffect(() => {
@@ -975,7 +965,7 @@ export default function DungeonCalendarApp() {
     const stripeCancelled = params.get("stripe_cancelled") === "true";
 
     if (stripeCancelled) {
-        setBillingMessage("Stripe Checkout was cancelled. No plan changes were made.");
+      setBillingMessage("Stripe Checkout was cancelled. No plan changes were made.");
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
@@ -996,7 +986,7 @@ export default function DungeonCalendarApp() {
     return pending;
   }
 
-  function syncPendingStripeActivationFromProfile() {
+  function syncPendingStripeActivationFromStorage() {
     const pending = readPendingStripePlan();
     if (!pending?.plan || normalizePlan(pending.plan) === "free") {
       setPendingStripeActivation(null);
@@ -1059,7 +1049,7 @@ export default function DungeonCalendarApp() {
     const pending = readPendingStripePlan();
     const pendingUserMatches = !pending?.uid || pending.uid === currentUser.id;
 
-    syncPendingStripeActivationFromProfile();
+    syncPendingStripeActivationFromStorage();
 
     if (pending && !pendingUserMatches) {
       if (stripeSuccess || urlPlan) {
@@ -1090,7 +1080,7 @@ export default function DungeonCalendarApp() {
     if (!currentUser || auth.currentUser?.uid !== currentUser.id) return undefined;
 
     const refreshPending = () => {
-      const pending = syncPendingStripeActivationFromProfile();
+      const pending = syncPendingStripeActivationFromStorage();
       if (pending?.plan && normalizePlan(pending.plan) !== "free" && !stripeAutoVerifyAttempted) {
         setPage("billing");
         setStripeAutoVerifyAttempted(true);
@@ -1186,8 +1176,6 @@ export default function DungeonCalendarApp() {
     };
   }, [currentUser?.id, currentUser?.pendingStripePlan, currentUser?.pendingStripeBillingInterval, plan]);
 
-  const dates = useMemo(() => buildMonth(viewDate.getFullYear(), viewDate.getMonth()), [viewDate]);
-
   const bestDates = useMemo(() => {
     return Object.entries(availability)
       .map(([key, ids]) => ({ key, count: ids.length, names: ids.map((id) => { const player = players.find((p) => p.id === id); return player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name; }).filter(Boolean) }))
@@ -1196,87 +1184,6 @@ export default function DungeonCalendarApp() {
   }, [availability, players]);
 
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
-
-  async function ensureFirestoreCampaignForUser(uid, player) {
-    const existingCampaignIds = Array.isArray(player?.campaignIds) ? player.campaignIds.filter(Boolean) : [];
-    const cleanEmail = normalizeEmail(player?.email || auth.currentUser?.email || "");
-    const claimedCampaignIds = new Set(existingCampaignIds);
-
-    if (cleanEmail) {
-      try {
-        const campaignSnapshots = await getDocs(collection(db, "campaigns"));
-        for (const entry of campaignSnapshots.docs) {
-          const campaign = normalizeCampaignForSync({ id: entry.id, ...entry.data() });
-          const invitedByEmail = (campaign.invitedEmails || []).map(normalizeEmail).includes(cleanEmail);
-          const invitedPlayer = (campaign.invitedPlayers || []).find((item) => normalizeEmail(item.email || "") === cleanEmail);
-          if (!invitedByEmail && !invitedPlayer) continue;
-
-          const nextInvitedPlayers = (campaign.invitedPlayers || []).map((item) => {
-            if (normalizeEmail(item.email || "") !== cleanEmail) return item;
-            return campaignPlayerRecord({ ...item, ...player, id: uid, email: cleanEmail, invitePending: false }, campaign.id);
-          });
-
-          const placeholderIds = new Set((campaign.invitedPlayers || [])
-            .filter((item) => normalizeEmail(item.email || "") === cleanEmail)
-            .map((item) => item.id)
-            .filter(Boolean));
-
-          const nextCampaign = normalizeCampaignForSync({
-            ...campaign,
-            memberIds: Array.from(new Set([...(campaign.memberIds || []).filter((id) => !placeholderIds.has(id)), uid])),
-            invitedEmails: Array.from(new Set([...(campaign.invitedEmails || []), cleanEmail].filter(Boolean).map(normalizeEmail))),
-            invitedPlayers: nextInvitedPlayers.length ? nextInvitedPlayers : [campaignPlayerRecord({ ...player, id: uid, email: cleanEmail, invitePending: false }, campaign.id)]
-          });
-
-          await saveCampaignToFirestore(nextCampaign);
-          claimedCampaignIds.add(campaign.id);
-        }
-      } catch (error) {
-        console.warn("Failed to claim campaign invites by email:", error);
-      }
-    }
-
-    if (claimedCampaignIds.size > 0) {
-      const updatedPlayer = { ...player, campaignIds: Array.from(claimedCampaignIds) };
-      await saveUserProfile(uid, {
-        campaignIds: updatedPlayer.campaignIds,
-        campaignCharacterNames: updatedPlayer.campaignCharacterNames || {},
-        lockedColorCampaignIds: updatedPlayer.lockedColorCampaignIds || [],
-        campaignTokenImages: updatedPlayer.campaignTokenImages || {},
-        role: updatedPlayer.role || "Player",
-        color: updatedPlayer.color || ""
-      });
-      return updatedPlayer;
-    }
-
-    const campaign = normalizeCampaignForSync({
-      ...createCampaign("", [uid], uid),
-      memberIds: [uid]
-    });
-
-    await saveCampaignToFirestore(campaign);
-
-    const updatedPlayer = {
-      ...player,
-      campaignIds: [campaign.id],
-      campaignCharacterNames: player?.campaignCharacterNames || {},
-      lockedColorCampaignIds: player?.lockedColorCampaignIds || [],
-      campaignTokenImages: player?.campaignTokenImages || {}
-    };
-
-    await saveUserProfile(uid, {
-      campaignIds: updatedPlayer.campaignIds,
-      campaignCharacterNames: updatedPlayer.campaignCharacterNames,
-      lockedColorCampaignIds: updatedPlayer.lockedColorCampaignIds,
-      campaignTokenImages: updatedPlayer.campaignTokenImages,
-      role: updatedPlayer.role || "Player",
-      color: updatedPlayer.color || ""
-    });
-
-    setCampaigns((current) => current.some((item) => item.id === campaign.id) ? current : [...current, campaign]);
-    setActiveCampaignId(campaign.id);
-    return updatedPlayer;
-  }
 
   function updateActiveCampaign(updater) {
     if (!activeCampaign?.id) return;
@@ -1310,6 +1217,8 @@ export default function DungeonCalendarApp() {
     try {
       let uid = "";
       let player;
+
+      await setPersistence(auth, browserLocalPersistence);
 
       if (authMode === "login") {
         const credential = await signInWithEmailAndPassword(auth, trimmedEmail, loginPassword);
@@ -1347,15 +1256,10 @@ export default function DungeonCalendarApp() {
         await saveUserProfile(uid, player);
       }
 
-      player = await ensureFirestoreCampaignForUser(uid, player);
-
       setPlayers((current) => {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== trimmedEmail);
         return [...withoutDuplicate, player];
       });
-
-      if (rememberMe) {
-      }
 
       setPlan(normalizePlan(player.plan || "free"));
       setCurrentUserId(uid);
@@ -1376,6 +1280,7 @@ export default function DungeonCalendarApp() {
     setLoginError("");
 
     try {
+      await setPersistence(auth, browserLocalPersistence);
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
       const credential = await signInWithPopup(auth, provider);
@@ -1386,7 +1291,7 @@ export default function DungeonCalendarApp() {
       const profile = await loadUserProfile(uid);
       const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === email);
 
-      let player = {
+      const player = {
         ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, email),
         username: profile?.username || existingLocal?.username || displayName.toLowerCase().replace(/\s+/g, "") || email.split("@")[0] || "player",
         name: profile?.name || existingLocal?.name || displayName,
@@ -1401,15 +1306,10 @@ export default function DungeonCalendarApp() {
         await saveUserProfile(uid, player);
       }
 
-      player = await ensureFirestoreCampaignForUser(uid, player);
-
       setPlayers((current) => {
         const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
         return [...withoutDuplicate, player];
       });
-
-      if (rememberMe) {
-      }
 
       setPlan(normalizePlan(player.plan || "free"));
       setCurrentUserId(uid);
@@ -1455,6 +1355,7 @@ export default function DungeonCalendarApp() {
       updatedAt: new Date().toISOString()
     };
 
+    saveCachedUserProfile(currentUser.id, planPayload);
     setPlan(safePlan);
     setBillingInterval(safeBillingInterval);
     setPlayers((current) => current.map((player) => player.id === currentUser?.id ? { ...player, plan: safePlan, billingInterval: safeBillingInterval, ...extraProfileFields } : player));
@@ -1597,7 +1498,7 @@ export default function DungeonCalendarApp() {
         stripeActivationSource: source
       });
 
-        setPendingStripeActivation(null);
+      setPendingStripeActivation(null);
       setSelectedPaymentPlan("");
       if (!automaticLoginCheck) {
         setBillingMessage(`${planLimits[verifiedPlan]?.name || "Paid"} plan verified from Stripe and activated. Billing: ${verifiedInterval}.`);
@@ -2072,6 +1973,7 @@ export default function DungeonCalendarApp() {
         updatedAt: new Date().toISOString()
       };
 
+      saveCachedUserProfile(currentUser.id, profileUpdatePayload);
       setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedProfile : player));
       setAccountUsername(updatedProfile.username || "");
       setAccountName(updatedProfile.name || "");
@@ -2759,7 +2661,7 @@ export default function DungeonCalendarApp() {
                       "border-r border-t border-zinc-800 text-left transition",
                       isDungeonMaster || hasDungeonMasterAvailable ? "hover:bg-zinc-900" : "cursor-not-allowed opacity-35",
                       date.getMonth() !== viewDate.getMonth() && "text-zinc-600",
-                      dateVisualState({ ids, unavailableIds, selectedByActive, unavailableByActive, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, hasChosenDate: !!chosenDate, isDungeonMaster })
+                      dateVisualState({ ids, unavailableIds, selectedByActive, unavailableByActive, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isDungeonMaster })
                     )}
                   >
                     <div className="flex items-start justify-between"><span className="font-semibold">{date.getDate()}</span>{(hasDungeonMasterAvailable || hasDungeonMasterUnavailable || isChosenDate) && <Shield className="h-4 w-4" />}</div>
@@ -3672,7 +3574,7 @@ export default function DungeonCalendarApp() {
                   className={classNames(
                     "aspect-square rounded-xl border border-zinc-800 p-2 text-left text-sm font-bold transition hover:scale-105",
                     date.getMonth() !== viewDate.getMonth() && "opacity-35",
-                    dateVisualState({ ids, unavailableIds, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, hasChosenDate: !!chosenDate, isDungeonMaster })
+                    dateVisualState({ ids, unavailableIds, hasDungeonMasterAvailable, hasDungeonMasterUnavailable, isChosenDate, isDungeonMaster })
                   )}
                 >
                   <div className="flex items-center justify-between">
@@ -4021,29 +3923,11 @@ export default function DungeonCalendarApp() {
   }
 
   if (!authProfileLoaded) {
-    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-3 py-5 sm:px-6 sm:py-10"><div className="rounded-2xl border border-zinc-800 bg-black/70 p-6 text-center text-zinc-200">Checking saved login...</div></main></div>;
+    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full items-center justify-center px-3 py-5"><div className="rounded-2xl border border-zinc-800 bg-black/70 px-6 py-5 text-center shadow-2xl"><p className="text-lg font-bold">Loading Dungeon Calendar...</p><p className="mt-2 text-sm text-zinc-400">Restoring your Firebase session.</p></div></main></div>;
   }
 
   if (!currentUser) {
     return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-3 py-5 sm:px-6 sm:py-10"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
-  }
-
-  if (visibleCampaigns.length === 0) {
-    return (
-      <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100">
-        <AppBackground />
-        <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] gap-4 overflow-visible px-3 py-4 sm:px-5 sm:py-6 lg:grid-cols-[300px_minmax(0,1fr)] lg:gap-6 lg:px-6">
-          {Sidebar}
-          <section className="w-full min-w-0 space-y-4 sm:space-y-5">
-            <div className="rounded-2xl border border-zinc-800 bg-black/55 p-6 text-zinc-100 shadow-2xl backdrop-blur">
-              <h2 className="text-2xl font-bold">No campaign calendar found</h2>
-              <p className="mt-2 text-zinc-300">Create a Firestore-backed campaign calendar to continue.</p>
-              <Button onClick={addCampaign} className="mt-5 rounded-xl bg-red-700 hover:bg-red-600"><Plus className="mr-2 h-4 w-4" /> Add Campaign</Button>
-            </div>
-          </section>
-        </main>
-      </div>
-    );
   }
 
   return (

@@ -93,6 +93,20 @@ function normalizeCampaignForSync(campaign = {}) {
     dungeonMasterIds: normalizeArray(campaign.dungeonMasterIds || campaign.dmIds || []),
     memberIds: normalizeArray(campaign.memberIds || campaign.members || campaign.playerIds || []),
     invitedEmails: normalizeArray(campaign.invitedEmails || []),
+    invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers.map((player) => ({
+      id: player.id || player.uid || crypto.randomUUID?.() || `invite-${Date.now()}`,
+      role: player.role || "Player",
+      name: player.name || player.username || player.email || "Invited Player",
+      username: player.username || String(player.name || player.email || "player").toLowerCase().replace(/\s+/g, ""),
+      email: normalizeEmail(player.email || ""),
+      phone: player.phone || "",
+      campaignIds: normalizeArray(player.campaignIds || []).includes(id) ? normalizeArray(player.campaignIds || []) : [...normalizeArray(player.campaignIds || []), id],
+      campaignCharacterNames: player.campaignCharacterNames || { [id]: "" },
+      color: player.color || "bg-blue-600",
+      invitePending: player.invitePending !== false,
+      campaignTokenImages: player.campaignTokenImages || {},
+      lockedColorCampaignIds: player.lockedColorCampaignIds || []
+    })) : [],
     leftUserIds: normalizeArray(campaign.leftUserIds || campaign.removedUserIds || []),
     archived: !!campaign.archived,
     deleted: !!campaign.deleted,
@@ -670,9 +684,16 @@ export default function DungeonCalendarApp() {
   const isDungeonMaster = !!currentUser && !!activeCampaign?.dungeonMasterIds?.includes(currentUser.id);
   const activeCampaignRole = isDungeonMaster ? "Dungeon Master" : "Player";
   const activeCampaignPlayers = useMemo(() => {
-    const relevantPlayers = players.filter((player) =>
-      (player.campaignIds ?? []).includes(activeCampaign?.id) ||
-      activeCampaign?.dungeonMasterIds?.includes(player.id)
+    const normalizedActiveCampaign = activeCampaign ? normalizeCampaignForSync(activeCampaign) : null;
+    const invitedFallbackPlayers = (normalizedActiveCampaign?.invitedPlayers || []).map((player) => ({
+      ...player,
+      campaignIds: Array.from(new Set([...(player.campaignIds || []), normalizedActiveCampaign.id]))
+    }));
+    const relevantPlayers = [...players, ...invitedFallbackPlayers].filter((player) =>
+      (player.campaignIds ?? []).includes(normalizedActiveCampaign?.id) ||
+      normalizedActiveCampaign?.memberIds?.includes(player.id) ||
+      normalizedActiveCampaign?.dungeonMasterIds?.includes(player.id) ||
+      (normalizeEmail(player.email) && normalizedActiveCampaign?.invitedEmails?.map(normalizeEmail).includes(normalizeEmail(player.email)))
     );
 
     return relevantPlayers.filter((player, index, list) => {
@@ -1691,7 +1712,11 @@ export default function DungeonCalendarApp() {
     const nextCampaign = normalizeCampaignForSync({
       ...activeCampaign,
       memberIds: Array.from(new Set([...(activeCampaign.memberIds || []), player.id])),
-      invitedEmails: player.email ? Array.from(new Set([...(activeCampaign.invitedEmails || []), player.email])) : (activeCampaign.invitedEmails || [])
+      invitedEmails: player.email ? Array.from(new Set([...(activeCampaign.invitedEmails || []), player.email])) : (activeCampaign.invitedEmails || []),
+      invitedPlayers: [
+        ...(activeCampaign.invitedPlayers || []).filter((existing) => existing.id !== player.id && normalizeEmail(existing.email) !== normalizeEmail(player.email)),
+        player
+      ]
     });
     setPlayers((current) => [...current.filter((item) => item.id !== player.id), player]);
     setCampaigns((current) => current.map((campaign) => campaign.id === activeCampaign.id ? nextCampaign : campaign));

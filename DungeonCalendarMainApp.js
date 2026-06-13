@@ -4,6 +4,54 @@ import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore"
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
+
+function loadGoogleRecaptchaEnterprise() {
+  if (typeof window === "undefined") return Promise.reject(new Error("reCAPTCHA is only available in a browser."));
+  if (window.grecaptcha?.enterprise) return Promise.resolve(window.grecaptcha.enterprise);
+
+  return new Promise((resolve, reject) => {
+    const existingScript = document.querySelector('script[src^="https://www.google.com/recaptcha/enterprise.js"]');
+
+    const finishWhenReady = () => {
+      const startedAt = Date.now();
+      const waitForEnterprise = () => {
+        if (window.grecaptcha?.enterprise) {
+          window.grecaptcha.enterprise.ready(() => resolve(window.grecaptcha.enterprise));
+          return;
+        }
+        if (Date.now() - startedAt > 12000) {
+          reject(new Error("Google reCAPTCHA did not finish loading. Refresh the page and try again."));
+          return;
+        }
+        window.setTimeout(waitForEnterprise, 100);
+      };
+      waitForEnterprise();
+    };
+
+    if (existingScript) {
+      existingScript.addEventListener("load", finishWhenReady, { once: true });
+      existingScript.addEventListener("error", () => reject(new Error("Google reCAPTCHA failed to load.")), { once: true });
+      finishWhenReady();
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://www.google.com/recaptcha/enterprise.js";
+    script.async = true;
+    script.defer = true;
+    script.onload = finishWhenReady;
+    script.onerror = () => reject(new Error("Google reCAPTCHA failed to load."));
+    document.head.appendChild(script);
+  });
+}
+
+async function getGoogleRecaptchaToken(widgetId) {
+  const enterprise = await loadGoogleRecaptchaEnterprise();
+  const token = enterprise.getResponse(widgetId);
+  if (!token) throw new Error("Complete the Google reCAPTCHA before continuing.");
+  return token;
+}
+
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
   return (
     <button
@@ -31,6 +79,8 @@ function CardContent({ children, className = "" }) {
 const dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const dungeonMasterId = "dungeon-master";
+
+const GOOGLE_RECAPTCHA_SITE_KEY = "6LekuQctAAAAAOYe49tKqcSKCDuUdkhxG7eUuWdA";
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: Home },
@@ -521,6 +571,8 @@ export default function DungeonCalendarApp() {
   const [campaignCharacterNames, setCampaignCharacterNames] = useState({});
   const [loginError, setLoginError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const recaptchaContainerRef = useRef(null);
+  const recaptchaWidgetIdRef = useRef(null);
   const [authProfileLoaded, setAuthProfileLoaded] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [authMode, setAuthMode] = useState("login");
@@ -1215,6 +1267,25 @@ export default function DungeonCalendarApp() {
 
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
 
+  useEffect(() => {
+    if (currentUser || !recaptchaContainerRef.current || typeof window === "undefined") return;
+    let cancelled = false;
+
+    loadGoogleRecaptchaEnterprise()
+      .then((enterprise) => {
+        if (cancelled || !recaptchaContainerRef.current || recaptchaWidgetIdRef.current !== null) return;
+        recaptchaWidgetIdRef.current = enterprise.render(recaptchaContainerRef.current, {
+          sitekey: GOOGLE_RECAPTCHA_SITE_KEY,
+          action: "LOGIN"
+        });
+      })
+      .catch((error) => setLoginError(error.message));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
   function updateActiveCampaign(updater) {
     if (!activeCampaign?.id) return;
     setCampaigns((current) => current.map((campaign) => {
@@ -1245,6 +1316,8 @@ export default function DungeonCalendarApp() {
     }
 
     try {
+      await getGoogleRecaptchaToken(recaptchaWidgetIdRef.current);
+
       let uid = "";
       let player;
 
@@ -1300,6 +1373,9 @@ export default function DungeonCalendarApp() {
     } catch (error) {
       setLoginError(authErrorMessage(error));
     } finally {
+      if (typeof window !== "undefined" && window.grecaptcha?.enterprise && recaptchaWidgetIdRef.current !== null) {
+        window.grecaptcha.enterprise.reset(recaptchaWidgetIdRef.current);
+      }
       setAuthBusy(false);
     }
   }
@@ -2530,6 +2606,10 @@ export default function DungeonCalendarApp() {
               />
               Remember Me
             </label>
+          </div>
+
+          <div className="flex justify-center rounded-xl border border-zinc-700 bg-black/30 px-2 py-3">
+            <div ref={recaptchaContainerRef} />
           </div>
 
           <Button onClick={login} disabled={authBusy} className="w-full rounded-xl bg-gradient-to-r from-red-800 to-red-600 py-6 text-lg font-bold hover:from-red-700 hover:to-red-500">

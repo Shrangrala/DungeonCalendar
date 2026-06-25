@@ -5,6 +5,41 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 
+
+const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-40KPRTKQT8";
+
+function ensureGoogleAnalytics() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = window.gtag || function gtag(){ window.dataLayer.push(arguments); };
+
+  if (!document.getElementById("google-analytics-gtag")) {
+    const script = document.createElement("script");
+    script.id = "google-analytics-gtag";
+    script.async = true;
+    script.src = `https://www.googletagmanager.com/gtag/js?id=${GOOGLE_ANALYTICS_MEASUREMENT_ID}`;
+    document.head.appendChild(script);
+  }
+
+  if (!window.__dungeonCalendarGoogleAnalyticsInitialized) {
+    window.gtag("js", new Date());
+    window.gtag("config", GOOGLE_ANALYTICS_MEASUREMENT_ID, { send_page_view: false });
+    window.__dungeonCalendarGoogleAnalyticsInitialized = true;
+  }
+}
+
+function trackGoogleAnalyticsPageView(path) {
+  if (typeof window === "undefined") return;
+  ensureGoogleAnalytics();
+  if (typeof window.gtag === "function") {
+    window.gtag("config", GOOGLE_ANALYTICS_MEASUREMENT_ID, {
+      page_path: path || `${window.location.pathname}${window.location.search || ""}`,
+      page_location: window.location.href,
+      page_title: document.title || "Dungeon Calendar"
+    });
+  }
+}
+
 function loadGoogleRecaptchaEnterprise() {
   if (typeof window === "undefined") return Promise.reject(new Error("reCAPTCHA is only available in a browser."));
   if (window.grecaptcha?.enterprise) return Promise.resolve(window.grecaptcha.enterprise);
@@ -624,6 +659,15 @@ export default function DungeonCalendarApp() {
   const [stripeAutoVerifyAttempted, setStripeAutoVerifyAttempted] = useState(false);
   const [stripeLoginVerifyUserId, setStripeLoginVerifyUserId] = useState("");
   const [publicRoute, setPublicRoute] = useState(() => typeof window !== "undefined" ? window.location.pathname : "/");
+
+  useEffect(() => {
+    ensureGoogleAnalytics();
+  }, []);
+
+  useEffect(() => {
+    const trackedPath = publicRoute && publicRoute !== "/" ? publicRoute : `/${page || "dashboard"}`;
+    trackGoogleAnalyticsPageView(trackedPath);
+  }, [publicRoute, page]);
   const lastSavedCampaignContentKeyRef = useRef("");
   const loadingCampaignsFromFirestoreRef = useRef(false);
 

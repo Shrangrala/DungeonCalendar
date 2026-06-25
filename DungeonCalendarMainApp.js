@@ -2398,7 +2398,7 @@ export default function DungeonCalendarApp() {
 
   async function copyShareLink() {
     try {
-      await navigator.clipboard.writeText("https://dungeoncalendar.com");
+      await navigator.clipboard.writeText("https://dungeoncalendar.com/about");
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -2407,7 +2407,7 @@ export default function DungeonCalendarApp() {
   }
 
   function AboutPage() {
-    const shareUrl = "https://dungeoncalendar.com";
+    const shareUrl = "https://dungeoncalendar.com/about";
     const shareText = "Organize your D&D campaigns with Dungeon Calendar — schedule sessions, track availability, and invite your party.";
     const socialLinks = [
       { label: "Share on Facebook", href: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}` },
@@ -2513,7 +2513,7 @@ export default function DungeonCalendarApp() {
               </div>
               <div className="mt-5 rounded-2xl border border-zinc-800 bg-black/40 p-4">
                 <p className="text-xs uppercase tracking-widest text-zinc-500">Direct link</p>
-                <p className="mt-2 break-all font-semibold text-amber-200">https://dungeoncalendar.com</p>
+                <p className="mt-2 break-all font-semibold text-amber-200">https://dungeoncalendar.com/about</p>
               </div>
             </div>
           </section>

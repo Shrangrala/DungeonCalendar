@@ -11,6 +11,10 @@
       "destination": "/terms/index.html"
     },
     {
+      "source": "/about",
+      "destination": "/about/index.html"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
@@ -27,6 +31,15 @@
     },
     {
       "source": "/terms",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/html; charset=utf-8"
+        }
+      ]
+    },
+    {
+      "source": "/about",
       "headers": [
         {
           "key": "Content-Type",

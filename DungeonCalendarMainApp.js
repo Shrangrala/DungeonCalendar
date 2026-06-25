@@ -1044,6 +1044,14 @@ export default function DungeonCalendarApp() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const stripeCancelled = params.get("stripe_cancelled") === "true";
+    const stripeSuccess = params.get("stripe_success") === "true" || params.get("payment_success") === "true" || params.get("stripe_sync") === "true";
+
+    if (stripeSuccess && window.location.pathname !== "/subscription-complete") {
+      const nextUrl = `/subscription-complete${window.location.search || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      setPublicRoute("/subscription-complete");
+      return;
+    }
 
     if (stripeCancelled) {
       setBillingMessage("Stripe Checkout was cancelled. No plan changes were made.");
@@ -1659,6 +1667,7 @@ export default function DungeonCalendarApp() {
       checkoutUrl.searchParams.set("stripe_plan", activatedPlan);
       checkoutUrl.searchParams.set("stripe_billing", activatedInterval);
       checkoutUrl.searchParams.set("stripe_success", "true");
+      checkoutUrl.searchParams.set("success_url", `${window.location.origin}/subscription-complete?stripe_success=true&stripe_plan=${encodeURIComponent(activatedPlan)}&stripe_billing=${encodeURIComponent(activatedInterval)}`);
       rememberPendingStripePlan(activatedPlan, activatedInterval);
 
       if (typeof window !== "undefined") {
@@ -2398,7 +2407,7 @@ export default function DungeonCalendarApp() {
 
   async function copyShareLink() {
     try {
-      await navigator.clipboard.writeText("https://dungeoncalendar.com/about");
+      await navigator.clipboard.writeText("https://dungeoncalendar.com");
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -2407,7 +2416,7 @@ export default function DungeonCalendarApp() {
   }
 
   function AboutPage() {
-    const shareUrl = "https://dungeoncalendar.com/about";
+    const shareUrl = "https://dungeoncalendar.com";
     const shareText = "Organize your D&D campaigns with Dungeon Calendar — schedule sessions, track availability, and invite your party.";
     const socialLinks = [
       { label: "Share on Facebook", href: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}` },
@@ -2513,7 +2522,7 @@ export default function DungeonCalendarApp() {
               </div>
               <div className="mt-5 rounded-2xl border border-zinc-800 bg-black/40 p-4">
                 <p className="text-xs uppercase tracking-widest text-zinc-500">Direct link</p>
-                <p className="mt-2 break-all font-semibold text-amber-200">https://dungeoncalendar.com/about</p>
+                <p className="mt-2 break-all font-semibold text-amber-200">https://dungeoncalendar.com</p>
               </div>
             </div>
           </section>
@@ -4078,6 +4087,70 @@ export default function DungeonCalendarApp() {
     );
   }
 
+  function SubscriptionCompletePage() {
+    const [secondsLeft, setSecondsLeft] = useState(10);
+    const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+    const completedPlan = normalizePlan(params.get("stripe_plan") || currentUser?.pendingStripePlan || plan || "free");
+    const completedBilling = normalizeBillingInterval(params.get("stripe_billing") || currentUser?.pendingStripeBillingInterval || billingInterval || "monthly");
+    const planName = planLimits[completedPlan]?.name || "Subscriber";
+
+    function goToDashboardNow() {
+      setPage("dashboard");
+      if (typeof window !== "undefined") {
+        window.history.replaceState({}, document.title, "/");
+        setPublicRoute("/");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    }
+
+    useEffect(() => {
+      const countdown = window.setInterval(() => {
+        setSecondsLeft((current) => Math.max(0, current - 1));
+      }, 1000);
+      const redirect = window.setTimeout(goToDashboardNow, 10000);
+      return () => {
+        window.clearInterval(countdown);
+        window.clearTimeout(redirect);
+      };
+    }, []);
+
+    return (
+      <div className="relative min-h-screen overflow-x-hidden text-zinc-100">
+        <AppBackground />
+        <main className="relative z-10 mx-auto flex min-h-screen w-[95%] max-w-4xl items-center justify-center px-3 py-8 sm:px-6">
+          <section className="w-full rounded-3xl border border-emerald-700/70 bg-black/70 p-6 text-center shadow-2xl backdrop-blur sm:p-10">
+            <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full border border-emerald-500 bg-emerald-950/70 shadow-lg">
+              <CalendarCheck className="h-10 w-10 text-emerald-300" />
+            </div>
+            <h1 className="mt-6 text-3xl font-black text-white sm:text-5xl">Thank you for subscribing!</h1>
+            <p className="mx-auto mt-4 max-w-2xl text-lg leading-8 text-zinc-300">
+              Your Dungeon Calendar subscription is complete. Your {planName} plan is being verified and activated for {completedBilling} billing.
+            </p>
+            <div className="mx-auto mt-6 max-w-xl rounded-2xl border border-zinc-700 bg-zinc-950/70 p-5 text-left">
+              <p className="text-sm font-bold uppercase tracking-[0.24em] text-emerald-300">What happens next</p>
+              <ul className="mt-4 space-y-3 text-sm leading-6 text-zinc-300">
+                <li>✓ Your paid features will unlock on your account after Stripe verification finishes.</li>
+                <li>✓ You can manage campaigns, availability, calendar tools, and billing from your dashboard.</li>
+                <li>✓ If activation takes a moment, use Billing → Verify Stripe Subscription.</li>
+              </ul>
+            </div>
+            <p className="mt-6 text-sm font-semibold text-zinc-400">
+              Redirecting to your dashboard in <span className="text-emerald-300">{secondsLeft}</span> seconds.
+            </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-3">
+              <Button onClick={goToDashboardNow} className="rounded-xl bg-emerald-700 px-6 py-3 hover:bg-emerald-600">
+                Go to Dashboard Now
+              </Button>
+              <Button onClick={() => navigateTo("/about")} variant="ghost" className="rounded-xl border border-zinc-700 px-6 py-3 hover:bg-zinc-900">
+                About Dungeon Calendar
+              </Button>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   function PageContent() {
     if (page === "dashboard") return DashboardPage();
     if (page === "calendar") return CalendarGrid();
@@ -4090,6 +4163,10 @@ export default function DungeonCalendarApp() {
 
   if (publicRoute === "/about") {
     return AboutPage();
+  }
+
+  if (publicRoute === "/subscription-complete") {
+    return <SubscriptionCompletePage />;
   }
 
   if (!authProfileLoaded) {

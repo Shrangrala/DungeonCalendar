@@ -1,11 +1,7 @@
 {
-  "buildCommand": "npm run build",
+  "buildCommand": "npx expo export --platform web",
   "outputDirectory": "dist",
   "rewrites": [
-    {
-      "source": "/about",
-      "destination": "/about/index.html"
-    },
     {
       "source": "/privacy",
       "destination": "/privacy/index.html"
@@ -15,24 +11,11 @@
       "destination": "/terms/index.html"
     },
     {
-      "source": "/about",
-      "destination": "/about/index.html"
-    },
-    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
   ],
   "headers": [
-    {
-      "source": "/about",
-      "headers": [
-        {
-          "key": "Content-Type",
-          "value": "text/html; charset=utf-8"
-        }
-      ]
-    },
     {
       "source": "/privacy",
       "headers": [
@@ -44,15 +27,6 @@
     },
     {
       "source": "/terms",
-      "headers": [
-        {
-          "key": "Content-Type",
-          "value": "text/html; charset=utf-8"
-        }
-      ]
-    },
-    {
-      "source": "/about",
       "headers": [
         {
           "key": "Content-Type",

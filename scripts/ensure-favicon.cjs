@@ -56,7 +56,6 @@ if (fs.existsSync(dist)) {
       '<meta name="twitter:card" content="summary_large_image" />',
       '<meta name="twitter:title" content="Dungeon Calendar - D&D Campaign Scheduling" />',
       '<meta name="twitter:description" content="Schedule tabletop RPG sessions, manage campaigns, track player availability, and organize D&D adventures with Dungeon Calendar." />',
-      '<meta name="twitter:image" content="https://dungeoncalendar.com/icon-512.png" />',
       '<link rel="icon" href="/favicon.ico" sizes="any" />',
       '<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=5" />',
       '<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=5" />',

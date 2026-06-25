@@ -94,7 +94,7 @@ module.exports = async function handler(req, res) {
     }
 
     const appReturnUrl = safeReturnUrl(req, returnUrl);
-    const successUrl = new URL(appReturnUrl);
+    const successUrl = new URL('/subscription-complete', appReturnUrl);
     successUrl.searchParams.set('stripe_success', 'true');
     successUrl.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
     successUrl.searchParams.set('stripe_plan', safePlan);

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, updateEmail, updatePassword } from "firebase/auth";
+import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, updateEmail, updatePassword } from "firebase/auth";
 import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
@@ -565,6 +565,15 @@ function authErrorMessage(error) {
   if (code === "auth/unauthorized-domain") return "This domain is not authorized for Firebase login. Add dungeoncalendar.com and www.dungeoncalendar.com in Firebase Authentication > Settings > Authorized domains.";
   if (code === "auth/operation-not-allowed") return "Google sign-in is not enabled. Open Firebase Console > Authentication > Sign-in method and enable Google.";
   return error?.message || "Authentication failed.";
+}
+
+function shouldUseRedirectGoogleLogin() {
+  if (typeof window === "undefined") return false;
+  const userAgent = window.navigator?.userAgent || "";
+  const isAndroid = /Android/i.test(userAgent);
+  const isSmallTouchScreen = window.matchMedia?.("(max-width: 900px)")?.matches && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
+  const isReactNativeWebView = !!window.ReactNativeWebView;
+  return isReactNativeWebView || isAndroid || isSmallTouchScreen;
 }
 
 function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
@@ -1432,6 +1441,22 @@ export default function DungeonCalendarApp() {
     }
   }
 
+
+  useEffect(() => {
+    let cancelled = false;
+    getRedirectResult(auth)
+      .then((result) => {
+        if (!result || cancelled) return;
+        setLoginError("");
+      })
+      .catch((error) => {
+        if (!cancelled) setLoginError(authErrorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function loginWithGoogle() {
     if (authBusy) return;
     setAuthBusy(true);
@@ -1441,6 +1466,11 @@ export default function DungeonCalendarApp() {
       await setPersistence(auth, browserLocalPersistence);
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
+      if (shouldUseRedirectGoogleLogin()) {
+        await signInWithRedirect(auth, provider);
+        return;
+      }
+
       const credential = await signInWithPopup(auth, provider);
       const user = credential.user;
       const uid = user.uid;

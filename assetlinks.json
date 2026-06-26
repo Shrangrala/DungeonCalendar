@@ -1,0 +1,15 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.anonymous.dungeoncalendar",
+      "sha256_cert_fingerprints": [
+        "3E:CB:89:D6:E9:26:74:0A:33:65:24:D6:FE:F8:FE:E0:1C:76:2F:E9:0C:88:4F:81:7C:7B:14:37:45:A0:FA:D6"
+      ]
+    }
+  }
+]

@@ -2459,6 +2459,17 @@ export default function DungeonCalendarApp() {
     }
   }
 
+
+  function LegalLinks({ className = "" } = {}) {
+    return (
+      <div className={classNames("flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-zinc-500", className)}>
+        <a href="/privacy" className="underline-offset-4 hover:text-zinc-200 hover:underline">Privacy Policy</a>
+        <span aria-hidden="true">•</span>
+        <a href="/terms" className="underline-offset-4 hover:text-zinc-200 hover:underline">Terms of Service</a>
+      </div>
+    );
+  }
+
   function AboutPage() {
     const shareUrl = "https://dungeoncalendar.com";
     const shareText = "Organize your D&D campaigns with Dungeon Calendar — schedule sessions, track availability, and invite your party.";
@@ -2493,6 +2504,7 @@ export default function DungeonCalendarApp() {
               <Button onClick={() => navigateTo("/")} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">Log In</Button>
               <Button onClick={() => navigateTo("/")} className="rounded-xl bg-red-700 hover:bg-red-600">Create Free Account</Button>
             </div>
+            <LegalLinks className="mt-5" />
           </header>
 
           <section className="mt-6 grid auto-rows-fr gap-6 lg:grid-cols-2">
@@ -2575,6 +2587,7 @@ export default function DungeonCalendarApp() {
             <h2 className="text-3xl font-black">Ready to start your next adventure?</h2>
             <p className="mx-auto mt-3 max-w-2xl text-zinc-300">Create a free account, invite your party, and find the best date for your next campaign session.</p>
             <Button onClick={() => navigateTo("/")} className="mt-6 rounded-xl bg-red-700 px-6 py-3 hover:bg-red-600">Create Your Free Account</Button>
+            <LegalLinks className="mt-5" />
           </section>
         </main>
       </div>
@@ -2678,6 +2691,7 @@ export default function DungeonCalendarApp() {
           <Button onClick={() => navigateTo("/about")} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-4 text-zinc-100 hover:bg-zinc-900 hover:text-white">
             About Dungeon Calendar
           </Button>
+          <LegalLinks />
         </div>
       ) : (
         <div className="space-y-4">
@@ -2762,6 +2776,8 @@ export default function DungeonCalendarApp() {
           </Button>
 
           <Button onClick={() => navigateTo("/about")} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-5 text-zinc-100 hover:bg-zinc-900 hover:text-white">About Dungeon Calendar</Button>
+
+          <LegalLinks />
 
           <Button onClick={logout} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-5 text-zinc-100 hover:bg-zinc-900 hover:text-white"><LogOut className="mr-2 h-4 w-4" /> Log Out</Button>
         </div>
@@ -4189,6 +4205,7 @@ export default function DungeonCalendarApp() {
                 About Dungeon Calendar
               </Button>
             </div>
+            <LegalLinks className="mt-6" />
           </section>
         </main>
       </div>
@@ -4229,6 +4246,9 @@ export default function DungeonCalendarApp() {
         <section className="w-full min-w-0 space-y-4 sm:space-y-5">
           {Header}
           {PageContent()}
+          <footer className="rounded-2xl border border-zinc-800 bg-black/35 px-4 py-3 backdrop-blur">
+            <LegalLinks />
+          </footer>
         </section>
       </main>
       <EmailInvitePopup />

@@ -5,7 +5,7 @@ import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCRSwIQxC_gpic-Z4o0Rb6mPhkf1yBguGI",
-  authDomain: "www.dungeoncalendar.com",
+  authDomain: "dungeon-calendar-app.firebaseapp.com",
   projectId: "dungeon-calendar-app",
   storageBucket: "dungeon-calendar-app.firebasestorage.app",
   messagingSenderId: "1089961645011",

@@ -40,7 +40,7 @@
       line-height: 1.6;
     }
     a { color: inherit; }
-    .wrap { width: min(95%, 1600px); margin: 0 auto; padding: 24px 12px 44px; }
+    .wrap { width: min(95%, 1600px); margin: 0 auto; padding: 24px 12px 80px; }
     .card { border: 1px solid rgba(113, 63, 18, .75); background: rgba(0,0,0,.62); border-radius: 28px; padding: clamp(24px, 4vw, 42px); box-shadow: 0 24px 80px rgba(0,0,0,.45); backdrop-filter: blur(10px); }
     header { text-align: center; border-color: rgba(127,29,29,.72); }
     .logo { width: 92px; height: 92px; border-radius: 24px; display: block; margin: 0 auto 16px; }
@@ -133,12 +133,11 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ subject: subject, message: message, source: 'static_about_page_contact_popup' })
         });
-        var data = await response.json().catch(function(){ return {}; });
-        if (!response.ok || data.error) throw new Error(data.error || 'Request failed');
+        if (!response.ok) throw new Error('Request failed');
         if (status) status.textContent = 'Support request sent.';
         setTimeout(closeContactModal, 500);
       } catch (error) {
-        if (status) status.textContent = 'Unable to send from the app right now. Support email must be configured on the server.';
+        if (status) status.textContent = 'Unable to send from the app right now. Please try again.';
       } finally {
         if (submit) { submit.disabled = false; submit.textContent = 'Send Support Request'; }
       }

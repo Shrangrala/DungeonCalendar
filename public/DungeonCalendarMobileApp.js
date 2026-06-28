@@ -66,6 +66,14 @@ function normalizeEmail(email = "") {
 }
 
 
+function safePlayerRecord(player = {}) {
+  return player && typeof player === "object" ? player : {};
+}
+
+function safePlayerList(players = []) {
+  return (Array.isArray(players) ? players : []).filter((player) => player && typeof player === "object");
+}
+
 function canonicalUserProfileDocId(user = {}) {
   const email = normalizeEmail(user?.email || user?.providerData?.[0]?.email || "");
   return email ? `email:${email.replace(/\//g, "%2F")}` : (user?.uid || "");
@@ -420,6 +428,7 @@ function campaignPlayers(campaign, user, userProfiles = {}) {
   };
 
   const add = (player = {}) => {
+    player = safePlayerRecord(player);
     const record = mergeCampaignTokenIntoPlayer(campaignPlayerRecord(player, campaign.id), campaign);
     const id = record.id || record.uid || record.userId || record.playerId || record.memberId || record.__memberKey || "";
     const profileName = displayNameFromProfile(id) || displayNameFromProfile(record.email);

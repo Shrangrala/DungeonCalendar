@@ -542,6 +542,14 @@ function uniqueNormalizedPhones(values = []) {
     .filter(Boolean)));
 }
 
+function safePlayerRecord(player = {}) {
+  return player && typeof player === "object" ? player : {};
+}
+
+function safePlayerList(players = []) {
+  return (Array.isArray(players) ? players : []).filter((player) => player && typeof player === "object");
+}
+
 function userPhoneKeys(user = {}) {
   return uniqueNormalizedPhones([user.phone, user.phoneNumber, user.mobile, user.mobilePhone, user.tel]);
 }
@@ -1122,9 +1130,9 @@ export default function DungeonCalendarApp() {
     }));
   }
 
-  const savedCurrentUser = players.find((player) => player.id === currentUserId);
+  const savedCurrentUser = safePlayerList(players).find((player) => player.id === currentUserId);
   const currentUser = savedCurrentUser || (auth.currentUser?.uid === currentUserId ? buildAuthFallbackPlayer(auth.currentUser, {}, activeCampaignId || "") : null);
-  const activePlayer = players.find((player) => player.id === activePlayerId);
+  const activePlayer = safePlayerList(players).find((player) => player.id === activePlayerId);
   const visibleCampaigns = useMemo(() => {
     if (!currentUser) return [];
     const userEmail = normalizeEmail(currentUser.email || "");
@@ -1162,13 +1170,14 @@ export default function DungeonCalendarApp() {
     const campaignId = activeCampaign.id;
     const campaignRecords = (activeCampaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaignId));
     const relevantPlayers = [
-      ...players.filter((player) =>
+      ...safePlayerList(players).filter((player) =>
         (player.campaignIds ?? []).includes(campaignId) ||
         (activeCampaign.memberIds ?? []).includes(player.id) ||
         activeCampaign?.dungeonMasterIds?.includes(player.id)
       ),
       ...campaignRecords
     ].map((player) => {
+      player = safePlayerRecord(player);
       const tokenFromCampaign = activeCampaign.playerTokenImages?.[player.id];
       return tokenFromCampaign ? {
         ...player,
@@ -1179,7 +1188,7 @@ export default function DungeonCalendarApp() {
       } : player;
     });
 
-    return relevantPlayers.filter((player, index, list) => {
+    return safePlayerList(relevantPlayers).filter((player, index, list) => {
       const key = normalizeEmail(player.email || "") || player.name?.toLowerCase() || player.id;
       const matchingPlayers = list.filter((candidate) =>
         (normalizeEmail(candidate.email || "") || candidate.name?.toLowerCase() || candidate.id) === key
@@ -1218,7 +1227,7 @@ export default function DungeonCalendarApp() {
 
       try {
         const profile = await loadUserProfile(user.uid);
-        const localMatch = players.find((player) =>
+        const localMatch = safePlayerList(players).find((player) =>
           player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
         );
         const fallbackPlayer = buildAuthFallbackPlayer(user, localMatch || {}, activeCampaign?.id || "");
@@ -1726,7 +1735,7 @@ export default function DungeonCalendarApp() {
   const bestDates = useMemo(() => {
     return Object.entries(availability)
       .filter(([key]) => !isGeneratedOnlyDate(activeCampaign, key) && isDungeonMasterSelectedDate(activeCampaign, key))
-      .map(([key, ids]) => ({ key, count: ids.length, names: ids.map((id) => { const player = players.find((p) => p.id === id); return player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name; }).filter(Boolean) }))
+      .map(([key, ids]) => ({ key, count: ids.length, names: ids.map((id) => { const player = safePlayerList(players).find((p) => p.id === id); return player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name; }).filter(Boolean) }))
       .filter((item) => item.count > 0)
       .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
   }, [availability, players, activeCampaign]);
@@ -1776,7 +1785,7 @@ export default function DungeonCalendarApp() {
         const credential = await signInWithEmailAndPassword(auth, trimmedEmail, loginPassword);
         uid = credential.user.uid;
         const profile = await loadUserProfile(uid);
-        const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === trimmedEmail || phoneMatches(item.phone || item.phoneNumber || "", auth.currentUser?.phoneNumber || ""));
+        const existingLocal = safePlayerList(players).find((item) => item.id === uid || normalizeEmail(item.email) === trimmedEmail || phoneMatches(item.phone || item.phoneNumber || "", auth.currentUser?.phoneNumber || ""));
 
         player = {
           ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, trimmedEmail),
@@ -1787,7 +1796,7 @@ export default function DungeonCalendarApp() {
       } else {
         const credential = await createUserWithEmailAndPassword(auth, trimmedEmail, loginPassword);
         uid = credential.user.uid;
-        const existingInvite = players.find((item) => normalizeEmail(item.email) === trimmedEmail || phoneMatches(item.phone || item.phoneNumber || "", auth.currentUser?.phoneNumber || ""));
+        const existingInvite = safePlayerList(players).find((item) => normalizeEmail(item.email) === trimmedEmail || phoneMatches(item.phone || item.phoneNumber || "", auth.currentUser?.phoneNumber || ""));
 
         player = {
           id: uid,
@@ -1862,7 +1871,7 @@ export default function DungeonCalendarApp() {
       const email = normalizeEmail(user.email || "");
       const displayName = user.displayName || email.split("@")[0] || "Player";
       const profile = await loadUserProfile(uid);
-      const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === email);
+      const existingLocal = safePlayerList(players).find((item) => item.id === uid || normalizeEmail(item.email) === email);
 
       const player = {
         ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, email),
@@ -2350,8 +2359,8 @@ export default function DungeonCalendarApp() {
     );
     if (duplicate) return;
 
-    const existingByEmail = trimmedEmail ? players.find((player) => normalizeEmail(player.email || "") === trimmedEmail) : null;
-    const existingByPhone = trimmedPhone ? players.find((player) => phoneMatches(player.phone || player.phoneNumber || player.phoneNormalized || "", trimmedPhone)) : null;
+    const existingByEmail = trimmedEmail ? safePlayerList(players).find((player) => normalizeEmail(player.email || "") === trimmedEmail) : null;
+    const existingByPhone = trimmedPhone ? safePlayerList(players).find((player) => phoneMatches(player.phone || player.phoneNumber || player.phoneNormalized || "", trimmedPhone)) : null;
     const existingInvite = existingByEmail || existingByPhone;
     const player = campaignPlayerRecord({
       ...(existingInvite || {}),
@@ -2688,7 +2697,7 @@ export default function DungeonCalendarApp() {
 
   function removePlayer(id) {
     if (!isDungeonMaster || !activeCampaign?.id) return;
-    const removedPlayer = activeCampaignPlayers.find((player) => player.id === id) || players.find((player) => player.id === id);
+    const removedPlayer = activeCampaignPlayers.find((player) => player.id === id) || safePlayerList(players).find((player) => player.id === id);
     const removedEmail = normalizeEmail(removedPlayer?.email || "");
 
     setPlayers((current) => current.map((player) => {
@@ -3546,8 +3555,8 @@ export default function DungeonCalendarApp() {
                     {!compact && hasDungeonMasterUnavailable && !isChosenDate && <div className="mt-4 hidden text-sm font-medium text-red-100 sm:block">DM not available</div>}
                     {!compact && !isDungeonMaster && !hasDungeonMasterAvailable && !hasDungeonMasterUnavailable && <div className="mt-4 hidden text-xs font-semibold text-zinc-400 sm:block">Waiting for DM</div>}
                     {!compact && isChosenDate && <div className="mt-2 rounded-md bg-amber-300 px-1 py-1 text-center text-[10px] font-bold text-black sm:mt-4 sm:px-2 sm:text-xs">Final</div>}
-                    {!compact && visibleUnavailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleUnavailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-red-950/60 px-1.5 py-1 text-[11px] font-semibold text-red-100"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM not available" : isDungeonMaster ? `${player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name} unavailable` : "You unavailable"}</span></div> : null; })}</div>}
-                    {!compact && visibleAvailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleAvailableIds.map((id) => { const player = players.find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-black/35 px-1.5 py-1 text-[11px] font-semibold text-white"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM available" : isDungeonMaster ? player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name : "You available"}</span></div> : null; })}</div>}
+                    {!compact && visibleUnavailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleUnavailableIds.map((id) => { const player = safePlayerList(players).find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-red-950/60 px-1.5 py-1 text-[11px] font-semibold text-red-100"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM not available" : isDungeonMaster ? `${player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name} unavailable` : "You unavailable"}</span></div> : null; })}</div>}
+                    {!compact && visibleAvailableIds.length > 0 && <div className="mt-3 hidden space-y-1 sm:block">{visibleAvailableIds.map((id) => { const player = safePlayerList(players).find((p) => p.id === id); return player ? <div key={id} title={isDungeonMaster ? player.name : ""} className="flex items-center gap-1.5 rounded-md bg-black/35 px-1.5 py-1 text-[11px] font-semibold text-white"><PlayerToken player={player} campaignId={activeCampaign?.id} size="sm" className="h-4 w-4 border-amber-300" /><span className="truncate">{isDungeonMasterResponse(player.id) ? "DM available" : isDungeonMaster ? player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name : "You available"}</span></div> : null; })}</div>}
                   </button>
                 );
               })}
@@ -3607,7 +3616,7 @@ export default function DungeonCalendarApp() {
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              {activeCampaignPlayers.map((player) => {
+              {safePlayerList(activeCampaignPlayers).map((player) => {
                 const isDmPlayer = activeCampaign?.dungeonMasterIds?.includes(player.id);
                 const displayName = player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name;
 
@@ -3720,13 +3729,13 @@ export default function DungeonCalendarApp() {
                 const unavailableIds = unavailable[key] ?? [];
                 const availableNames = hasPlanFeature("fullTracking")
                   ? availableIds.map((id) => {
-                    const player = players.find((p) => p.id === id);
+                    const player = safePlayerList(players).find((p) => p.id === id);
                     return player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name;
                   }).filter(Boolean)
                   : [];
                 const unavailableNames = hasPlanFeature("fullTracking")
                   ? unavailableIds.map((id) => {
-                    const player = players.find((p) => p.id === id);
+                    const player = safePlayerList(players).find((p) => p.id === id);
                     return player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name;
                   }).filter(Boolean)
                   : [];
@@ -4245,7 +4254,7 @@ export default function DungeonCalendarApp() {
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              {activeCampaignPlayers.map((player) => {
+              {safePlayerList(activeCampaignPlayers).map((player) => {
                 const isDmPlayer = activeCampaign?.dungeonMasterIds?.includes(player.id);
                 const displayName = player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name;
 
@@ -4302,11 +4311,11 @@ export default function DungeonCalendarApp() {
     }
 
     const availablePlayers = chosenDate
-      ? (availability[chosenDate] ?? []).map((id) => players.find((p) => p.id === id)).filter(Boolean)
+      ? (availability[chosenDate] ?? []).map((id) => safePlayerList(players).find((p) => p.id === id)).filter(Boolean)
       : [];
 
     const unavailablePlayers = chosenDate
-      ? (unavailable[chosenDate] ?? []).map((id) => players.find((p) => p.id === id)).filter(Boolean)
+      ? (unavailable[chosenDate] ?? []).map((id) => safePlayerList(players).find((p) => p.id === id)).filter(Boolean)
       : [];
 
     return (
@@ -4367,7 +4376,7 @@ export default function DungeonCalendarApp() {
               <h3 className="mb-3 text-lg font-bold text-amber-300">Available Players</h3>
 
               <div className="flex flex-wrap gap-4">
-                {availablePlayers.map((player) => (
+                {safePlayerList(availablePlayers).map((player) => (
                   <div
                     key={player.id}
                     className="flex w-24 flex-col items-center gap-2 rounded-2xl border border-zinc-700 bg-black/50 px-3 py-4 text-center text-sm font-semibold"
@@ -4388,7 +4397,7 @@ export default function DungeonCalendarApp() {
               <h3 className="mb-3 text-lg font-bold text-red-300">Not Available Players</h3>
 
               <div className="flex flex-wrap gap-4">
-                {unavailablePlayers.map((player) => (
+                {safePlayerList(unavailablePlayers).map((player) => (
                   <div
                     key={player.id}
                     className="flex w-24 flex-col items-center gap-2 rounded-2xl border border-red-900/70 bg-red-950/50 px-3 py-4 text-center text-sm font-semibold text-red-100"

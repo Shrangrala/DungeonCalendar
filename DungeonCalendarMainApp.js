@@ -81,10 +81,31 @@ function loadGoogleRecaptchaEnterprise() {
 }
 
 async function getGoogleRecaptchaToken(widgetId) {
-  const enterprise = await loadGoogleRecaptchaEnterprise();
-  const token = enterprise.getResponse(widgetId);
-  if (!token) throw new Error("Complete the Google reCAPTCHA before continuing.");
-  return token;
+  if (widgetId === null || widgetId === undefined) return "";
+  try {
+    const enterprise = await loadGoogleRecaptchaEnterprise();
+    const token = enterprise.getResponse(widgetId);
+    return token || "";
+  } catch (error) {
+    console.warn("Optional login reCAPTCHA was unavailable; continuing with Firebase Auth:", error);
+    return "";
+  }
+}
+
+function resetGoogleRecaptcha(widgetId) {
+  if (widgetId === null || widgetId === undefined) return;
+  try {
+    if (typeof window !== "undefined" && window.grecaptcha?.enterprise) {
+      window.grecaptcha.enterprise.reset(widgetId);
+    }
+  } catch (error) {
+    console.warn("Optional login reCAPTCHA could not be reset:", error);
+  }
+}
+
+function isRemovedRecaptchaClientError(error) {
+  const message = String(error?.message || error?.reason?.message || error?.error?.message || error || "");
+  return message.includes("reCAPTCHA client element has been removed");
 }
 
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
@@ -1329,21 +1350,50 @@ export default function DungeonCalendarApp() {
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
 
   useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const ignoreRemovedRecaptchaClient = (event) => {
+      if (isRemovedRecaptchaClientError(event)) {
+        event.preventDefault?.();
+        return false;
+      }
+      return undefined;
+    };
+
+    window.addEventListener("error", ignoreRemovedRecaptchaClient);
+    window.addEventListener("unhandledrejection", ignoreRemovedRecaptchaClient);
+
+    return () => {
+      window.removeEventListener("error", ignoreRemovedRecaptchaClient);
+      window.removeEventListener("unhandledrejection", ignoreRemovedRecaptchaClient);
+    };
+  }, []);
+
+  useEffect(() => {
     if (currentUser || !recaptchaContainerRef.current || typeof window === "undefined") return;
     let cancelled = false;
 
     loadGoogleRecaptchaEnterprise()
       .then((enterprise) => {
         if (cancelled || !recaptchaContainerRef.current || recaptchaWidgetIdRef.current !== null) return;
-        recaptchaWidgetIdRef.current = enterprise.render(recaptchaContainerRef.current, {
-          sitekey: GOOGLE_RECAPTCHA_SITE_KEY,
-          action: "LOGIN"
-        });
+        try {
+          recaptchaWidgetIdRef.current = enterprise.render(recaptchaContainerRef.current, {
+            sitekey: GOOGLE_RECAPTCHA_SITE_KEY,
+            action: "LOGIN"
+          });
+        } catch (error) {
+          console.warn("Optional login reCAPTCHA could not be rendered:", error);
+          recaptchaWidgetIdRef.current = null;
+        }
       })
-      .catch((error) => setLoginError(error.message));
+      .catch((error) => {
+        console.warn("Optional login reCAPTCHA did not load:", error);
+        recaptchaWidgetIdRef.current = null;
+      });
 
     return () => {
       cancelled = true;
+      recaptchaWidgetIdRef.current = null;
     };
   }, [currentUser]);
 
@@ -1434,9 +1484,7 @@ export default function DungeonCalendarApp() {
     } catch (error) {
       setLoginError(authErrorMessage(error));
     } finally {
-      if (typeof window !== "undefined" && window.grecaptcha?.enterprise && recaptchaWidgetIdRef.current !== null) {
-        window.grecaptcha.enterprise.reset(recaptchaWidgetIdRef.current);
-      }
+      resetGoogleRecaptcha(recaptchaWidgetIdRef.current);
       setAuthBusy(false);
     }
   }

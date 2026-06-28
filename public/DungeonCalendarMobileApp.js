@@ -17,7 +17,7 @@ import {
 } from "react-native";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
 import { auth, db, storage, onAuthStateChanged, signInToFirebaseWithGoogleIdToken, signOut } from "./firebase";
-import { arrayRemove, arrayUnion, collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, updateDoc, onSnapshotsInSync } from "firebase/firestore";
+import { collection, deleteDoc, doc, enableNetwork, onSnapshot, serverTimestamp, setDoc, onSnapshotsInSync } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import * as ImagePicker from "expo-image-picker";
 
@@ -47,20 +47,6 @@ function normalizeEmail(email = "") {
   return String(email || "").trim().toLowerCase();
 }
 
-function playerIdentityKey(player = {}) {
-  return normalizeEmail(player.email || "") || player.id || player.uid || "";
-}
-
-function normalizeCampaignPlayers(players = []) {
-  const seen = new Set();
-  return (Array.isArray(players) ? players : []).filter((player) => {
-    const key = playerIdentityKey(player);
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 function makeId(prefix = "item") {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -85,30 +71,35 @@ function dateKeyToParts(key = "") {
 }
 
 function normalizeList(values = []) {
-  if (!Array.isArray(values)) return [];
-  const seen = new Set();
-  return values
-    .map((value) => typeof value === "string" ? value.trim() : value)
-    .filter(Boolean)
-    .filter((value) => {
-      const key = typeof value === "string" ? value : JSON.stringify(value);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  return Array.isArray(values) ? Array.from(new Set(values.filter(Boolean).map(String))) : [];
+}
+
+function getSingleDungeonMasterId(campaign = {}, fallbackId = "") {
+  const candidates = [
+    campaign.dungeonMasterId,
+    campaign.dmId,
+    campaign.ownerId,
+    campaign.createdBy,
+    ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : []),
+    fallbackId
+  ].filter(Boolean).map(String);
+  return candidates[0] || "";
 }
 
 function normalizeCampaign(campaign = {}) {
   const id = campaign.id || makeId("campaign");
+  const dungeonMasterId = getSingleDungeonMasterId(campaign, campaign.ownerId || "");
   return {
     ...campaign,
     id,
     name: campaign.name || "Untitled Campaign",
-    ownerId: campaign.ownerId || "",
-    dungeonMasterIds: normalizeList([...(campaign.dungeonMasterIds || []), campaign.ownerId, campaign.createdBy, campaign.dmId, campaign.dungeonMasterId].filter(Boolean)),
+    ownerId: dungeonMasterId || campaign.ownerId || "",
+    dungeonMasterId: dungeonMasterId || campaign.ownerId || "",
+    dmId: dungeonMasterId || campaign.ownerId || "",
+    dungeonMasterIds: (dungeonMasterId || campaign.ownerId) ? [dungeonMasterId || campaign.ownerId] : [],
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
-    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
+    invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
     availability: campaign.availability || {},
     unavailable: campaign.unavailable || {},
     chosenDate: campaign.chosenDate || "",

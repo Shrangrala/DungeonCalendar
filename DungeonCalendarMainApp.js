@@ -318,6 +318,23 @@ function filterToDungeonMasterSelectedDates(campaign, dateMap = {}) {
   );
 }
 
+
+function removeDateCompletelyFromCampaign(campaign = {}, key = "") {
+  if (!key) return campaign;
+  const nextAvailability = { ...(campaign.availability || {}) };
+  const nextUnavailable = { ...(campaign.unavailable || {}) };
+  delete nextAvailability[key];
+  delete nextUnavailable[key];
+  return {
+    ...campaign,
+    availability: nextAvailability,
+    unavailable: nextUnavailable,
+    manuallySelectedDates: (campaign.manuallySelectedDates || []).filter((dateKeyValue) => dateKeyValue !== key),
+    generatedSessionDates: (campaign.generatedSessionDates || []).filter((dateKeyValue) => dateKeyValue !== key),
+    chosenDate: campaign.chosenDate === key ? "" : campaign.chosenDate
+  };
+}
+
 function buildMonth(year, month) {
   const first = new Date(year, month, 1);
   const start = new Date(first);
@@ -2566,22 +2583,29 @@ export default function DungeonCalendarApp() {
 
       if (availabilityMode === "available") {
         const manualDates = new Set(campaign.manuallySelectedDates || []);
+        const dungeonMasterIds = new Set(campaign.dungeonMasterIds || []);
+        const hasAnyDungeonMasterAvailable = availableList.some((id) => dungeonMasterIds.has(id));
+        const alreadySelectedByDungeonMaster = manualDates.has(key) || hasAnyDungeonMasterAvailable || campaign.chosenDate === key;
+
         if (isDungeonMaster) {
-          if (isAvailable) {
-            manualDates.delete(key);
-            const nextAvailability = { ...(campaign.availability || {}) };
-            const nextUnavailable = { ...(campaign.unavailable || {}) };
-            delete nextAvailability[key];
-            delete nextUnavailable[key];
-            return {
-              manuallySelectedDates: Array.from(manualDates),
-              availability: nextAvailability,
-              unavailable: nextUnavailable,
-              chosenDate: campaign.chosenDate === key ? "" : campaign.chosenDate
-            };
+          if (alreadySelectedByDungeonMaster) {
+            return removeDateCompletelyFromCampaign(campaign, key);
           }
+
           manualDates.add(key);
+          return {
+            manuallySelectedDates: Array.from(manualDates),
+            availability: {
+              ...campaign.availability,
+              [key]: Array.from(new Set([...availableList, activePlayer.id]))
+            },
+            unavailable: {
+              ...campaign.unavailable,
+              [key]: unavailableList.filter((id) => id !== activePlayer.id)
+            }
+          };
         }
+
         return {
           manuallySelectedDates: Array.from(manualDates),
           availability: {

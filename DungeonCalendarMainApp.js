@@ -665,6 +665,25 @@ function inferBillingIntervalFromStripeSubscription(subscription = {}, fallback 
   return normalizeBillingInterval(interval || fallback);
 }
 
+function liveApplyPlanFromFirestore({ profile = {}, subscription = {}, customer = {}, source = "firestore" } = {}, fallbackPlan = "free", fallbackBillingInterval = "monthly") {
+  const subscriptionPlan = subscription && Object.keys(subscription).length ? inferPlanFromStripeSubscription(subscription, fallbackPlan) : "free";
+  const profilePlan = readProfilePlan(profile, fallbackPlan);
+  const customerPlan = readProfilePlan(customer, profilePlan);
+  const nextPlan = subscriptionPlan !== "free" ? subscriptionPlan : customerPlan;
+  const nextBillingInterval = subscriptionPlan !== "free"
+    ? inferBillingIntervalFromStripeSubscription(subscription, readProfileBillingInterval(customer, readProfileBillingInterval(profile, fallbackBillingInterval)))
+    : readProfileBillingInterval(customer, readProfileBillingInterval(profile, fallbackBillingInterval));
+  const status = subscription.status || subscription.stripeSubscriptionStatus || subscription.subscriptionStatus || customer.stripeSubscriptionStatus || customer.subscriptionStatus || customer.status || profile.stripeSubscriptionStatus || profile.subscriptionStatus || "";
+  const active = nextPlan !== "free" || readBillingStatusActive(subscription) || readBillingStatusActive(customer) || readBillingStatusActive(profile);
+  return {
+    plan: active ? normalizePlan(nextPlan) : "free",
+    billingInterval: normalizeBillingInterval(nextBillingInterval),
+    stripeSubscriptionStatus: status || (active && nextPlan !== "free" ? "active" : ""),
+    stripeSubscriptionId: subscription.id || subscription.subscriptionId || customer.stripeSubscriptionId || customer.subscriptionId || "",
+    stripeCustomerId: customer.stripeCustomerId || customer.customerId || customer.stripeId || profile.stripeCustomerId || "",
+    stripeActivationSource: source
+  };
+}
 
 function canonicalUserProfileDocId(userOrUid = "", profile = {}) {
   const signedInUser = auth?.currentUser || null;
@@ -1252,19 +1271,13 @@ export default function DungeonCalendarApp() {
 
       const syncedProfilePlan = readProfilePlan(profile || syncedPlayer, syncedPlayer.plan || "free");
       const syncedBillingInterval = normalizeBillingInterval(profile?.billingInterval || syncedPlayer.billingInterval || "monthly");
-      setPlan((currentPlan) => syncedProfilePlan === "free" && currentPlan !== "free" ? currentPlan : syncedProfilePlan);
-      setBillingInterval((currentInterval) => syncedProfilePlan === "free" && plan !== "free" ? currentInterval : syncedBillingInterval);
+      setPlan(syncedProfilePlan);
+      setBillingInterval(syncedBillingInterval);
       setPlayers((current) => {
-        const existingPlayer = current.find((player) =>
-          player.id === currentUserId || normalizeEmail(player.email) === normalizeEmail(syncedPlayer.email)
-        );
-        const safeSyncedPlayer = syncedProfilePlan === "free" && normalizePlan(existingPlayer?.plan || "free") !== "free"
-          ? { ...syncedPlayer, plan: existingPlayer.plan, billingInterval: existingPlayer.billingInterval || syncedBillingInterval }
-          : syncedPlayer;
         const withoutDuplicate = current.filter((player) =>
           player.id !== currentUserId && normalizeEmail(player.email) !== normalizeEmail(syncedPlayer.email)
         );
-        return [...withoutDuplicate, safeSyncedPlayer];
+        return [...withoutDuplicate, { ...syncedPlayer, plan: syncedProfilePlan, billingInterval: syncedBillingInterval }];
       });
     }, (error) => {
       console.warn("Live profile sync failed:", error);
@@ -1578,75 +1591,61 @@ export default function DungeonCalendarApp() {
   }, [currentUser?.id, stripeAutoVerifyAttempted]);
 
   useEffect(() => {
-    if (!currentUser || auth.currentUser?.uid !== currentUser.id) return;
+    if (!currentUser || auth.currentUser?.uid !== currentUser.id) return undefined;
 
-    let cancelled = false;
+    let customerData = {};
+    let bestSubscription = {};
 
-    const syncFirebaseCustomerPlan = async () => {
-      try {
-        const customerSnap = await getDoc(doc(db, "customers", currentUser.id));
-        const customerData = customerSnap.exists() ? (customerSnap.data() || {}) : {};
+    const applyLivePlan = (source) => {
+      const next = liveApplyPlanFromFirestore({
+        profile: currentUser || {},
+        customer: customerData || {},
+        subscription: bestSubscription || {},
+        source
+      }, plan || "free", billingInterval || "monthly");
 
-        let customerPlan = customerSnap.exists() ? readProfilePlan(customerData, "free") : "free";
-        let customerBillingInterval = customerSnap.exists() ? readProfileBillingInterval(customerData, billingInterval || "monthly") : normalizeBillingInterval(billingInterval || "monthly");
-        let customerStatus = customerData.stripeSubscriptionStatus || customerData.subscriptionStatus || customerData.status || "";
-        let customerSubscriptionId = customerData.stripeSubscriptionId || customerData.subscriptionId || "";
-        let customerActive = customerSnap.exists() && (readBillingStatusActive(customerData) || customerPlan !== "free");
+      setPlan(next.plan);
+      setBillingInterval(next.billingInterval);
+      setPlayers((current) => current.map((player) => player.id === currentUser.id ? {
+        ...player,
+        plan: next.plan,
+        billingInterval: next.billingInterval,
+        stripeSubscriptionStatus: next.stripeSubscriptionStatus || player.stripeSubscriptionStatus || ""
+      } : player));
 
-        // Firebase Stripe extension stores live subscription data under
-        // customers/{uid}/subscriptions/{subscriptionId}. Read that path on login too;
-        // otherwise the app can keep showing Free even when Stripe is active.
-        try {
-          const subscriptionSnaps = await getDocs(collection(db, "customers", currentUser.id, "subscriptions"));
-          subscriptionSnaps.forEach((subSnap) => {
-            const subscriptionData = subSnap.data() || {};
-            const subPlan = inferPlanFromStripeSubscription(subscriptionData, customerPlan);
-            const subActive = readBillingStatusActive(subscriptionData) || subPlan !== "free";
-            if (subActive && subPlan !== "free") {
-              customerPlan = subPlan;
-              customerBillingInterval = inferBillingIntervalFromStripeSubscription(subscriptionData, customerBillingInterval);
-              customerStatus = subscriptionData.status || subscriptionData.stripeSubscriptionStatus || subscriptionData.subscriptionStatus || customerStatus || "active";
-              customerSubscriptionId = subscriptionData.id || subscriptionData.subscriptionId || subSnap.id || customerSubscriptionId;
-              customerActive = true;
-            }
-          });
-        } catch (subError) {
-          console.warn("Firebase Stripe subscriptions sync failed:", subError);
-        }
-
-        if (cancelled || !customerActive || customerPlan === "free") return;
-
-        setPlan(customerPlan);
-        setBillingInterval(customerBillingInterval);
-        setPlayers((current) => current.map((player) => player.id === currentUser.id ? {
-          ...player,
-          plan: customerPlan,
-          billingInterval: customerBillingInterval,
-          stripeSubscriptionStatus: customerStatus || player.stripeSubscriptionStatus || "active"
-        } : player));
-
-        if (readProfilePlan(currentUser, "free") === "free" || plan === "free") {
-          saveUserProfile(currentUser.id, {
-            plan: customerPlan,
-            billingInterval: customerBillingInterval,
-            stripeSubscriptionStatus: customerStatus || "active",
-            stripeCustomerId: customerData.stripeCustomerId || customerData.customerId || customerData.stripeId || "",
-            stripeSubscriptionId: customerSubscriptionId || "",
-            stripeActivationSource: "firestore_customer_subscription_sync_on_login",
-            updatedAt: new Date().toISOString()
-          });
-        }
-      } catch (error) {
-        console.warn("Firebase customer plan sync failed:", error);
-      }
+      saveUserProfile(currentUser.id, {
+        plan: next.plan,
+        billingInterval: next.billingInterval,
+        stripeSubscriptionStatus: next.stripeSubscriptionStatus || "",
+        stripeCustomerId: next.stripeCustomerId || "",
+        stripeSubscriptionId: next.stripeSubscriptionId || "",
+        stripeActivationSource: next.stripeActivationSource,
+        updatedAt: new Date().toISOString()
+      }).catch((error) => console.warn("Could not mirror live customer plan to user profile:", error));
     };
 
-    syncFirebaseCustomerPlan();
+    const unsubscribeCustomer = onSnapshot(doc(db, "customers", currentUser.id), { includeMetadataChanges: true }, (snap) => {
+      customerData = snap.exists() ? (snap.data() || {}) : {};
+      applyLivePlan("firestore_customer_live_sync");
+    }, (error) => console.warn("Firebase customer plan listener failed:", error));
+
+    const unsubscribeSubscriptions = onSnapshot(collection(db, "customers", currentUser.id, "subscriptions"), { includeMetadataChanges: true }, (snapshot) => {
+      bestSubscription = {};
+      snapshot.docs.forEach((subSnap) => {
+        const data = { id: subSnap.id, ...(subSnap.data() || {}) };
+        const candidatePlan = inferPlanFromStripeSubscription(data, "free");
+        if ((readBillingStatusActive(data) || candidatePlan !== "free") && candidatePlan !== "free") {
+          bestSubscription = data;
+        }
+      });
+      applyLivePlan("firestore_subscription_live_sync");
+    }, (error) => console.warn("Firebase Stripe subscriptions listener failed:", error));
 
     return () => {
-      cancelled = true;
+      unsubscribeCustomer();
+      unsubscribeSubscriptions();
     };
-  }, [currentUser?.id, billingInterval]);
+  }, [currentUser?.id]);
 
   useEffect(() => {
     if (!currentUser || auth.currentUser?.uid !== currentUser.id) return;

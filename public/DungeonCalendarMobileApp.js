@@ -209,7 +209,30 @@ async function deleteCampaignById(id) {
 const planOrder = ["free", "adventurer", "guildmaster"];
 
 function normalizePlan(planId = "free") {
-  return planOrder.includes(planId) ? planId : "free";
+  const value = String(planId || "free").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (["guildmaster", "guild", "guildmasterplan", "guildplan"].includes(value)) return "guildmaster";
+  if (["adventurer", "adventure", "adventurerplan", "adventureplan"].includes(value)) return "adventurer";
+  if (["free", "freeplan", "basic", "starter"].includes(value)) return "free";
+  return "free";
+}
+
+function readProfilePlan(profile = {}, fallback = "free") {
+  const planValue =
+    profile.plan ??
+    profile.Plan ??
+    profile.planStatus ??
+    profile.PlanStatus ??
+    profile.subscriptionPlan ??
+    profile.SubscriptionPlan ??
+    profile.membershipPlan ??
+    profile.MembershipPlan ??
+    profile.accountPlan ??
+    profile.AccountPlan ??
+    profile.tier ??
+    profile.Tier ??
+    fallback;
+
+  return normalizePlan(planValue);
 }
 
 function normalizeBillingInterval(interval = "monthly") {
@@ -941,7 +964,7 @@ function Notifications({ navigate, openSettings, user, userProfile }) {
 function PlanSettings({ openSettings, user, userProfile, plan, billingInterval }) {
   const [selectedPlan, setSelectedPlan] = useState("");
   const [selectedInterval, setSelectedInterval] = useState(normalizeBillingInterval(billingInterval));
-  const activePlan = normalizePlan(plan || userProfile?.plan || "free");
+  const activePlan = readProfilePlan(userProfile || {}, plan || "free");
   const activeInterval = normalizeBillingInterval(billingInterval || userProfile?.billingInterval || "monthly");
 
   const startCheckout = async (planId) => {
@@ -1716,7 +1739,7 @@ export default function DungeonCalendarMobileApp() {
   const activePlayers = campaignPlayers(activeCampaign, user);
   const proposedDates = proposedDatesForCampaign(activeCampaign);
   const isDungeonMaster = userIsDungeonMaster(user, activeCampaign);
-  const plan = normalizePlan(userProfile?.plan || "free");
+  const plan = readProfilePlan(userProfile || {}, "free");
   const billingInterval = normalizeBillingInterval(userProfile?.billingInterval || "monthly");
 
   const props = {

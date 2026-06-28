@@ -304,6 +304,20 @@ function isGeneratedOnlyDate(campaign, key) {
   return generated.has(key) && !manual.has(key) && campaign.chosenDate !== key;
 }
 
+function isDungeonMasterSelectedDate(campaign, key) {
+  if (!campaign || !key) return false;
+  if (campaign.chosenDate === key) return true;
+  if ((campaign.manuallySelectedDates || []).includes(key)) return true;
+  const dungeonMasterIds = new Set(campaign.dungeonMasterIds || []);
+  return (campaign.availability?.[key] || []).some((id) => dungeonMasterIds.has(id));
+}
+
+function filterToDungeonMasterSelectedDates(campaign, dateMap = {}) {
+  return Object.fromEntries(
+    Object.entries(dateMap || {}).filter(([key]) => isDungeonMasterSelectedDate(campaign, key))
+  );
+}
+
 function buildMonth(year, month) {
   const first = new Date(year, month, 1);
   const start = new Date(first);
@@ -1543,7 +1557,7 @@ export default function DungeonCalendarApp() {
 
   const bestDates = useMemo(() => {
     return Object.entries(availability)
-      .filter(([key]) => !isGeneratedOnlyDate(activeCampaign, key))
+      .filter(([key]) => !isGeneratedOnlyDate(activeCampaign, key) && isDungeonMasterSelectedDate(activeCampaign, key))
       .map(([key, ids]) => ({ key, count: ids.length, names: ids.map((id) => { const player = players.find((p) => p.id === id); return player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name; }).filter(Boolean) }))
       .filter((item) => item.count > 0)
       .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
@@ -2553,8 +2567,20 @@ export default function DungeonCalendarApp() {
       if (availabilityMode === "available") {
         const manualDates = new Set(campaign.manuallySelectedDates || []);
         if (isDungeonMaster) {
-          if (isAvailable) manualDates.delete(key);
-          else manualDates.add(key);
+          if (isAvailable) {
+            manualDates.delete(key);
+            const nextAvailability = { ...(campaign.availability || {}) };
+            const nextUnavailable = { ...(campaign.unavailable || {}) };
+            delete nextAvailability[key];
+            delete nextUnavailable[key];
+            return {
+              manuallySelectedDates: Array.from(manualDates),
+              availability: nextAvailability,
+              unavailable: nextUnavailable,
+              chosenDate: campaign.chosenDate === key ? "" : campaign.chosenDate
+            };
+          }
+          manualDates.add(key);
         }
         return {
           manuallySelectedDates: Array.from(manualDates),
@@ -2562,7 +2588,7 @@ export default function DungeonCalendarApp() {
             ...campaign.availability,
             [key]: isAvailable
               ? availableList.filter((id) => id !== activePlayer.id)
-              : [...availableList, activePlayer.id]
+              : Array.from(new Set([...availableList, activePlayer.id]))
           },
           unavailable: {
             ...campaign.unavailable,
@@ -2631,7 +2657,7 @@ export default function DungeonCalendarApp() {
     }
 
     const eligibleDates = Object.entries(availability)
-      .filter(([key]) => !isGeneratedOnlyDate(activeCampaign, key))
+      .filter(([key]) => !isGeneratedOnlyDate(activeCampaign, key) && isDungeonMasterSelectedDate(activeCampaign, key))
       .map(([key, ids]) => {
         const dmAvailable = ids.some((id) => dungeonMasterIds.includes(id));
         const unavailableCount = unavailable[key]?.length ?? 0;
@@ -3341,7 +3367,7 @@ export default function DungeonCalendarApp() {
     const resultDates = Array.from(new Set([
       ...Object.keys(availability),
       ...Object.keys(unavailable)
-    ])).filter((key) => !isGeneratedOnlyDate(activeCampaign, key)).sort((a, b) => {
+    ])).filter((key) => !isGeneratedOnlyDate(activeCampaign, key) && isDungeonMasterSelectedDate(activeCampaign, key)).sort((a, b) => {
       const aAvailable = availability[a]?.length ?? 0;
       const bAvailable = availability[b]?.length ?? 0;
       return bAvailable - aAvailable || a.localeCompare(b);

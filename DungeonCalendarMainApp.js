@@ -5,6 +5,11 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
 
+if (typeof window !== "undefined") {
+  window.currentInfo = window.currentInfo && typeof window.currentInfo === "object" ? window.currentInfo : {};
+  window.currentInfo.selectedLocation = window.currentInfo.selectedLocation || null;
+}
+
 
 const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-40KPRTKQT8";
 
@@ -113,6 +118,7 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
 
 
 function canonicalDungeonMasterId(campaign = {}) {
+  campaign = safeObject(campaign);
   const candidates = [
     campaign.ownerId,
     campaign.ownerUID,
@@ -149,7 +155,7 @@ function normalizeDateResponseMap(map = {}) {
 
 function normalizeCampaignPlayers(players = []) {
   const seen = new Set();
-  return (Array.isArray(players) ? players : []).filter((player) => {
+  return safePlayerList(players).filter((player) => {
     const key = playerIdentityKey(player) || player.id || player.uid;
     if (!key || seen.has(key)) return false;
     seen.add(key);
@@ -158,6 +164,7 @@ function normalizeCampaignPlayers(players = []) {
 }
 
 function normalizeCampaignForSync(campaign = {}) {
+  campaign = safeObject(campaign);
   const id = campaign.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
   const ownerId = canonicalDungeonMasterId(campaign) || campaign.ownerId || "";
   const dungeonMasterIds = normalizeSingleDungeonMasterIds({ ...campaign, ownerId });
@@ -168,7 +175,7 @@ function normalizeCampaignForSync(campaign = {}) {
     dungeonMasterIds,
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: Array.from(new Set(normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean))),
-    invitedPhones: uniqueNormalizedPhones([...(campaign.invitedPhones || []), ...(campaign.phoneInvites || []), ...((campaign.invitedPlayers || []).map((player) => player.phone || player.phoneNumber || ""))]),
+    invitedPhones: uniqueNormalizedPhones([...(campaign.invitedPhones || []), ...(campaign.phoneInvites || []), ...safePlayerList(campaign.invitedPlayers).map((player) => player.phone || player.phoneNumber || "")]),
     invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
     playerTokenImages: campaign.playerTokenImages || {},
     availability: normalizeDateResponseMap(campaign.availability),
@@ -185,6 +192,7 @@ function normalizeCampaignForSync(campaign = {}) {
 }
 
 function campaignContentKey(campaign = {}) {
+  campaign = safeObject(campaign);
   const clean = normalizeCampaignForSync(campaign);
   const { updatedAt, isEditingName, ...stable } = clean;
   return JSON.stringify(stable);
@@ -208,6 +216,7 @@ async function saveCampaignToFirestore(campaign) {
 }
 
 function campaignPlayerRecord(player = {}, campaignId = "") {
+  player = safePlayerRecord(player);
   const id = player.id || player.uid || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
   const email = normalizeEmail(player.email || "");
   return {
@@ -228,14 +237,16 @@ function campaignPlayerRecord(player = {}, campaignId = "") {
 }
 
 function playerIdentityKey(player = {}) {
+  player = safePlayerRecord(player);
   return normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || player.id || player.uid || "";
 }
 
 function upsertCampaignPlayer(campaign = {}, player = {}) {
+  campaign = safeObject(campaign);
   const campaignId = campaign.id || "";
   const record = campaignPlayerRecord(player, campaignId);
   const recordKey = playerIdentityKey(record);
-  const existingPlayers = Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [];
+  const existingPlayers = safePlayerList(campaign.invitedPlayers);
   const nextInvitedPlayers = existingPlayers.filter((item) => playerIdentityKey(item) !== recordKey && item.id !== record.id);
   const existingTokenImage = campaign.playerTokenImages?.[record.id] || record.campaignTokenImages?.[campaignId] || "";
   const nextRecord = existingTokenImage
@@ -258,6 +269,8 @@ function upsertCampaignPlayer(campaign = {}, player = {}) {
 }
 
 function removeCampaignPlayer(campaign = {}, player = {}) {
+  campaign = safeObject(campaign);
+  player = typeof player === "string" ? player : safeObject(player);
   const id = typeof player === "string" ? player : player.id;
   const email = normalizeEmail(typeof player === "string" ? "" : player.email || "");
   const phone = normalizePhoneNumber(typeof player === "string" ? "" : player.phone || player.phoneNumber || player.phoneNormalized || "");
@@ -276,7 +289,7 @@ function removeCampaignPlayer(campaign = {}, player = {}) {
     memberIds: (campaign.memberIds || []).filter((playerId) => playerId !== id),
     invitedEmails: (campaign.invitedEmails || []).filter((item) => normalizeEmail(item) !== email),
     invitedPhones: (campaign.invitedPhones || []).filter((item) => !phone || !phoneMatches(item, phone)),
-    invitedPlayers: (campaign.invitedPlayers || []).filter((item) => item.id !== id && (!email || normalizeEmail(item.email || "") !== email)),
+    invitedPlayers: safePlayerList(campaign.invitedPlayers).filter((item) => item.id !== id && (!email || normalizeEmail(item.email || "") !== email)),
     playerTokenImages,
     availability: removeFromDateMap(campaign.availability),
     unavailable: removeFromDateMap(campaign.unavailable)
@@ -317,6 +330,7 @@ function isDungeonMasterSelectedDate(campaign, key) {
 }
 
 function hasDungeonMasterRole(player = {}) {
+  player = safeObject(player);
   const role = String(player?.role || player?.campaignRole || player?.userRole || '').trim().toLowerCase();
   return role === 'dm' || role === 'dungeon master' || role === 'dungeonmaster' || role.includes('dungeon master');
 }
@@ -329,7 +343,7 @@ function isUserDungeonMasterForCampaign(campaign = {}, currentUser = null, activ
 
   const currentEmail = normalizeEmail(currentUser.email || activePlayer?.email || '');
   const currentPhones = uniqueNormalizedPhones([...userPhoneKeys(currentUser), ...userPhoneKeys(activePlayer)]);
-  const campaignPlayers = [currentUser, activePlayer, ...(campaign.invitedPlayers || []), ...(players || [])].filter(Boolean);
+  const campaignPlayers = [currentUser, activePlayer, ...safePlayerList(campaign.invitedPlayers), ...safePlayerList(players)].filter(Boolean);
   return campaignPlayers.some((player) => {
     const playerIds = [player.id, player.uid].filter(Boolean);
     const sameId = playerIds.some((id) => currentIds.has(id));
@@ -347,6 +361,7 @@ function filterToDungeonMasterSelectedDates(campaign, dateMap = {}) {
 
 
 function removeDateCompletelyFromCampaign(campaign = {}, key = "") {
+  campaign = safeObject(campaign);
   if (!key) return campaign;
   const nextAvailability = { ...(campaign.availability || {}) };
   const nextUnavailable = { ...(campaign.unavailable || {}) };
@@ -542,8 +557,12 @@ function uniqueNormalizedPhones(values = []) {
     .filter(Boolean)));
 }
 
+function safeObject(value = {}) {
+  return value && typeof value === "object" ? value : {};
+}
+
 function safePlayerRecord(player = {}) {
-  return player && typeof player === "object" ? player : {};
+  return safeObject(player);
 }
 
 function safePlayerList(players = []) {
@@ -551,15 +570,17 @@ function safePlayerList(players = []) {
 }
 
 function userPhoneKeys(user = {}) {
+  user = safePlayerRecord(user);
   return uniqueNormalizedPhones([user.phone, user.phoneNumber, user.mobile, user.mobilePhone, user.tel]);
 }
 
 function campaignHasPhoneInvite(campaign = {}, phoneKeys = []) {
+  campaign = safeObject(campaign);
   const keys = uniqueNormalizedPhones(phoneKeys);
   if (!keys.length) return false;
   const invitedPhones = uniqueNormalizedPhones(campaign.invitedPhones || campaign.invitePhones || campaign.phoneInvites || []);
   if (invitedPhones.some((phone) => keys.some((key) => phoneMatches(phone, key)))) return true;
-  return (campaign.invitedPlayers || []).some((player) => {
+  return safePlayerList(campaign.invitedPlayers).some((player) => {
     const playerPhones = userPhoneKeys(player);
     return playerPhones.some((phone) => keys.some((key) => phoneMatches(phone, key)));
   });
@@ -574,6 +595,7 @@ function normalizePlan(planId = "free") {
 }
 
 function readProfilePlan(profile = {}, fallback = "free") {
+  profile = safeObject(profile);
   const planValue =
     profile.plan ??
     profile.Plan ??
@@ -599,6 +621,7 @@ function normalizeBillingInterval(interval = "monthly") {
 }
 
 function readBillingStatusActive(profile = {}) {
+  profile = safeObject(profile);
   const status = String(
     profile.subscriptionStatus ??
     profile.SubscriptionStatus ??
@@ -613,6 +636,7 @@ function readBillingStatusActive(profile = {}) {
 }
 
 function readProfileBillingInterval(profile = {}, fallback = "monthly") {
+  profile = safeObject(profile);
   return normalizeBillingInterval(
     profile.billingInterval ??
     profile.BillingInterval ??
@@ -634,6 +658,7 @@ function inferPlanFromStripeText(text = "", fallback = "free") {
 }
 
 function inferPlanFromStripeSubscription(subscription = {}, fallback = "free") {
+  subscription = safeObject(subscription);
   const status = String(subscription.status || subscription.stripeSubscriptionStatus || subscription.subscriptionStatus || "").toLowerCase();
   if (status && !["active", "trialing", "past_due", "paid", "current"].includes(status)) return "free";
 
@@ -667,33 +692,39 @@ function inferPlanFromStripeSubscription(subscription = {}, fallback = "free") {
 }
 
 function inferBillingIntervalFromStripeSubscription(subscription = {}, fallback = "monthly") {
+  subscription = safeObject(subscription);
   const items = Array.isArray(subscription.items) ? subscription.items : Array.isArray(subscription.items?.data) ? subscription.items.data : [];
   const firstPrice = items[0]?.price || items[0]?.plan || items[0] || subscription.price || {};
   const interval = firstPrice?.recurring?.interval || subscription.interval || subscription.billingInterval || subscription.BillingInterval;
   return normalizeBillingInterval(interval || fallback);
 }
 
-function liveApplyPlanFromFirestore({ profile = {}, subscription = {}, customer = {}, source = "firestore" } = {}, fallbackPlan = "free", fallbackBillingInterval = "monthly") {
-  const subscriptionPlan = subscription && Object.keys(subscription).length ? inferPlanFromStripeSubscription(subscription, fallbackPlan) : "free";
-  const profilePlan = readProfilePlan(profile, fallbackPlan);
-  const customerPlan = readProfilePlan(customer, profilePlan);
+function liveApplyPlanFromFirestore(input = {}, fallbackPlan = "free", fallbackBillingInterval = "monthly") {
+  const { profile = {}, subscription = {}, customer = {}, source = "firestore" } = safeObject(input);
+  const safeProfile = safeObject(profile);
+  const safeSubscription = safeObject(subscription);
+  const safeCustomer = safeObject(customer);
+  const subscriptionPlan = safeSubscription && Object.keys(safeSubscription).length ? inferPlanFromStripeSubscription(safeSubscription, fallbackPlan) : "free";
+  const profilePlan = readProfilePlan(safeProfile, fallbackPlan);
+  const customerPlan = readProfilePlan(safeCustomer, profilePlan);
   const nextPlan = subscriptionPlan !== "free" ? subscriptionPlan : customerPlan;
   const nextBillingInterval = subscriptionPlan !== "free"
-    ? inferBillingIntervalFromStripeSubscription(subscription, readProfileBillingInterval(customer, readProfileBillingInterval(profile, fallbackBillingInterval)))
-    : readProfileBillingInterval(customer, readProfileBillingInterval(profile, fallbackBillingInterval));
-  const status = subscription.status || subscription.stripeSubscriptionStatus || subscription.subscriptionStatus || customer.stripeSubscriptionStatus || customer.subscriptionStatus || customer.status || profile.stripeSubscriptionStatus || profile.subscriptionStatus || "";
-  const active = nextPlan !== "free" || readBillingStatusActive(subscription) || readBillingStatusActive(customer) || readBillingStatusActive(profile);
+    ? inferBillingIntervalFromStripeSubscription(safeSubscription, readProfileBillingInterval(safeCustomer, readProfileBillingInterval(safeProfile, fallbackBillingInterval)))
+    : readProfileBillingInterval(safeCustomer, readProfileBillingInterval(safeProfile, fallbackBillingInterval));
+  const status = safeSubscription.status || safeSubscription.stripeSubscriptionStatus || safeSubscription.subscriptionStatus || safeCustomer.stripeSubscriptionStatus || safeCustomer.subscriptionStatus || safeCustomer.status || safeProfile.stripeSubscriptionStatus || safeProfile.subscriptionStatus || "";
+  const active = nextPlan !== "free" || readBillingStatusActive(safeSubscription) || readBillingStatusActive(safeCustomer) || readBillingStatusActive(safeProfile);
   return {
     plan: active ? normalizePlan(nextPlan) : "free",
     billingInterval: normalizeBillingInterval(nextBillingInterval),
     stripeSubscriptionStatus: status || (active && nextPlan !== "free" ? "active" : ""),
-    stripeSubscriptionId: subscription.id || subscription.subscriptionId || customer.stripeSubscriptionId || customer.subscriptionId || "",
-    stripeCustomerId: customer.stripeCustomerId || customer.customerId || customer.stripeId || profile.stripeCustomerId || "",
+    stripeSubscriptionId: safeSubscription.id || safeSubscription.subscriptionId || safeCustomer.stripeSubscriptionId || safeCustomer.subscriptionId || "",
+    stripeCustomerId: safeCustomer.stripeCustomerId || safeCustomer.customerId || safeCustomer.stripeId || safeProfile.stripeCustomerId || "",
     stripeActivationSource: source
   };
 }
 
 function canonicalUserProfileDocId(userOrUid = "", profile = {}) {
+  profile = safeObject(profile);
   const signedInUser = auth?.currentUser || null;
   const rawEmail = typeof userOrUid === "object" ? userOrUid?.email : profile?.email || signedInUser?.email || "";
   const email = normalizeEmail(rawEmail);
@@ -702,7 +733,7 @@ function canonicalUserProfileDocId(userOrUid = "", profile = {}) {
 }
 
 function userProfileDocRef(uid = "", profile = {}) {
-  return doc(db, "users", canonicalUserProfileDocId(uid, profile));
+  return doc(db, "users", canonicalUserProfileDocId(uid, safeObject(profile)));
 }
 
 function loadCachedUserProfile(uid) {
@@ -1069,7 +1100,7 @@ export default function DungeonCalendarApp() {
 
       setCampaigns((current) => current.map((campaign) => {
         if (campaign.id !== campaignId) return campaign;
-        const updatedInvitedPlayers = (campaign.invitedPlayers || []).map((player) => {
+        const updatedInvitedPlayers = safePlayerList(campaign.invitedPlayers).map((player) => {
           if (player.id !== playerId) return player;
           return {
             ...player,
@@ -1118,7 +1149,7 @@ export default function DungeonCalendarApp() {
       const nextCampaign = normalizeCampaignForSync({
         ...campaign,
         playerTokenImages: nextPlayerTokenImages,
-        invitedPlayers: (campaign.invitedPlayers || []).map((player) => {
+        invitedPlayers: safePlayerList(campaign.invitedPlayers).map((player) => {
           if (player.id !== playerId) return player;
           const images = { ...(player.campaignTokenImages || {}) };
           delete images[campaignId];
@@ -1168,7 +1199,7 @@ export default function DungeonCalendarApp() {
   const activeCampaignPlayers = useMemo(() => {
     if (!activeCampaign?.id) return [];
     const campaignId = activeCampaign.id;
-    const campaignRecords = (activeCampaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaignId));
+    const campaignRecords = safePlayerList(activeCampaign.invitedPlayers).map((player) => campaignPlayerRecord(player, campaignId));
     const relevantPlayers = [
       ...safePlayerList(players).filter((player) =>
         (player.campaignIds ?? []).includes(campaignId) ||
@@ -1328,7 +1359,7 @@ export default function DungeonCalendarApp() {
           return [...remainingLocal, ...visibleRemoteCampaigns];
         });
 
-        const remotePlayers = visibleRemoteCampaigns.flatMap((campaign) => (campaign.invitedPlayers || []).map((player) => campaignPlayerRecord(player, campaign.id)));
+        const remotePlayers = visibleRemoteCampaigns.flatMap((campaign) => safePlayerList(campaign.invitedPlayers).map((player) => campaignPlayerRecord(player, campaign.id)));
         if (remotePlayers.length) {
           setPlayers((current) => {
             const merged = [...current];

@@ -133,7 +133,10 @@ function canonicalDungeonMasterId(campaign = {}) {
     ...(Array.isArray(campaign.dmIds) ? campaign.dmIds : []),
     ...(Array.isArray(campaign.dmUIDs) ? campaign.dmUIDs : []),
   ].map((value) => String(value || "").trim()).filter(Boolean);
-  return candidates[0] || "";
+  const signedInUid = auth?.currentUser?.uid || "";
+  if (signedInUid && candidates.includes(signedInUid)) return signedInUid;
+  const uidCandidate = candidates.find((value) => !value.startsWith("email:") && !value.includes("@"));
+  return uidCandidate || candidates[0] || "";
 }
 
 function normalizeSingleDungeonMasterIds(campaign = {}) {
@@ -726,14 +729,15 @@ function liveApplyPlanFromFirestore(input = {}, fallbackPlan = "free", fallbackB
 function canonicalUserProfileDocId(userOrUid = "", profile = {}) {
   profile = safeObject(profile);
   const signedInUser = auth?.currentUser || null;
-  const rawEmail = typeof userOrUid === "object" ? userOrUid?.email : profile?.email || signedInUser?.email || "";
-  const email = normalizeEmail(rawEmail);
-  const uid = typeof userOrUid === "object" ? userOrUid?.uid : String(userOrUid || profile?.uid || signedInUser?.uid || "");
-  return email ? `email:${email.replace(/\//g, "%2F")}` : uid;
+  const uid = typeof userOrUid === "object"
+    ? String(userOrUid?.uid || profile?.uid || signedInUser?.uid || "")
+    : String(userOrUid || profile?.uid || signedInUser?.uid || "");
+  return uid;
 }
 
 function userProfileDocRef(uid = "", profile = {}) {
-  return doc(db, "users", canonicalUserProfileDocId(uid, safeObject(profile)));
+  const id = canonicalUserProfileDocId(uid, safeObject(profile));
+  return doc(db, "users", id);
 }
 
 function loadCachedUserProfile(uid) {
@@ -838,7 +842,7 @@ async function saveUserProfileQuick(uid, profile) {
 
 function profileSaveErrorMessage(error) {
   const code = error?.code || "";
-  if (code === "permission-denied") return "Profile could not be saved because Firestore rules denied access to the canonical users/email document. Update Firestore rules to allow signed-in users to read/write their own canonical email profile document.";
+  if (code === "permission-denied") return "Profile could not be saved because Firestore rules denied access to users/{uid}. Update Firestore rules to allow signed-in users to read/write their own UID profile document.";
   if (code === "unavailable") return "Profile could not be saved because Firestore appears offline or blocked in this browser. The app tried a REST fallback too. Check internet, disable tracking/ad blockers for dungeoncalendar.com, then try again.";
   if ((error?.message || "").includes("Firestore REST save failed")) return error.message;
   return error?.message || "Profile could not be saved. Please try again.";

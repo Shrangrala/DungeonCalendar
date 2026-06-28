@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
+import { collection, deleteField, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -111,6 +111,30 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
 
 
 
+
+function canonicalDungeonMasterId(campaign = {}) {
+  const candidates = [
+    campaign.ownerId,
+    campaign.ownerUID,
+    campaign.ownerUid,
+    campaign.createdBy,
+    campaign.createdById,
+    campaign.creatorId,
+    campaign.dungeonMasterId,
+    campaign.dmId,
+    campaign.dmUid,
+    ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : []),
+    ...(Array.isArray(campaign.dmIds) ? campaign.dmIds : []),
+    ...(Array.isArray(campaign.dmUIDs) ? campaign.dmUIDs : []),
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return candidates[0] || "";
+}
+
+function normalizeSingleDungeonMasterIds(campaign = {}) {
+  const dmId = canonicalDungeonMasterId(campaign);
+  return dmId ? [dmId] : [];
+}
+
 function normalizeList(values = []) {
   return Array.isArray(values) ? values.filter(Boolean) : [];
 }
@@ -135,8 +159,8 @@ function normalizeCampaignPlayers(players = []) {
 
 function normalizeCampaignForSync(campaign = {}) {
   const id = campaign.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
-  const ownerId = campaign.ownerId || "";
-  const dungeonMasterIds = normalizeList([...(campaign.dungeonMasterIds || []), ownerId].filter(Boolean));
+  const ownerId = canonicalDungeonMasterId(campaign) || campaign.ownerId || "";
+  const dungeonMasterIds = normalizeSingleDungeonMasterIds({ ...campaign, ownerId });
   return {
     ...campaign,
     id,
@@ -171,6 +195,9 @@ async function saveCampaignToFirestore(campaign) {
   try {
     await setDoc(doc(db, "campaigns", campaign.id), {
       ...normalizeCampaignForSync(campaign),
+      dungeonMasterId: canonicalDungeonMasterId(campaign),
+      dmIds: deleteField(),
+      dmUIDs: deleteField(),
       updatedAt: new Date().toISOString()
     }, { merge: true });
     return true;
@@ -446,9 +473,11 @@ async function saveUserProfileViaRest(uid, profile) {
   if (!signedInUser || signedInUser.uid !== uid) throw new Error("Sign in again before saving your profile.");
 
   const token = await signedInUser.getIdToken(true);
-  const fields = Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, encodeFirestoreValue(value)]));
-  const updateMask = Object.keys(profile).map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`).join("&");
-  const url = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents/users/${encodeURIComponent(uid)}${updateMask ? `?${updateMask}` : ""}`;
+  const canonicalId = canonicalUserProfileDocId(uid, profile);
+  const profileWithIds = { ...profile, id: canonicalId, uid, firebaseUid: uid };
+  const fields = Object.fromEntries(Object.entries(profileWithIds).map(([key, value]) => [key, encodeFirestoreValue(value)]));
+  const updateMask = Object.keys(profileWithIds).map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`).join("&");
+  const url = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents/users/${encodeURIComponent(canonicalId)}${updateMask ? `?${updateMask}` : ""}`;
 
   const response = await fetch(url, {
     method: "PATCH",
@@ -478,7 +507,8 @@ async function loadUserProfileViaRest(uid) {
   if (!signedInUser || signedInUser.uid !== uid) return null;
 
   const token = await signedInUser.getIdToken();
-  const url = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents/users/${encodeURIComponent(uid)}`;
+  const canonicalId = canonicalUserProfileDocId(uid);
+  const url = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents/users/${encodeURIComponent(canonicalId)}`;
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` }
   });
@@ -635,6 +665,19 @@ function inferBillingIntervalFromStripeSubscription(subscription = {}, fallback 
   return normalizeBillingInterval(interval || fallback);
 }
 
+
+function canonicalUserProfileDocId(userOrUid = "", profile = {}) {
+  const signedInUser = auth?.currentUser || null;
+  const rawEmail = typeof userOrUid === "object" ? userOrUid?.email : profile?.email || signedInUser?.email || "";
+  const email = normalizeEmail(rawEmail);
+  const uid = typeof userOrUid === "object" ? userOrUid?.uid : String(userOrUid || profile?.uid || signedInUser?.uid || "");
+  return email ? `email:${email.replace(/\//g, "%2F")}` : uid;
+}
+
+function userProfileDocRef(uid = "", profile = {}) {
+  return doc(db, "users", canonicalUserProfileDocId(uid, profile));
+}
+
 function loadCachedUserProfile(uid) {
   return null;
 }
@@ -646,12 +689,19 @@ function saveCachedUserProfile(uid, profile = {}) {
 async function loadUserProfile(uid) {
   const cached = loadCachedUserProfile(uid);
   try {
-    const snap = await Promise.race([
-      getDoc(doc(db, "users", uid)),
+    const canonicalRef = userProfileDocRef(uid);
+    const legacyRef = doc(db, "users", uid);
+    const [canonicalSnap, legacySnap] = await Promise.race([
+      Promise.all([getDoc(canonicalRef), getDoc(legacyRef)]),
       new Promise((_, reject) => setTimeout(() => reject(new Error("Profile load timed out; using cached profile.")), 3000))
     ]);
-    const profile = snap.exists() ? snap.data() : null;
+    const canonicalProfile = canonicalSnap.exists() ? canonicalSnap.data() : null;
+    const legacyProfile = legacySnap.exists() ? legacySnap.data() : null;
+    const profile = canonicalProfile || legacyProfile || null;
     if (profile) saveCachedUserProfile(uid, profile);
+    if (!canonicalProfile && legacyProfile) {
+      saveUserProfile(uid, legacyProfile).catch((error) => console.warn("Could not migrate legacy user profile:", error));
+    }
     return profile || cached || null;
   } catch (error) {
     console.warn("Firestore SDK profile load failed; trying cache/REST fallback:", error);
@@ -690,7 +740,7 @@ function buildAuthFallbackPlayer(user, existingLocal = {}, activeCampaignId = ""
 async function saveUserProfile(uid, profile) {
   saveCachedUserProfile(uid, profile);
   try {
-    await setDoc(doc(db, "users", uid), profile, { merge: true });
+    await setDoc(userProfileDocRef(uid, profile), { ...profile, firebaseUid: uid, id: canonicalUserProfileDocId(uid, profile), uid }, { merge: true });
     return true;
   } catch (error) {
     console.warn("Firestore SDK profile save failed; trying REST fallback:", error);
@@ -708,7 +758,7 @@ async function saveUserProfileRequired(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
   saveCachedUserProfile(uid, profile);
   try {
-    await setDoc(doc(db, "users", uid), profile, { merge: true });
+    await setDoc(userProfileDocRef(uid, profile), { ...profile, firebaseUid: uid, id: canonicalUserProfileDocId(uid, profile), uid }, { merge: true });
     return true;
   } catch (error) {
     console.warn("Firestore SDK required profile save failed; trying REST fallback:", error);
@@ -720,7 +770,7 @@ async function saveUserProfileRequired(uid, profile) {
 async function saveUserProfileQuick(uid, profile) {
   if (!uid) throw new Error("Missing user id for profile save.");
   saveCachedUserProfile(uid, profile);
-  const savePromise = setDoc(doc(db, "users", uid), profile, { merge: true });
+  const savePromise = setDoc(userProfileDocRef(uid, profile), { ...profile, firebaseUid: uid, id: canonicalUserProfileDocId(uid, profile), uid }, { merge: true });
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => reject(new Error("Profile save timed out. Check your connection and try again.")), 4500);
   });
@@ -730,7 +780,7 @@ async function saveUserProfileQuick(uid, profile) {
 
 function profileSaveErrorMessage(error) {
   const code = error?.code || "";
-  if (code === "permission-denied") return "Profile could not be saved because Firestore rules denied access to users/{uid}. Update Firestore rules to allow signed-in users to read/write their own user document.";
+  if (code === "permission-denied") return "Profile could not be saved because Firestore rules denied access to the canonical users/email document. Update Firestore rules to allow signed-in users to read/write their own canonical email profile document.";
   if (code === "unavailable") return "Profile could not be saved because Firestore appears offline or blocked in this browser. The app tried a REST fallback too. Check internet, disable tracking/ad blockers for dungeoncalendar.com, then try again.";
   if ((error?.message || "").includes("Firestore REST save failed")) return error.message;
   return error?.message || "Profile could not be saved. Please try again.";
@@ -1192,7 +1242,7 @@ export default function DungeonCalendarApp() {
   useEffect(() => {
     if (!currentUserId || auth.currentUser?.uid !== currentUserId) return undefined;
 
-    const userRef = doc(db, "users", currentUserId);
+    const userRef = userProfileDocRef(currentUserId, currentUser || {});
     const unsubscribeProfile = onSnapshot(userRef, (snapshot) => {
       if (!snapshot.exists()) return;
 
@@ -1229,6 +1279,14 @@ export default function DungeonCalendarApp() {
 
     const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
       loadingCampaignsFromFirestoreRef.current = true;
+      snapshot.docs.forEach((item) => {
+        const raw = { id: item.id, ...item.data() };
+        const normalized = normalizeCampaignForSync(raw);
+        const rawDmIds = Array.isArray(raw.dungeonMasterIds) ? raw.dungeonMasterIds.filter(Boolean) : [];
+        if (rawDmIds.length !== normalized.dungeonMasterIds.length || rawDmIds[0] !== normalized.dungeonMasterIds[0]) {
+          saveCampaignToFirestore(normalized).catch((error) => console.warn("Could not clean duplicate Dungeon Master IDs:", error));
+        }
+      });
       const remoteCampaigns = snapshot.docs.map((item) => normalizeCampaignForSync({ id: item.id, ...item.data() }));
       const userEmail = normalizeEmail(currentUser.email || "");
       const userPhones = userPhoneKeys(currentUser);

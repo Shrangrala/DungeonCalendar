@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
+import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
 import { collection, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
@@ -632,6 +632,24 @@ async function loadUserProfile(uid) {
   }
 }
 
+function buildAuthFallbackPlayer(user, existingLocal = {}, activeCampaignId = "") {
+  const email = normalizeEmail(user?.email || existingLocal?.email || "");
+  const displayName = user?.displayName || existingLocal?.name || email.split("@")[0] || "Player";
+  return {
+    id: user?.uid || existingLocal?.id || "",
+    username: existingLocal?.username || displayName.toLowerCase().replace(/\s+/g, "") || email.split("@")[0] || "player",
+    name: existingLocal?.name || displayName,
+    email,
+    color: existingLocal?.color || playerColors[0],
+    plan: readProfilePlan(existingLocal, existingLocal?.plan || "free"),
+    billingInterval: readProfileBillingInterval(existingLocal, existingLocal?.billingInterval || "monthly"),
+    campaignIds: existingLocal?.campaignIds || (activeCampaignId ? [activeCampaignId] : []),
+    campaignCharacterNames: existingLocal?.campaignCharacterNames || (activeCampaignId ? { [activeCampaignId]: "" } : {}),
+    avatarUrl: existingLocal?.avatarUrl || user?.photoURL || ""
+  };
+}
+
+
 async function saveUserProfile(uid, profile) {
   saveCachedUserProfile(uid, profile);
   try {
@@ -679,6 +697,23 @@ function profileSaveErrorMessage(error) {
   if (code === "unavailable") return "Profile could not be saved because Firestore appears offline or blocked in this browser. The app tried a REST fallback too. Check internet, disable tracking/ad blockers for dungeoncalendar.com, then try again.";
   if ((error?.message || "").includes("Firestore REST save failed")) return error.message;
   return error?.message || "Profile could not be saved. Please try again.";
+}
+
+
+async function setFirebaseAuthPersistenceSafe() {
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+    return "local";
+  } catch (localError) {
+    console.warn("Firebase local auth persistence failed; trying session persistence:", localError);
+    try {
+      await setPersistence(auth, browserSessionPersistence);
+      return "session";
+    } catch (sessionError) {
+      console.warn("Firebase session auth persistence failed; continuing with default persistence:", sessionError);
+      return "default";
+    }
+  }
 }
 
 function authErrorMessage(error) {
@@ -982,7 +1017,8 @@ export default function DungeonCalendarApp() {
     }));
   }
 
-  const currentUser = players.find((player) => player.id === currentUserId);
+  const savedCurrentUser = players.find((player) => player.id === currentUserId);
+  const currentUser = savedCurrentUser || (auth.currentUser?.uid === currentUserId ? buildAuthFallbackPlayer(auth.currentUser, {}, activeCampaignId || "") : null);
   const activePlayer = players.find((player) => player.id === activePlayerId);
   const visibleCampaigns = useMemo(() => {
     if (!currentUser) return [];
@@ -1072,23 +1108,35 @@ export default function DungeonCalendarApp() {
         const localMatch = players.find((player) =>
           player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
         );
-        const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
-        setPlan(readProfilePlan(profile || localMatch || firebasePlayer, firebasePlayer.plan || "free"));
-        setBillingInterval(normalizeBillingInterval(profile?.billingInterval || localMatch?.billingInterval || firebasePlayer.billingInterval || "monthly"));
+        const fallbackPlayer = buildAuthFallbackPlayer(user, localMatch || {}, activeCampaign?.id || "");
+        const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || fallbackPlayer, user.email || "");
+        const safePlayer = { ...fallbackPlayer, ...firebasePlayer, id: user.uid, email: normalizeEmail(firebasePlayer.email || fallbackPlayer.email || user.email || "") };
+        setPlan(readProfilePlan(profile || localMatch || safePlayer, safePlayer.plan || "free"));
+        setBillingInterval(readProfileBillingInterval(profile || localMatch || safePlayer, safePlayer.billingInterval || "monthly"));
 
         setPlayers((current) => {
           const withoutDuplicate = current.filter((player) =>
-            player.id !== user.uid && normalizeEmail(player.email) !== normalizeEmail(firebasePlayer.email)
+            player.id !== user.uid && normalizeEmail(player.email) !== normalizeEmail(safePlayer.email)
           );
-          return [...withoutDuplicate, firebasePlayer];
+          return [...withoutDuplicate, safePlayer];
         });
 
         setCurrentUserId(user.uid);
         setActivePlayerId(user.uid);
-        if (firebasePlayer.campaignIds?.[0]) setActiveCampaignId(firebasePlayer.campaignIds[0]);
+        if (safePlayer.campaignIds?.[0]) setActiveCampaignId(safePlayer.campaignIds[0]);
         setPage("calendar");
       } catch (error) {
-        console.error("Failed to restore Firebase login:", error);
+        console.error("Failed to restore Firebase login; continuing with Firebase Auth user only:", error);
+        const fallbackPlayer = buildAuthFallbackPlayer(user, {}, activeCampaign?.id || "");
+        setPlayers((current) => {
+          const withoutDuplicate = current.filter((player) =>
+            player.id !== user.uid && normalizeEmail(player.email) !== normalizeEmail(fallbackPlayer.email)
+          );
+          return [...withoutDuplicate, fallbackPlayer];
+        });
+        setCurrentUserId(user.uid);
+        setActivePlayerId(user.uid);
+        setPage("calendar");
       } finally {
         setAuthProfileLoaded(true);
       }
@@ -1636,7 +1684,7 @@ export default function DungeonCalendarApp() {
       let uid = "";
       let player;
 
-      await setPersistence(auth, browserLocalPersistence);
+      await setFirebaseAuthPersistenceSafe();
 
       if (authMode === "login") {
         const credential = await signInWithEmailAndPassword(auth, trimmedEmail, loginPassword);
@@ -1717,7 +1765,7 @@ export default function DungeonCalendarApp() {
     setLoginError("");
 
     try {
-      await setPersistence(auth, browserLocalPersistence);
+      await setFirebaseAuthPersistenceSafe();
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
       if (shouldUseRedirectGoogleLogin()) {
@@ -1760,7 +1808,19 @@ export default function DungeonCalendarApp() {
       setPage("calendar");
       setLoginError("");
     } catch (error) {
-      setLoginError(authErrorMessage(error));
+      if (auth.currentUser?.uid) {
+        const fallbackPlayer = buildAuthFallbackPlayer(auth.currentUser, {}, activeCampaign?.id || "");
+        setPlayers((current) => {
+          const withoutDuplicate = current.filter((item) => item.id !== fallbackPlayer.id && normalizeEmail(item.email) !== normalizeEmail(fallbackPlayer.email));
+          return [...withoutDuplicate, fallbackPlayer];
+        });
+        setCurrentUserId(auth.currentUser.uid);
+        setActivePlayerId(auth.currentUser.uid);
+        setPage("calendar");
+        setLoginError("");
+      } else {
+        setLoginError(authErrorMessage(error));
+      }
     } finally {
       setAuthBusy(false);
     }

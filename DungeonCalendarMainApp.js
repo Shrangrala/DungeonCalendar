@@ -2791,9 +2791,17 @@ export default function DungeonCalendarApp() {
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    const handleLocationChange = () => setPublicRoute(window.location.pathname || "/");
-    window.addEventListener("popstate", handleLocationChange);
-    return () => window.removeEventListener("popstate", handleLocationChange);
+    const normalizeRoute = () => {
+      const path = window.location.pathname || "/";
+      setPublicRoute(path === "" ? "/" : path);
+    };
+    normalizeRoute();
+    window.addEventListener("popstate", normalizeRoute);
+    window.addEventListener("dungeoncalendar:navigate", normalizeRoute);
+    return () => {
+      window.removeEventListener("popstate", normalizeRoute);
+      window.removeEventListener("dungeoncalendar:navigate", normalizeRoute);
+    };
   }, []);
 
   function navigateTo(path) {
@@ -2801,6 +2809,7 @@ export default function DungeonCalendarApp() {
     const nextPath = path || "/";
     window.history.pushState({}, "", nextPath);
     setPublicRoute(nextPath);
+    window.dispatchEvent(new Event("dungeoncalendar:navigate"));
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -2855,6 +2864,8 @@ export default function DungeonCalendarApp() {
 
   function AboutPage() {
     const [supportEmailOpen, setSupportEmailOpen] = useState(false);
+    const [supportSubject, setSupportSubject] = useState("Dungeon Calendar Support");
+    const [supportMessage, setSupportMessage] = useState("Hello Dungeon Calendar Support,\n\n");
     const shareUrl = "https://dungeoncalendar.com";
     const shareText = "Organize your D&D campaigns with Dungeon Calendar — schedule sessions, track availability, and invite your party.";
     const socialLinks = [
@@ -2864,21 +2875,20 @@ export default function DungeonCalendarApp() {
       { label: "Share on LinkedIn", href: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}` }
     ];
     const supportEmailAddress = "support@dungeoncalendar.com";
-    const supportMailtoUrl = `mailto:${supportEmailAddress}?subject=${encodeURIComponent("Dungeon Calendar Support")}&body=${encodeURIComponent("Hello Dungeon Calendar Support,\n\n")}`;
+    const buildSupportMailtoUrl = () => `mailto:${supportEmailAddress}?subject=${encodeURIComponent(supportSubject || "Dungeon Calendar Support")}&body=${encodeURIComponent(supportMessage || "Hello Dungeon Calendar Support,\n\n")}`;
     const openSupportEmail = () => {
+      const supportMailtoUrl = buildSupportMailtoUrl();
       try {
-        const emailWindow = window.open(supportMailtoUrl, "_blank", "noopener,noreferrer");
-        if (!emailWindow) {
-          const link = document.createElement("a");
-          link.href = supportMailtoUrl;
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-        }
-      } catch {
-        window.location.href = supportMailtoUrl;
+        const link = document.createElement("a");
+        link.href = supportMailtoUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (error) {
+        console.error("Unable to open support email composer", error);
       } finally {
         setSupportEmailOpen(false);
       }
@@ -3009,12 +3019,35 @@ export default function DungeonCalendarApp() {
                   <button type="button" onClick={() => setSupportEmailOpen(false)} className="rounded-full border border-zinc-700 px-3 py-1 text-xl leading-none text-zinc-300 hover:bg-zinc-900 hover:text-white" aria-label="Close contact support">×</button>
                 </div>
                 <p className="mt-4 text-sm leading-6 text-zinc-300">
-                  This will open your email app with a message addressed to <span className="font-bold text-amber-100">{supportEmailAddress}</span>. After it opens, Dungeon Calendar will stay on this page instead of getting stuck on the email screen.
+                  Send a support email to <span className="font-bold text-amber-100">{supportEmailAddress}</span>. This composer is closeable, and opening your email app will not replace the Dungeon Calendar page.
                 </p>
+                <div className="mt-5 space-y-4">
+                  <div>
+                    <label className="text-sm font-semibold text-zinc-200">To</label>
+                    <div className="mt-2 rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 text-amber-100">{supportEmailAddress}</div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-zinc-200">Subject</label>
+                    <input
+                      value={supportSubject}
+                      onChange={(event) => setSupportSubject(event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 text-zinc-100 outline-none ring-amber-600/40 focus:ring-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-zinc-200">Message</label>
+                    <textarea
+                      value={supportMessage}
+                      onChange={(event) => setSupportMessage(event.target.value)}
+                      rows={6}
+                      className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 text-zinc-100 outline-none ring-amber-600/40 focus:ring-2"
+                    />
+                  </div>
+                </div>
                 <div className="mt-6 flex flex-wrap justify-end gap-3">
                   <Button onClick={() => setSupportEmailOpen(false)} variant="ghost" className="rounded-xl border border-zinc-700 px-5 py-3 text-zinc-200 hover:bg-zinc-900">Cancel</Button>
                   <Button onClick={openSupportEmail} className="rounded-xl bg-amber-700 px-5 py-3 text-white hover:bg-amber-600">
-                    <Mail className="mr-2 h-4 w-4" /> Open Email App
+                    <Mail className="mr-2 h-4 w-4" /> Send Email
                   </Button>
                 </div>
               </div>
@@ -4657,8 +4690,10 @@ export default function DungeonCalendarApp() {
     return DashboardPage();
   }
 
-  if ((publicRoute || "/") === "/about" || (publicRoute || "/").startsWith("/about/")) {
-    return AboutPage();
+  const activePublicRoute = publicRoute || (typeof window !== "undefined" ? window.location.pathname : "/") || "/";
+
+  if (activePublicRoute === "/about" || activePublicRoute.startsWith("/about/")) {
+    return <AboutPage />;
   }
 
   if (publicRoute === "/subscription-complete") {

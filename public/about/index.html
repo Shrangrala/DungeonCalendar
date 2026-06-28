@@ -106,9 +106,27 @@
         done(fallbackCopy());
       }
     }
-    function contactSupport(event) {
+    function openContactModal(event) {
       event.preventDefault();
-      window.location.href = 'mailto:support@dungeoncalendar.com?subject=Dungeon%20Calendar%20Support&body=Hello%20Dungeon%20Calendar%20Support,%0A%0A';
+      var modal = document.getElementById('contact-modal');
+      if (modal) modal.style.display = 'flex';
+    }
+    function closeContactModal() {
+      var modal = document.getElementById('contact-modal');
+      if (modal) modal.style.display = 'none';
+    }
+    function sendContactEmail(event) {
+      event.preventDefault();
+      var subject = encodeURIComponent(document.getElementById('support-subject').value || 'Dungeon Calendar Support');
+      var body = encodeURIComponent(document.getElementById('support-message').value || 'Hello Dungeon Calendar Support,\n\n');
+      var link = document.createElement('a');
+      link.href = 'mailto:support@dungeoncalendar.com?subject=' + subject + '&body=' + body;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      closeContactModal();
     }
   </script>
 </head>
@@ -133,7 +151,7 @@
         <div class="buttonrow" style="justify-content:flex-start">
           <a class="btn red" href="/">Start Scheduling Free</a>
           <a class="btn" href="https://dungeoncalendar.com" onclick="copyWebsiteUrl(event)">Copy Website URL</a>
-          <a class="btn" href="mailto:support@dungeoncalendar.com?subject=Dungeon%20Calendar%20Support" onclick="contactSupport(event)">Contact Us</a>
+          <a class="btn" href="mailto:support@dungeoncalendar.com?subject=Dungeon%20Calendar%20Support" onclick="openContactModal(event)">Contact Us</a>
         </div>
       </div>
       <aside class="card" style="background:rgba(69,26,3,.32)">
@@ -202,5 +220,30 @@
       <div class="legal-links"><a href="/privacy">Privacy Policy</a><span>•</span><a href="/terms">Terms of Service</a></div>
     </section>
   </main>
+
+  <div id="contact-modal" style="display:none;position:fixed;inset:0;z-index:99;align-items:center;justify-content:center;background:rgba(0,0,0,.78);padding:20px;backdrop-filter:blur(6px)">
+    <form onsubmit="sendContactEmail(event)" class="card" style="max-width:560px;width:100%;text-align:left">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+        <div>
+          <p class="eyebrow">Support</p>
+          <h2>Contact Dungeon Calendar</h2>
+        </div>
+        <button type="button" onclick="closeContactModal()" class="btn" aria-label="Close contact support">×</button>
+      </div>
+      <p>Send a support email to <strong>support@dungeoncalendar.com</strong>. This popup can be canceled or closed without leaving the About page.</p>
+      <label>To</label>
+      <div class="tile" style="margin:8px 0 14px;color:#fde68a">support@dungeoncalendar.com</div>
+      <label for="support-subject">Subject</label>
+      <input id="support-subject" value="Dungeon Calendar Support" style="box-sizing:border-box;width:100%;margin:8px 0 14px;border:1px solid #3f3f46;border-radius:14px;background:#050505;color:#f4f4f5;padding:12px 14px" />
+      <label for="support-message">Message</label>
+      <textarea id="support-message" rows="6" style="box-sizing:border-box;width:100%;margin:8px 0 18px;border:1px solid #3f3f46;border-radius:14px;background:#050505;color:#f4f4f5;padding:12px 14px">Hello Dungeon Calendar Support,
+
+</textarea>
+      <div class="buttonrow" style="justify-content:flex-end">
+        <button type="button" class="btn" onclick="closeContactModal()">Cancel</button>
+        <button type="submit" class="btn red">Send Email</button>
+      </div>
+    </form>
+  </div>
 </body>
 </html>

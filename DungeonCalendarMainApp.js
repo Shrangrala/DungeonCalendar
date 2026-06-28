@@ -120,8 +120,8 @@ function normalizeCampaignForSync(campaign = {}) {
   return {
     ...campaign,
     id,
-    ownerId: campaign.ownerId || "",
-    dungeonMasterIds: normalizeList(campaign.dungeonMasterIds),
+    ownerId: campaign.ownerId || campaign.createdBy || campaign.createdById || campaign.creatorId || campaign.dmId || campaign.dungeonMasterId || "",
+    dungeonMasterIds: normalizeList([...(campaign.dungeonMasterIds || []), ...(campaign.dmIds || []), campaign.dmId, campaign.dungeonMasterId, campaign.ownerId, campaign.createdBy, campaign.createdById, campaign.creatorId]),
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: normalizeList(campaign.invitedEmails).map((email) => String(email || "").trim().toLowerCase()).filter(Boolean),
     invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
@@ -260,25 +260,41 @@ function isDungeonMasterSelectedDate(campaign, key) {
   if (!campaign || !key) return false;
   if (campaign.chosenDate === key) return true;
   if ((campaign.manuallySelectedDates || []).includes(key)) return true;
-  const dungeonMasterIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId].filter(Boolean));
-  return (campaign.availability?.[key] || []).some((id) => dungeonMasterIds.has(id));
+  const dungeonMasterIds = collectDungeonMasterIds(campaign);
+  return (campaign.availability?.[key] || []).some((id) => dungeonMasterIds.has(String(id)));
 }
 
 function hasDungeonMasterRole(player = {}) {
-  const role = String(player?.role || player?.campaignRole || player?.userRole || '').trim().toLowerCase();
-  return role === 'dm' || role === 'dungeon master' || role === 'dungeonmaster' || role.includes('dungeon master');
+  const rawRole = player?.role || player?.campaignRole || player?.userRole || player?.campaignRoleName || player?.type || player?.permission || player?.permissions;
+  const role = String(Array.isArray(rawRole) ? rawRole.join(' ') : (rawRole || '')).trim().toLowerCase();
+  return role === 'dm' || role === 'gm' || role === 'dungeon master' || role === 'dungeonmaster' || role.includes('dungeon master') || role.includes('game master') || role.includes('campaign owner') || role.includes('owner') || role.includes('admin');
+}
+
+function collectDungeonMasterIds(campaign = {}) {
+  return new Set([
+    ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : []),
+    ...(Array.isArray(campaign.dmIds) ? campaign.dmIds : []),
+    ...(Array.isArray(campaign.masterIds) ? campaign.masterIds : []),
+    campaign.ownerId,
+    campaign.createdBy,
+    campaign.createdById,
+    campaign.creatorId,
+    campaign.dmId,
+    campaign.dungeonMasterId,
+    campaign.masterId
+  ].filter(Boolean).map(String));
 }
 
 function isUserDungeonMasterForCampaign(campaign = {}, currentUser = null, activePlayer = null, players = []) {
   if (!campaign || !currentUser) return false;
-  const currentIds = new Set([currentUser.id, currentUser.uid, activePlayer?.id, activePlayer?.uid].filter(Boolean));
-  const dmIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId].filter(Boolean));
+  const currentIds = new Set([currentUser.id, currentUser.uid, currentUser.userId, activePlayer?.id, activePlayer?.uid, activePlayer?.userId].filter(Boolean).map(String));
+  const dmIds = collectDungeonMasterIds(campaign);
   if ([...currentIds].some((id) => dmIds.has(id))) return true;
 
   const currentEmail = normalizeEmail(currentUser.email || activePlayer?.email || '');
   const campaignPlayers = [currentUser, activePlayer, ...(campaign.invitedPlayers || []), ...(players || [])].filter(Boolean);
   return campaignPlayers.some((player) => {
-    const playerIds = [player.id, player.uid].filter(Boolean);
+    const playerIds = [player.id, player.uid, player.userId].filter(Boolean).map(String);
     const sameId = playerIds.some((id) => currentIds.has(id));
     const sameEmail = currentEmail && normalizeEmail(player.email || '') === currentEmail;
     return (sameId || sameEmail) && hasDungeonMasterRole(player);
@@ -1015,11 +1031,11 @@ export default function DungeonCalendarApp() {
   const reminderHours = activeCampaign?.reminderHours ?? 24;
   const isDungeonMaster = !!activeCampaign && isUserDungeonMasterForCampaign(activeCampaign, currentUser, activePlayer, players);
   const dungeonMasterIds = useMemo(() => {
-    const ids = new Set(campaignDungeonMasterIds);
-    if (activeCampaign?.ownerId) ids.add(activeCampaign.ownerId);
-    if (isDungeonMaster && currentUser?.id) ids.add(currentUser.id);
+    const ids = collectDungeonMasterIds(activeCampaign || {});
+    if (isDungeonMaster && currentUser?.id) ids.add(String(currentUser.id));
+    if (isDungeonMaster && currentUser?.uid) ids.add(String(currentUser.uid));
     return Array.from(ids);
-  }, [campaignDungeonMasterIds, activeCampaign?.ownerId, isDungeonMaster, currentUser?.id]);
+  }, [campaignDungeonMasterIds, activeCampaign?.ownerId, activeCampaign?.createdBy, activeCampaign?.creatorId, activeCampaign?.dmId, activeCampaign?.dungeonMasterId, isDungeonMaster, currentUser?.id, currentUser?.uid]);
   const activeCampaignRole = isDungeonMaster ? "Dungeon Master" : "Player";
   const activeCampaignPlayers = useMemo(() => {
     if (!activeCampaign?.id) return [];
@@ -2585,27 +2601,25 @@ export default function DungeonCalendarApp() {
   function toggleAvailability(date) {
     if (!activeCampaign || !currentUser) return;
     const key = dateKey(date);
-    const responsePlayerId = isDungeonMaster ? currentUser.id : activePlayer?.id;
+    const responsePlayerId = isDungeonMaster ? (currentUser.id || currentUser.uid) : activePlayer?.id;
     if (!responsePlayerId) return;
 
-    const dungeonMasterAvailableForDate = (activeCampaign.availability[key] ?? []).some((id) => dungeonMasterIds.includes(id));
+    const dungeonMasterAvailableForDate = (activeCampaign.availability?.[key] ?? []).some((id) => dungeonMasterIds.includes(String(id)) || dungeonMasterIds.includes(id));
     if (!isDungeonMaster && !dungeonMasterAvailableForDate) return;
 
     updateActiveCampaign((campaign) => {
       const availableList = campaign.availability?.[key] ?? [];
       const unavailableList = campaign.unavailable?.[key] ?? [];
       const manualDates = new Set(campaign.manuallySelectedDates || []);
-      const campaignDmIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId, currentUser?.id].filter(Boolean));
-      const dateAlreadyControlledByDm =
-        manualDates.has(key) ||
-        campaign.chosenDate === key ||
-        availableList.some((id) => campaignDmIds.has(id)) ||
-        unavailableList.some((id) => campaignDmIds.has(id)) ||
-        availableList.length > 0 ||
-        unavailableList.length > 0;
 
       if (isDungeonMaster) {
-        if (dateAlreadyControlledByDm) {
+        const dateIsSelectedByDm =
+          manualDates.has(key) ||
+          campaign.chosenDate === key ||
+          availableList.length > 0 ||
+          unavailableList.length > 0;
+
+        if (dateIsSelectedByDm) {
           return removeDateCompletelyFromCampaign(campaign, key);
         }
 
@@ -2614,11 +2628,11 @@ export default function DungeonCalendarApp() {
           manuallySelectedDates: Array.from(manualDates),
           availability: {
             ...(campaign.availability || {}),
-            [key]: Array.from(new Set([...availableList, currentUser.id]))
+            [key]: Array.from(new Set([...availableList, responsePlayerId]))
           },
           unavailable: {
             ...(campaign.unavailable || {}),
-            [key]: unavailableList.filter((id) => id !== currentUser.id)
+            [key]: unavailableList.filter((id) => id !== responsePlayerId)
           }
         };
       }
@@ -2628,7 +2642,6 @@ export default function DungeonCalendarApp() {
 
       if (availabilityMode === "available") {
         return {
-          manuallySelectedDates: Array.from(manualDates),
           availability: {
             ...(campaign.availability || {}),
             [key]: isAvailable
@@ -2913,6 +2926,19 @@ export default function DungeonCalendarApp() {
     );
   }
 
+  function openAboutPage() {
+    setPage("about");
+    setPublicRoute("/");
+    if (typeof window !== "undefined") {
+      window.history.pushState({}, "", "/");
+      try {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch {
+        window.scrollTo(0, 0);
+      }
+    }
+  }
+
   function AboutPage() {
     const [supportEmailOpen, setSupportEmailOpen] = useState(false);
     const [supportSubject, setSupportSubject] = useState("Dungeon Calendar Support");
@@ -2937,24 +2963,26 @@ export default function DungeonCalendarApp() {
       setSupportSending(true);
       setSupportStatus("");
       try {
-        const supportDocRef = doc(collection(db, "supportMessages"));
-        await setDoc(supportDocRef, {
-          to: supportEmailAddress,
-          subject: supportSubject || "Dungeon Calendar Support",
-          message: supportMessage,
-          fromUserId: currentUser?.uid || null,
-          fromEmail: currentUser?.email || null,
-          source: "about_page_contact_popup",
-          status: "new",
-          createdAt: new Date().toISOString()
+        const response = await fetch("/api/support-message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            subject: supportSubject || "Dungeon Calendar Support",
+            message: supportMessage,
+            fromUserId: currentUser?.uid || currentUser?.id || null,
+            fromEmail: currentUser?.email || null,
+            source: "about_page_contact_popup"
+          })
         });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data?.error) throw new Error(data?.error || "Unable to send support request.");
         setSupportStatus("Support request sent.");
         setSupportEmailOpen(false);
         setSupportSubject("Dungeon Calendar Support");
         setSupportMessage("Hello Dungeon Calendar Support,\n\n");
       } catch (error) {
-        console.error("Unable to save support request", error);
-        setSupportStatus("Unable to save the support request. Your message stayed in this popup so you can try again.");
+        console.error("Unable to send support request", error);
+        setSupportStatus("Unable to send from the app right now. Please try again after support email is configured on the server.");
       } finally {
         setSupportSending(false);
       }
@@ -3215,7 +3243,7 @@ export default function DungeonCalendarApp() {
             {authBusy ? "Working..." : "Continue with Google"}
           </Button>
 
-          <Button onClick={() => navigateTo("/about")} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-4 text-zinc-100 hover:bg-zinc-900 hover:text-white">
+          <Button onClick={openAboutPage} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-4 text-zinc-100 hover:bg-zinc-900 hover:text-white">
             About Dungeon Calendar
           </Button>
           <LegalLinks />
@@ -3302,7 +3330,7 @@ export default function DungeonCalendarApp() {
             Plan: {plan === "guildmaster" ? "Guildmaster" : plan === "adventurer" ? "Adventurer" : "Free"}
           </Button>
 
-          <Button onClick={() => navigateTo("/about")} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-5 text-zinc-100 hover:bg-zinc-900 hover:text-white">About Dungeon Calendar</Button>
+          <Button onClick={openAboutPage} variant="ghost" className="w-full rounded-xl border border-zinc-700 py-5 text-zinc-100 hover:bg-zinc-900 hover:text-white">About Dungeon Calendar</Button>
 
           <LegalLinks />
 
@@ -4736,7 +4764,7 @@ export default function DungeonCalendarApp() {
               <Button onClick={goToDashboardNow} className="rounded-xl bg-emerald-700 px-6 py-3 hover:bg-emerald-600">
                 Go to Dashboard Now
               </Button>
-              <Button onClick={() => navigateTo("/about")} variant="ghost" className="rounded-xl border border-zinc-700 px-6 py-3 hover:bg-zinc-900">
+              <Button onClick={openAboutPage} variant="ghost" className="rounded-xl border border-zinc-700 px-6 py-3 hover:bg-zinc-900">
                 About Dungeon Calendar
               </Button>
             </div>

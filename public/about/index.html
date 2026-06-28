@@ -133,11 +133,12 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ subject: subject, message: message, source: 'static_about_page_contact_popup' })
         });
-        if (!response.ok) throw new Error('Request failed');
+        var data = await response.json().catch(function(){ return {}; });
+        if (!response.ok || data.error) throw new Error(data.error || 'Request failed');
         if (status) status.textContent = 'Support request sent.';
         setTimeout(closeContactModal, 500);
       } catch (error) {
-        if (status) status.textContent = 'Unable to send from the app right now. Please try again.';
+        if (status) status.textContent = 'Unable to send from the app right now. Support email must be configured on the server.';
       } finally {
         if (submit) { submit.disabled = false; submit.textContent = 'Send Support Request'; }
       }

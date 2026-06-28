@@ -81,31 +81,17 @@ function loadGoogleRecaptchaEnterprise() {
 }
 
 async function getGoogleRecaptchaToken(widgetId) {
-  if (widgetId === null || widgetId === undefined) return "";
+  // This visible reCAPTCHA widget is not required for Firebase email or Google Auth.
+  // Some browsers/extensions remove the widget and throw "reCAPTCHA client element has been removed: 0".
+  // Do not block login when the optional widget is unavailable.
   try {
+    if (widgetId === null || widgetId === undefined) return "";
     const enterprise = await loadGoogleRecaptchaEnterprise();
-    const token = enterprise.getResponse(widgetId);
-    return token || "";
+    return enterprise.getResponse(widgetId) || "";
   } catch (error) {
-    console.warn("Optional login reCAPTCHA was unavailable; continuing with Firebase Auth:", error);
+    console.warn("Optional reCAPTCHA skipped:", error);
     return "";
   }
-}
-
-function resetGoogleRecaptcha(widgetId) {
-  if (widgetId === null || widgetId === undefined) return;
-  try {
-    if (typeof window !== "undefined" && window.grecaptcha?.enterprise) {
-      window.grecaptcha.enterprise.reset(widgetId);
-    }
-  } catch (error) {
-    console.warn("Optional login reCAPTCHA could not be reset:", error);
-  }
-}
-
-function isRemovedRecaptchaClientError(error) {
-  const message = String(error?.message || error?.reason?.message || error?.error?.message || error || "");
-  return message.includes("reCAPTCHA client element has been removed");
 }
 
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
@@ -948,6 +934,55 @@ export default function DungeonCalendarApp() {
     return dungeonMasterIds.includes(id);
   }
 
+  async function finishFirebaseUserLogin(user, options = {}) {
+    if (!user?.uid) throw new Error("Google sign-in did not return a Firebase user.");
+
+    const uid = user.uid;
+    const email = normalizeEmail(user.email || "");
+    const displayName = user.displayName || email.split("@")[0] || "Player";
+
+    let profile = null;
+    try {
+      profile = await loadUserProfile(uid);
+    } catch (error) {
+      console.warn("Could not load Firebase profile after sign-in; continuing with Auth user:", error);
+      profile = getCachedUserProfile(uid);
+    }
+
+    const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === email);
+    const player = {
+      ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, email),
+      username: profile?.username || existingLocal?.username || displayName.toLowerCase().replace(/\s+/g, "") || email.split("@")[0] || "player",
+      name: profile?.name || existingLocal?.name || displayName,
+      email,
+      color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
+      plan: normalizePlan(profile?.plan || existingLocal?.plan || "free"),
+      billingInterval: normalizeBillingInterval(profile?.billingInterval || existingLocal?.billingInterval || "monthly"),
+      campaignIds: profile?.campaignIds || existingLocal?.campaignIds || (activeCampaign?.id ? [activeCampaign.id] : []),
+      campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {})
+    };
+
+    if (!profile && options.saveIfMissing !== false) {
+      saveUserProfile(uid, player).catch((error) => {
+        console.warn("Signed in, but profile save failed:", error);
+        setLoginError(profileSaveErrorMessage(error));
+      });
+    }
+
+    setPlayers((current) => {
+      const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
+      return [...withoutDuplicate, player];
+    });
+
+    setPlan(normalizePlan(player.plan || "free"));
+    setBillingInterval(normalizeBillingInterval(player.billingInterval || "monthly"));
+    setCurrentUserId(uid);
+    setActivePlayerId(uid);
+    if (player.campaignIds?.[0]) setActiveCampaignId(player.campaignIds[0]);
+    setPage("calendar");
+    return player;
+  }
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setAuthProfileLoaded(false);
@@ -959,29 +994,14 @@ export default function DungeonCalendarApp() {
       }
 
       try {
-        const profile = await loadUserProfile(user.uid);
-        const localMatch = players.find((player) =>
-          player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
-        );
-        const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || localMatch || {}, user.email || "");
-        setPlan(normalizePlan(profile?.plan || localMatch?.plan || firebasePlayer.plan || "free"));
-        setBillingInterval(normalizeBillingInterval(profile?.billingInterval || localMatch?.billingInterval || firebasePlayer.billingInterval || "monthly"));
-
-        setPlayers((current) => {
-          const withoutDuplicate = current.filter((player) =>
-            player.id !== user.uid && normalizeEmail(player.email) !== normalizeEmail(firebasePlayer.email)
-          );
-          return [...withoutDuplicate, firebasePlayer];
-        });
-
-        setCurrentUserId(user.uid);
-        setActivePlayerId(user.uid);
-        if (firebasePlayer.campaignIds?.[0]) setActiveCampaignId(firebasePlayer.campaignIds[0]);
-        setPage("calendar");
+        await finishFirebaseUserLogin(user, { saveIfMissing: true });
+        setLoginError("");
       } catch (error) {
         console.error("Failed to restore Firebase login:", error);
+        setLoginError(authErrorMessage(error));
       } finally {
         setAuthProfileLoaded(true);
+        setAuthBusy(false);
       }
     });
 
@@ -1350,51 +1370,9 @@ export default function DungeonCalendarApp() {
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
 
   useEffect(() => {
-    if (typeof window === "undefined") return undefined;
-
-    const ignoreRemovedRecaptchaClient = (event) => {
-      if (isRemovedRecaptchaClientError(event)) {
-        event.preventDefault?.();
-        return false;
-      }
-      return undefined;
-    };
-
-    window.addEventListener("error", ignoreRemovedRecaptchaClient);
-    window.addEventListener("unhandledrejection", ignoreRemovedRecaptchaClient);
-
-    return () => {
-      window.removeEventListener("error", ignoreRemovedRecaptchaClient);
-      window.removeEventListener("unhandledrejection", ignoreRemovedRecaptchaClient);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (currentUser || !recaptchaContainerRef.current || typeof window === "undefined") return;
-    let cancelled = false;
-
-    loadGoogleRecaptchaEnterprise()
-      .then((enterprise) => {
-        if (cancelled || !recaptchaContainerRef.current || recaptchaWidgetIdRef.current !== null) return;
-        try {
-          recaptchaWidgetIdRef.current = enterprise.render(recaptchaContainerRef.current, {
-            sitekey: GOOGLE_RECAPTCHA_SITE_KEY,
-            action: "LOGIN"
-          });
-        } catch (error) {
-          console.warn("Optional login reCAPTCHA could not be rendered:", error);
-          recaptchaWidgetIdRef.current = null;
-        }
-      })
-      .catch((error) => {
-        console.warn("Optional login reCAPTCHA did not load:", error);
-        recaptchaWidgetIdRef.current = null;
-      });
-
-    return () => {
-      cancelled = true;
-      recaptchaWidgetIdRef.current = null;
-    };
+    // The old standalone reCAPTCHA box was causing Google login to fail on some browsers.
+    // Firebase Auth handles its own needed verification, so this widget stays disabled.
+    recaptchaWidgetIdRef.current = null;
   }, [currentUser]);
 
   function updateActiveCampaign(updater) {
@@ -1484,7 +1462,9 @@ export default function DungeonCalendarApp() {
     } catch (error) {
       setLoginError(authErrorMessage(error));
     } finally {
-      resetGoogleRecaptcha(recaptchaWidgetIdRef.current);
+      if (typeof window !== "undefined" && window.grecaptcha?.enterprise && recaptchaWidgetIdRef.current !== null) {
+        window.grecaptcha.enterprise.reset(recaptchaWidgetIdRef.current);
+      }
       setAuthBusy(false);
     }
   }
@@ -1493,9 +1473,10 @@ export default function DungeonCalendarApp() {
   useEffect(() => {
     let cancelled = false;
     getRedirectResult(auth)
-      .then((result) => {
+      .then(async (result) => {
         if (!result || cancelled) return;
-        setLoginError("");
+        await finishFirebaseUserLogin(result.user, { saveIfMissing: true });
+        if (!cancelled) setLoginError("");
       })
       .catch((error) => {
         if (!cancelled) setLoginError(authErrorMessage(error));
@@ -1514,47 +1495,28 @@ export default function DungeonCalendarApp() {
       await setPersistence(auth, browserLocalPersistence);
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
+
       if (shouldUseRedirectGoogleLogin()) {
         await signInWithRedirect(auth, provider);
         return;
       }
 
       const credential = await signInWithPopup(auth, provider);
-      const user = credential.user;
-      const uid = user.uid;
-      const email = normalizeEmail(user.email || "");
-      const displayName = user.displayName || email.split("@")[0] || "Player";
-      const profile = await loadUserProfile(uid);
-      const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === email);
-
-      const player = {
-        ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, email),
-        username: profile?.username || existingLocal?.username || displayName.toLowerCase().replace(/\s+/g, "") || email.split("@")[0] || "player",
-        name: profile?.name || existingLocal?.name || displayName,
-        email,
-        color: profile?.color || existingLocal?.color || playerColors.find((color) => !players.some((item) => item.color === color)) || playerColors[0],
-        plan: normalizePlan(profile?.plan || existingLocal?.plan || "free"),
-        campaignIds: profile?.campaignIds || existingLocal?.campaignIds || (activeCampaign?.id ? [activeCampaign.id] : []),
-        campaignCharacterNames: profile?.campaignCharacterNames || existingLocal?.campaignCharacterNames || (activeCampaign?.id ? { [activeCampaign.id]: "" } : {})
-      };
-
-      if (!profile) {
-        await saveUserProfile(uid, player);
-      }
-
-      setPlayers((current) => {
-        const withoutDuplicate = current.filter((item) => item.id !== uid && normalizeEmail(item.email) !== email);
-        return [...withoutDuplicate, player];
-      });
-
-      setPlan(normalizePlan(player.plan || "free"));
-      setCurrentUserId(uid);
-      setActivePlayerId(uid);
-      if (player.campaignIds?.[0]) setActiveCampaignId(player.campaignIds[0]);
-      setPage("calendar");
+      await finishFirebaseUserLogin(credential.user, { saveIfMissing: true });
       setLoginError("");
     } catch (error) {
-      setLoginError(authErrorMessage(error));
+      if (error?.code === "auth/popup-blocked" || error?.code === "auth/cancelled-popup-request") {
+        try {
+          const provider = new GoogleAuthProvider();
+          provider.setCustomParameters({ prompt: "select_account" });
+          await signInWithRedirect(auth, provider);
+          return;
+        } catch (redirectError) {
+          setLoginError(authErrorMessage(redirectError));
+        }
+      } else {
+        setLoginError(authErrorMessage(error));
+      }
     } finally {
       setAuthBusy(false);
     }
@@ -2752,9 +2714,6 @@ export default function DungeonCalendarApp() {
             </label>
           </div>
 
-          <div className="flex justify-center rounded-xl border border-zinc-700 bg-black/30 px-2 py-3">
-            <div ref={recaptchaContainerRef} />
-          </div>
 
           <Button onClick={login} disabled={authBusy} className="w-full rounded-xl bg-gradient-to-r from-red-800 to-red-600 py-6 text-lg font-bold hover:from-red-700 hover:to-red-500">
             <LogIn className="mr-2 h-5 w-5" />

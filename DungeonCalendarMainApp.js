@@ -112,16 +112,82 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
 
 
 function normalizeList(values = []) {
-  return Array.isArray(values) ? values.filter(Boolean) : [];
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== "")
+    .map((value) => String(value))
+    .filter((value) => {
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
 }
+
+function normalizeEmailList(values = []) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map((email) => normalizeEmail(email || ""))
+    .filter((email) => {
+      if (!email || seen.has(email)) return false;
+      seen.add(email);
+      return true;
+    });
+}
+
+function normalizeIdList(values = []) {
+  return normalizeList(values);
+}
+
+function normalizeDateKeyList(values = []) {
+  return normalizeList(values);
+}
+
 
 function normalizeDateResponseMap(map = {}) {
   return Object.fromEntries(
     Object.entries(map || {})
-      .map(([key, ids]) => [key, normalizeList(ids).filter(Boolean)])
+      .map(([key, ids]) => [key, normalizeIdList(ids).filter(Boolean)])
       .filter(([key, ids]) => key && ids.length > 0)
   );
 }
+
+function normalizeCampaignIdArrays(campaign = {}) {
+  return {
+    ...campaign,
+    dungeonMasterIds: normalizeIdList(campaign.dungeonMasterIds),
+    memberIds: normalizeIdList(campaign.memberIds || campaign.playerIds || campaign.members),
+    playerIds: normalizeIdList(campaign.playerIds),
+    invitedEmails: normalizeEmailList(campaign.invitedEmails),
+    generatedSessionDates: normalizeDateKeyList(campaign.generatedSessionDates),
+    manuallySelectedDates: normalizeDateKeyList(campaign.manuallySelectedDates),
+    availability: normalizeDateResponseMap(campaign.availability),
+    unavailable: normalizeDateResponseMap(campaign.unavailable)
+  };
+}
+
+function listHasDuplicates(values = []) {
+  if (!Array.isArray(values)) return false;
+  const cleaned = values.filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
+  return new Set(cleaned.map((value) => String(value))).size !== cleaned.length;
+}
+
+function dateMapHasDuplicates(map = {}) {
+  return Object.values(map || {}).some((ids) => listHasDuplicates(ids));
+}
+
+function campaignNeedsFirestoreCleanup(campaign = {}) {
+  return listHasDuplicates(campaign.dungeonMasterIds) ||
+    listHasDuplicates(campaign.memberIds) ||
+    listHasDuplicates(campaign.playerIds) ||
+    listHasDuplicates(campaign.members) ||
+    listHasDuplicates(campaign.invitedEmails) ||
+    listHasDuplicates(campaign.generatedSessionDates) ||
+    listHasDuplicates(campaign.manuallySelectedDates) ||
+    dateMapHasDuplicates(campaign.availability) ||
+    dateMapHasDuplicates(campaign.unavailable) ||
+    (Array.isArray(campaign.invitedPlayers) && normalizeCampaignPlayers(campaign.invitedPlayers).length !== campaign.invitedPlayers.length);
+}
+
 
 function normalizeCampaignPlayers(players = []) {
   const seen = new Set();
@@ -135,28 +201,35 @@ function normalizeCampaignPlayers(players = []) {
 
 function normalizeCampaignForSync(campaign = {}) {
   const id = campaign.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
-  const ownerId = campaign.ownerId || "";
-  const dungeonMasterIds = normalizeList([...(campaign.dungeonMasterIds || []), ownerId].filter(Boolean));
-  return {
+  const ownerId = campaign.ownerId || campaign.createdBy || campaign.dmId || campaign.dungeonMasterId || "";
+  const invitedPlayers = normalizeCampaignPlayers(campaign.invitedPlayers);
+  const invitedPlayerIds = invitedPlayers.map((player) => player.id || player.uid).filter(Boolean);
+  const invitedPlayerEmails = invitedPlayers.map((player) => player.email).filter(Boolean);
+  const dungeonMasterIds = normalizeIdList([...(campaign.dungeonMasterIds || []), ownerId].filter(Boolean));
+  const normalized = normalizeCampaignIdArrays({
     ...campaign,
     id,
     ownerId,
     dungeonMasterIds,
-    memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
-    invitedEmails: normalizeList(campaign.invitedEmails).map((email) => String(email || "").trim().toLowerCase()).filter(Boolean),
-    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
+    memberIds: [
+      ...(campaign.memberIds || campaign.playerIds || campaign.members || []),
+      ...invitedPlayerIds,
+      ownerId
+    ],
+    invitedEmails: [
+      ...(campaign.invitedEmails || []),
+      ...invitedPlayerEmails
+    ],
+    invitedPlayers,
     playerTokenImages: campaign.playerTokenImages || {},
-    availability: normalizeDateResponseMap(campaign.availability),
-    unavailable: normalizeDateResponseMap(campaign.unavailable),
     chosenDate: campaign.chosenDate || "",
-    generatedSessionDates: normalizeList(campaign.generatedSessionDates || []),
-    manuallySelectedDates: normalizeList(campaign.manuallySelectedDates || []),
     recurringCadence: campaign.recurringCadence || "weekly",
     recurringSessionCount: Number(campaign.recurringSessionCount || 4),
     sessionTime: campaign.sessionTime || "18:00",
     sessionDuration: campaign.sessionDuration || 4,
     reminderHours: campaign.reminderHours || 24
-  };
+  });
+  return normalized;
 }
 
 function campaignContentKey(campaign = {}) {
@@ -285,9 +358,34 @@ function isDungeonMasterSelectedDate(campaign, key) {
 }
 
 function hasDungeonMasterRole(player = {}) {
-  const role = String(player?.role || player?.campaignRole || player?.userRole || '').trim().toLowerCase();
-  return role === 'dm' || role === 'dungeon master' || role === 'dungeonmaster' || role.includes('dungeon master');
+  const role = String(player?.role || player?.campaignRole || player?.userRole || player?.type || player?.title || '').trim().toLowerCase();
+  return role === 'dm' || role === 'gm' || role === 'game master' || role === 'dungeon master' || role === 'dungeonmaster' || role.includes('dungeon master') || role.includes('game master');
 }
+
+function campaignHasUserByEmail(campaign = {}, email = "") {
+  const userEmail = normalizeEmail(email || "");
+  if (!userEmail) return false;
+  const invitedEmails = normalizeEmailList(campaign.invitedEmails || []);
+  const playerEmails = normalizeEmailList((campaign.invitedPlayers || []).map((player) => player.email));
+  return invitedEmails.includes(userEmail) || playerEmails.includes(userEmail);
+}
+
+function campaignHasUserById(campaign = {}, id = "") {
+  if (!id) return false;
+  const ids = new Set([
+    campaign.ownerId,
+    campaign.createdBy,
+    campaign.dmId,
+    campaign.dungeonMasterId,
+    ...(campaign.memberIds || []),
+    ...(campaign.playerIds || []),
+    ...(campaign.members || []),
+    ...(campaign.dungeonMasterIds || []),
+    ...(campaign.invitedPlayers || []).flatMap((player) => [player.id, player.uid])
+  ].filter(Boolean));
+  return ids.has(id);
+}
+
 
 function isUserDungeonMasterForCampaign(campaign = {}, currentUser = null, activePlayer = null, players = []) {
   if (!campaign || !currentUser) return false;
@@ -835,6 +933,7 @@ export default function DungeonCalendarApp() {
   }, [publicRoute, page]);
   const lastSavedCampaignContentKeyRef = useRef("");
   const loadingCampaignsFromFirestoreRef = useRef(false);
+  const cleanedCampaignIdsRef = useRef(new Set());
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -1013,13 +1112,12 @@ export default function DungeonCalendarApp() {
   const activePlayer = players.find((player) => player.id === activePlayerId);
   const visibleCampaigns = useMemo(() => {
     if (!currentUser) return [];
-    const userEmail = normalizeEmail(currentUser.email || "");
+    const userEmail = normalizeEmail(currentUser.email || auth.currentUser?.email || "");
+    const userIds = [currentUser.id, currentUser.uid, auth.currentUser?.uid].filter(Boolean);
     return campaigns.map(normalizeCampaignForSync).filter((campaign) =>
       (currentUser.campaignIds ?? []).includes(campaign.id) ||
-      (campaign.memberIds ?? []).includes(currentUser.id) ||
-      (campaign.dungeonMasterIds ?? []).includes(currentUser.id) ||
-      campaign.ownerId === currentUser.id ||
-      (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail))
+      userIds.some((id) => campaignHasUserById(campaign, id)) ||
+      campaignHasUserByEmail(campaign, userEmail)
     );
   }, [campaigns, currentUser]);
   const activeCampaign = visibleCampaigns.find((campaign) => campaign.id === activeCampaignId) ?? visibleCampaigns[0];
@@ -1182,14 +1280,20 @@ export default function DungeonCalendarApp() {
 
     const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
       loadingCampaignsFromFirestoreRef.current = true;
-      const remoteCampaigns = snapshot.docs.map((item) => normalizeCampaignForSync({ id: item.id, ...item.data() }));
-      const userEmail = normalizeEmail(currentUser.email || "");
+      const remoteCampaigns = snapshot.docs.map((item) => {
+        const rawCampaign = { id: item.id, ...item.data() };
+        const normalizedCampaign = normalizeCampaignForSync(rawCampaign);
+        if (campaignNeedsFirestoreCleanup(rawCampaign) && !cleanedCampaignIdsRef.current.has(item.id)) {
+          cleanedCampaignIdsRef.current.add(item.id);
+          saveCampaignToFirestore(normalizedCampaign);
+        }
+        return normalizedCampaign;
+      });
+      const userEmail = normalizeEmail(currentUser.email || auth.currentUser?.email || "");
       const visibleRemoteCampaigns = remoteCampaigns.filter((campaign) =>
         (currentUser.campaignIds || []).includes(campaign.id) ||
-        (campaign.memberIds || []).includes(currentUserId) ||
-        (campaign.dungeonMasterIds || []).includes(currentUserId) ||
-        campaign.ownerId === currentUserId ||
-        (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail))
+        campaignHasUserById(campaign, currentUserId) ||
+        campaignHasUserByEmail(campaign, userEmail)
       );
 
       if (visibleRemoteCampaigns.length) {
@@ -1228,15 +1332,9 @@ export default function DungeonCalendarApp() {
     return () => unsubscribeCampaigns();
   }, [currentUserId, currentUser?.email, currentUser?.campaignIds]);
 
-  useEffect(() => {
-    if (!currentUserId || loadingCampaignsFromFirestoreRef.current) return;
-    const contentKey = JSON.stringify(campaigns.map(campaignContentKey).sort());
-    if (contentKey === lastSavedCampaignContentKeyRef.current) return;
-    lastSavedCampaignContentKeyRef.current = contentKey;
-    campaigns.map(normalizeCampaignForSync).forEach((campaign) => {
-      if (campaign.id) saveCampaignToFirestore(campaign);
-    });
-  }, [campaigns, currentUserId]);
+  // Do not auto-write every campaign after every snapshot. The previous
+  // autosave loop caused Firestore documents to flash and grow repeated IDs.
+  // Campaigns are saved only from explicit edit handlers through updateActiveCampaign/saveCampaignToFirestore.
 
 
 
@@ -2616,15 +2714,10 @@ export default function DungeonCalendarApp() {
       const availableList = normalizedCampaign.availability?.[key] ?? [];
       const unavailableList = normalizedCampaign.unavailable?.[key] ?? [];
       const manualDates = new Set(normalizedCampaign.manuallySelectedDates || []);
-      const dateAlreadyExists =
-        manualDates.has(key) ||
-        normalizedCampaign.chosenDate === key ||
-        availableList.length > 0 ||
-        unavailableList.length > 0;
 
-      if (isDungeonMaster) {
-        if (dateAlreadyExists) {
-          return removeDateCompletelyFromCampaign(normalizedCampaign, key);
+      if (isUserDungeonMasterForCampaign(normalizedCampaign, currentUser, activePlayer, players)) {
+        if (isDungeonMasterSelectedDate(normalizedCampaign, key) || availableList.length > 0 || unavailableList.length > 0) {
+          return normalizeCampaignForSync(removeDateCompletelyFromCampaign(normalizedCampaign, key));
         }
 
         manualDates.add(key);

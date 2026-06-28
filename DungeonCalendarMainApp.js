@@ -115,19 +115,39 @@ function normalizeList(values = []) {
   return Array.isArray(values) ? values.filter(Boolean) : [];
 }
 
+function normalizeDateResponseMap(map = {}) {
+  return Object.fromEntries(
+    Object.entries(map || {})
+      .map(([key, ids]) => [key, normalizeList(ids).filter(Boolean)])
+      .filter(([key, ids]) => key && ids.length > 0)
+  );
+}
+
+function normalizeCampaignPlayers(players = []) {
+  const seen = new Set();
+  return (Array.isArray(players) ? players : []).filter((player) => {
+    const key = playerIdentityKey(player) || player.id || player.uid;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function normalizeCampaignForSync(campaign = {}) {
   const id = campaign.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+  const ownerId = campaign.ownerId || "";
+  const dungeonMasterIds = normalizeList([...(campaign.dungeonMasterIds || []), ownerId].filter(Boolean));
   return {
     ...campaign,
     id,
-    ownerId: campaign.ownerId || "",
-    dungeonMasterIds: normalizeList(campaign.dungeonMasterIds),
+    ownerId,
+    dungeonMasterIds,
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: normalizeList(campaign.invitedEmails).map((email) => String(email || "").trim().toLowerCase()).filter(Boolean),
-    invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
+    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
     playerTokenImages: campaign.playerTokenImages || {},
-    availability: campaign.availability || {},
-    unavailable: campaign.unavailable || {},
+    availability: normalizeDateResponseMap(campaign.availability),
+    unavailable: normalizeDateResponseMap(campaign.unavailable),
     chosenDate: campaign.chosenDate || "",
     generatedSessionDates: normalizeList(campaign.generatedSessionDates || []),
     manuallySelectedDates: normalizeList(campaign.manuallySelectedDates || []),
@@ -271,8 +291,8 @@ function hasDungeonMasterRole(player = {}) {
 
 function isUserDungeonMasterForCampaign(campaign = {}, currentUser = null, activePlayer = null, players = []) {
   if (!campaign || !currentUser) return false;
-  const currentIds = new Set([currentUser.id, currentUser.uid, activePlayer?.id, activePlayer?.uid].filter(Boolean));
-  const dmIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId].filter(Boolean));
+  const currentIds = new Set([currentUser.id, currentUser.uid, activePlayer?.id, activePlayer?.uid, auth?.currentUser?.uid].filter(Boolean));
+  const dmIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId, campaign.createdBy, campaign.dmId, campaign.dungeonMasterId].filter(Boolean));
   if ([...currentIds].some((id) => dmIds.has(id))) return true;
 
   const currentEmail = normalizeEmail(currentUser.email || activePlayer?.email || '');
@@ -2585,75 +2605,72 @@ export default function DungeonCalendarApp() {
   function toggleAvailability(date) {
     if (!activeCampaign || !currentUser) return;
     const key = dateKey(date);
-    const responsePlayerId = isDungeonMaster ? currentUser.id : activePlayer?.id;
+    const responsePlayerId = isDungeonMaster ? (auth.currentUser?.uid || currentUser.id) : activePlayer?.id;
     if (!responsePlayerId) return;
 
     const dungeonMasterAvailableForDate = (activeCampaign.availability[key] ?? []).some((id) => dungeonMasterIds.includes(id));
     if (!isDungeonMaster && !dungeonMasterAvailableForDate) return;
 
     updateActiveCampaign((campaign) => {
-      const availableList = campaign.availability?.[key] ?? [];
-      const unavailableList = campaign.unavailable?.[key] ?? [];
-      const manualDates = new Set(campaign.manuallySelectedDates || []);
-      const campaignDmIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId, currentUser?.id].filter(Boolean));
-      const dateAlreadyControlledByDm =
+      const normalizedCampaign = normalizeCampaignForSync(campaign);
+      const availableList = normalizedCampaign.availability?.[key] ?? [];
+      const unavailableList = normalizedCampaign.unavailable?.[key] ?? [];
+      const manualDates = new Set(normalizedCampaign.manuallySelectedDates || []);
+      const dateAlreadyExists =
         manualDates.has(key) ||
-        campaign.chosenDate === key ||
-        availableList.some((id) => campaignDmIds.has(id)) ||
-        unavailableList.some((id) => campaignDmIds.has(id)) ||
+        normalizedCampaign.chosenDate === key ||
         availableList.length > 0 ||
         unavailableList.length > 0;
 
       if (isDungeonMaster) {
-        if (dateAlreadyControlledByDm) {
-          return removeDateCompletelyFromCampaign(campaign, key);
+        if (dateAlreadyExists) {
+          return removeDateCompletelyFromCampaign(normalizedCampaign, key);
         }
 
         manualDates.add(key);
-        return {
+        return normalizeCampaignForSync({
+          ...normalizedCampaign,
           manuallySelectedDates: Array.from(manualDates),
           availability: {
-            ...(campaign.availability || {}),
-            [key]: Array.from(new Set([...availableList, currentUser.id]))
+            ...(normalizedCampaign.availability || {}),
+            [key]: [responsePlayerId]
           },
-          unavailable: {
-            ...(campaign.unavailable || {}),
-            [key]: unavailableList.filter((id) => id !== currentUser.id)
-          }
-        };
+          unavailable: { ...(normalizedCampaign.unavailable || {}) }
+        });
       }
 
       const isAvailable = availableList.includes(responsePlayerId);
       const isUnavailable = unavailableList.includes(responsePlayerId);
 
       if (availabilityMode === "available") {
-        return {
-          manuallySelectedDates: Array.from(manualDates),
+        return normalizeCampaignForSync({
+          ...normalizedCampaign,
           availability: {
-            ...(campaign.availability || {}),
+            ...(normalizedCampaign.availability || {}),
             [key]: isAvailable
               ? availableList.filter((id) => id !== responsePlayerId)
               : Array.from(new Set([...availableList, responsePlayerId]))
           },
           unavailable: {
-            ...(campaign.unavailable || {}),
+            ...(normalizedCampaign.unavailable || {}),
             [key]: unavailableList.filter((id) => id !== responsePlayerId)
           }
-        };
+        });
       }
 
-      return {
+      return normalizeCampaignForSync({
+        ...normalizedCampaign,
         availability: {
-          ...(campaign.availability || {}),
+          ...(normalizedCampaign.availability || {}),
           [key]: availableList.filter((id) => id !== responsePlayerId)
         },
         unavailable: {
-          ...(campaign.unavailable || {}),
+          ...(normalizedCampaign.unavailable || {}),
           [key]: isUnavailable
             ? unavailableList.filter((id) => id !== responsePlayerId)
             : Array.from(new Set([...unavailableList, responsePlayerId]))
         }
-      };
+      });
     });
   }
 
@@ -2937,17 +2954,19 @@ export default function DungeonCalendarApp() {
       setSupportSending(true);
       setSupportStatus("");
       try {
-        const supportDocRef = doc(collection(db, "supportMessages"));
-        await setDoc(supportDocRef, {
-          to: supportEmailAddress,
-          subject: supportSubject || "Dungeon Calendar Support",
-          message: supportMessage,
-          fromUserId: currentUser?.uid || null,
-          fromEmail: currentUser?.email || null,
-          source: "about_page_contact_popup",
-          status: "new",
-          createdAt: new Date().toISOString()
+        const response = await fetch("/api/support-message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: supportEmailAddress,
+            subject: supportSubject || "Dungeon Calendar Support",
+            message: supportMessage,
+            fromUserId: currentUser?.id || auth.currentUser?.uid || null,
+            fromEmail: currentUser?.email || auth.currentUser?.email || null,
+            source: "about_page_contact_popup"
+          })
         });
+        if (!response.ok) throw new Error("Support API request failed");
         setSupportStatus("Support request sent.");
         setSupportEmailOpen(false);
         setSupportSubject("Dungeon Calendar Support");
@@ -2970,9 +2989,9 @@ export default function DungeonCalendarApp() {
     ];
 
     return (
-      <div className="relative h-screen min-h-screen w-full overflow-y-auto overflow-x-hidden text-zinc-100" style={{ WebkitOverflowScrolling: "touch", overscrollBehaviorY: "contain" }}>
+      <div className="relative min-h-screen overflow-x-hidden text-zinc-100">
         <AppBackground />
-        <main className="relative z-10 mx-auto w-[95%] max-w-[1600px] px-3 py-6 pb-20 sm:px-6 lg:px-8">
+        <main className="relative z-10 mx-auto w-[95%] max-w-[1600px] px-3 py-6 sm:px-6 lg:px-8">
           <header className="rounded-3xl border border-red-900/60 bg-black/60 p-6 text-center shadow-2xl backdrop-blur sm:p-8">
             <button type="button" onClick={() => navigateTo("/")} className="mx-auto block">
               <DungeonCalendarLogo small />

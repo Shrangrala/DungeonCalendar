@@ -115,18 +115,32 @@
       var modal = document.getElementById('contact-modal');
       if (modal) modal.style.display = 'none';
     }
-    function sendContactEmail(event) {
+    async function sendContactEmail(event) {
       event.preventDefault();
-      var subject = encodeURIComponent(document.getElementById('support-subject').value || 'Dungeon Calendar Support');
-      var body = encodeURIComponent(document.getElementById('support-message').value || 'Hello Dungeon Calendar Support,\n\n');
-      var link = document.createElement('a');
-      link.href = 'mailto:support@dungeoncalendar.com?subject=' + subject + '&body=' + body;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      closeContactModal();
+      var status = document.getElementById('support-status');
+      var submit = document.getElementById('support-submit');
+      var subject = document.getElementById('support-subject').value || 'Dungeon Calendar Support';
+      var message = document.getElementById('support-message').value || '';
+      if (!message.trim()) {
+        if (status) status.textContent = 'Please enter a message before sending.';
+        return;
+      }
+      if (submit) { submit.disabled = true; submit.textContent = 'Sending...'; }
+      if (status) status.textContent = '';
+      try {
+        var response = await fetch('/api/support-message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subject: subject, message: message, source: 'static_about_page_contact_popup' })
+        });
+        if (!response.ok) throw new Error('Request failed');
+        if (status) status.textContent = 'Support request sent.';
+        setTimeout(closeContactModal, 500);
+      } catch (error) {
+        if (status) status.textContent = 'Unable to send from the app right now. Please try again.';
+      } finally {
+        if (submit) { submit.disabled = false; submit.textContent = 'Send Support Request'; }
+      }
     }
   </script>
 </head>
@@ -151,7 +165,7 @@
         <div class="buttonrow" style="justify-content:flex-start">
           <a class="btn red" href="/">Start Scheduling Free</a>
           <a class="btn" href="https://dungeoncalendar.com" onclick="copyWebsiteUrl(event)">Copy Website URL</a>
-          <a class="btn" href="mailto:support@dungeoncalendar.com?subject=Dungeon%20Calendar%20Support" onclick="openContactModal(event)">Contact Us</a>
+          <a class="btn" href="#contact" onclick="openContactModal(event)">Contact Us</a>
         </div>
       </div>
       <aside class="card" style="background:rgba(69,26,3,.32)">
@@ -239,9 +253,10 @@
       <textarea id="support-message" rows="6" style="box-sizing:border-box;width:100%;margin:8px 0 18px;border:1px solid #3f3f46;border-radius:14px;background:#050505;color:#f4f4f5;padding:12px 14px">Hello Dungeon Calendar Support,
 
 </textarea>
+      <p id="support-status" style="min-height:1.4em;color:#fde68a;font-weight:700"></p>
       <div class="buttonrow" style="justify-content:flex-end">
         <button type="button" class="btn" onclick="closeContactModal()">Cancel</button>
-        <button type="submit" class="btn red">Send Email</button>
+        <button id="support-submit" type="submit" class="btn red">Send Support Request</button>
       </div>
     </form>
   </div>

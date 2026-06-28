@@ -264,6 +264,27 @@ function isDungeonMasterSelectedDate(campaign, key) {
   return (campaign.availability?.[key] || []).some((id) => dungeonMasterIds.has(id));
 }
 
+function hasDungeonMasterRole(player = {}) {
+  const role = String(player?.role || player?.campaignRole || player?.userRole || '').trim().toLowerCase();
+  return role === 'dm' || role === 'dungeon master' || role === 'dungeonmaster' || role.includes('dungeon master');
+}
+
+function isUserDungeonMasterForCampaign(campaign = {}, currentUser = null, activePlayer = null, players = []) {
+  if (!campaign || !currentUser) return false;
+  const currentIds = new Set([currentUser.id, currentUser.uid, activePlayer?.id, activePlayer?.uid].filter(Boolean));
+  const dmIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId].filter(Boolean));
+  if ([...currentIds].some((id) => dmIds.has(id))) return true;
+
+  const currentEmail = normalizeEmail(currentUser.email || activePlayer?.email || '');
+  const campaignPlayers = [currentUser, activePlayer, ...(campaign.invitedPlayers || []), ...(players || [])].filter(Boolean);
+  return campaignPlayers.some((player) => {
+    const playerIds = [player.id, player.uid].filter(Boolean);
+    const sameId = playerIds.some((id) => currentIds.has(id));
+    const sameEmail = currentEmail && normalizeEmail(player.email || '') === currentEmail;
+    return (sameId || sameEmail) && hasDungeonMasterRole(player);
+  });
+}
+
 function filterToDungeonMasterSelectedDates(campaign, dateMap = {}) {
   return Object.fromEntries(
     Object.entries(dateMap || {}).filter(([key]) => isDungeonMasterSelectedDate(campaign, key))
@@ -992,12 +1013,7 @@ export default function DungeonCalendarApp() {
   const sessionTime = activeCampaign?.sessionTime ?? "18:00";
   const sessionDuration = activeCampaign?.sessionDuration ?? 4;
   const reminderHours = activeCampaign?.reminderHours ?? 24;
-  const isDungeonMaster = !!currentUser && !!activeCampaign && (
-    campaignDungeonMasterIds.includes(currentUser.id) ||
-    activeCampaign.ownerId === currentUser.id ||
-    currentUser.role === "Dungeon Master" ||
-    currentUser.role === "DM"
-  );
+  const isDungeonMaster = !!activeCampaign && isUserDungeonMasterForCampaign(activeCampaign, currentUser, activePlayer, players);
   const dungeonMasterIds = useMemo(() => {
     const ids = new Set(campaignDungeonMasterIds);
     if (activeCampaign?.ownerId) ids.add(activeCampaign.ownerId);
@@ -2567,31 +2583,29 @@ export default function DungeonCalendarApp() {
   }
 
   function toggleAvailability(date) {
-    if (!activeCampaign || (!activePlayer && !currentUser)) return;
+    if (!activeCampaign || !currentUser) return;
     const key = dateKey(date);
-    const responsePlayerId = isDungeonMaster ? currentUser.id : activePlayer.id;
-    const dungeonMasterAvailableForDate = (activeCampaign.availability[key] ?? []).some((id) => dungeonMasterIds.includes(id));
+    const responsePlayerId = isDungeonMaster ? currentUser.id : activePlayer?.id;
+    if (!responsePlayerId) return;
 
-    if (!isDungeonMaster && !dungeonMasterAvailableForDate) {
-      return;
-    }
+    const dungeonMasterAvailableForDate = (activeCampaign.availability[key] ?? []).some((id) => dungeonMasterIds.includes(id));
+    if (!isDungeonMaster && !dungeonMasterAvailableForDate) return;
 
     updateActiveCampaign((campaign) => {
-      const availableList = campaign.availability[key] ?? [];
+      const availableList = campaign.availability?.[key] ?? [];
       const unavailableList = campaign.unavailable?.[key] ?? [];
       const manualDates = new Set(campaign.manuallySelectedDates || []);
-      const campaignDmIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId].filter(Boolean));
-      if (isDungeonMaster && currentUser?.id) campaignDmIds.add(currentUser.id);
-      const hasAnyDungeonMasterAvailable = availableList.some((id) => campaignDmIds.has(id));
-      const hasAnyDungeonMasterUnavailable = unavailableList.some((id) => campaignDmIds.has(id));
-      const dateHasAnyResponse = availableList.length > 0 || unavailableList.length > 0;
-      const isAvailable = availableList.includes(responsePlayerId);
-      const isUnavailable = unavailableList.includes(responsePlayerId);
+      const campaignDmIds = new Set([...(campaign.dungeonMasterIds || []), campaign.ownerId, currentUser?.id].filter(Boolean));
+      const dateAlreadyControlledByDm =
+        manualDates.has(key) ||
+        campaign.chosenDate === key ||
+        availableList.some((id) => campaignDmIds.has(id)) ||
+        unavailableList.some((id) => campaignDmIds.has(id)) ||
+        availableList.length > 0 ||
+        unavailableList.length > 0;
 
       if (isDungeonMaster) {
-        const alreadySelectedByDungeonMaster = manualDates.has(key) || hasAnyDungeonMasterAvailable || hasAnyDungeonMasterUnavailable || campaign.chosenDate === key || dateHasAnyResponse;
-
-        if (alreadySelectedByDungeonMaster) {
+        if (dateAlreadyControlledByDm) {
           return removeDateCompletelyFromCampaign(campaign, key);
         }
 
@@ -2599,27 +2613,30 @@ export default function DungeonCalendarApp() {
         return {
           manuallySelectedDates: Array.from(manualDates),
           availability: {
-            ...campaign.availability,
-            [key]: Array.from(new Set([...availableList, responsePlayerId]))
+            ...(campaign.availability || {}),
+            [key]: Array.from(new Set([...availableList, currentUser.id]))
           },
           unavailable: {
-            ...campaign.unavailable,
-            [key]: unavailableList.filter((id) => id !== responsePlayerId)
+            ...(campaign.unavailable || {}),
+            [key]: unavailableList.filter((id) => id !== currentUser.id)
           }
         };
       }
+
+      const isAvailable = availableList.includes(responsePlayerId);
+      const isUnavailable = unavailableList.includes(responsePlayerId);
 
       if (availabilityMode === "available") {
         return {
           manuallySelectedDates: Array.from(manualDates),
           availability: {
-            ...campaign.availability,
+            ...(campaign.availability || {}),
             [key]: isAvailable
               ? availableList.filter((id) => id !== responsePlayerId)
               : Array.from(new Set([...availableList, responsePlayerId]))
           },
           unavailable: {
-            ...campaign.unavailable,
+            ...(campaign.unavailable || {}),
             [key]: unavailableList.filter((id) => id !== responsePlayerId)
           }
         };
@@ -2627,14 +2644,14 @@ export default function DungeonCalendarApp() {
 
       return {
         availability: {
-          ...campaign.availability,
+          ...(campaign.availability || {}),
           [key]: availableList.filter((id) => id !== responsePlayerId)
         },
         unavailable: {
-          ...campaign.unavailable,
+          ...(campaign.unavailable || {}),
           [key]: isUnavailable
             ? unavailableList.filter((id) => id !== responsePlayerId)
-            : [...unavailableList, responsePlayerId]
+            : Array.from(new Set([...unavailableList, responsePlayerId]))
         }
       };
     });
@@ -2825,17 +2842,26 @@ export default function DungeonCalendarApp() {
   }, []);
 
   function navigateTo(path) {
-    if (typeof window === "undefined") return;
     const nextPath = path || "/";
-    window.history.pushState({}, "", nextPath);
-    setPublicRoute(nextPath);
     if (nextPath === "/about" || nextPath.startsWith("/about/")) {
       setPage("about");
-    } else if (nextPath === "/" && page === "about") {
-      setPage("dashboard");
+      setPublicRoute("/about");
+    } else if (nextPath === "/") {
+      setPublicRoute("/");
+      if (page === "about") setPage(currentUser ? "dashboard" : "dashboard");
+    } else {
+      setPublicRoute(nextPath);
     }
-    window.dispatchEvent(new Event("dungeoncalendar:navigate"));
-    window.scrollTo({ top: 0, behavior: "smooth" });
+
+    if (typeof window !== "undefined") {
+      window.history.pushState({}, "", nextPath);
+      window.dispatchEvent(new Event("dungeoncalendar:navigate"));
+      try {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch {
+        window.scrollTo(0, 0);
+      }
+    }
   }
 
   function writeTextFallback(text) {
@@ -2928,7 +2954,7 @@ export default function DungeonCalendarApp() {
         setSupportMessage("Hello Dungeon Calendar Support,\n\n");
       } catch (error) {
         console.error("Unable to save support request", error);
-        setSupportStatus("Unable to send from the app right now. Please email support@dungeoncalendar.com directly.");
+        setSupportStatus("Unable to save the support request. Your message stayed in this popup so you can try again.");
       } finally {
         setSupportSending(false);
       }
@@ -4734,7 +4760,7 @@ export default function DungeonCalendarApp() {
 
   const activePublicRoute = publicRoute || (typeof window !== "undefined" ? window.location.pathname : "/") || "/";
 
-  if (activePublicRoute === "/about" || activePublicRoute.startsWith("/about/")) {
+  if (page === "about" || activePublicRoute === "/about" || activePublicRoute.startsWith("/about/")) {
     return <AboutPage />;
   }
 

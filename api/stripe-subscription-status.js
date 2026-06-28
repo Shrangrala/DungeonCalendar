@@ -5,8 +5,11 @@ function normalizeEmail(email = '') {
 }
 
 function normalizePlan(planId = 'free') {
-  const value = String(planId || '').trim().toLowerCase();
-  return ['free', 'adventurer', 'guildmaster'].includes(value) ? value : 'free';
+  const value = String(planId || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (['guildmaster', 'guild', 'guildmasterplan', 'guildplan'].includes(value)) return 'guildmaster';
+  if (['adventurer', 'adventure', 'adventurerplan', 'adventureplan'].includes(value)) return 'adventurer';
+  if (['free', 'freeplan', 'basic', 'starter'].includes(value)) return 'free';
+  return 'free';
 }
 
 function normalizeBillingInterval(interval = 'monthly') {
@@ -87,8 +90,9 @@ module.exports = async function handler(req, res) {
     for (const customer of customers.data || []) {
       const subscriptions = await stripe.subscriptions.list({
         customer: customer.id,
-        status: 'active',
-        limit: 10
+        status: 'all',
+        limit: 20,
+        expand: ['data.items.data.price.product']
       });
 
       for (const subscription of subscriptions.data || []) {

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, updateEmail, updatePassword } from "firebase/auth";
-import { collection, doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
+import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
+import { collection, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -521,6 +521,54 @@ function readProfileBillingInterval(profile = {}, fallback = "monthly") {
 }
 
 
+
+function inferPlanFromStripeText(text = "", fallback = "free") {
+  const lower = String(text || "").toLowerCase();
+  if (lower.includes("guildmaster") || lower.includes("guild master") || lower.includes("guild")) return "guildmaster";
+  if (lower.includes("adventurer") || lower.includes("adventure")) return "adventurer";
+  return normalizePlan(fallback);
+}
+
+function inferPlanFromStripeSubscription(subscription = {}, fallback = "free") {
+  const status = String(subscription.status || subscription.stripeSubscriptionStatus || subscription.subscriptionStatus || "").toLowerCase();
+  if (status && !["active", "trialing", "past_due", "paid", "current"].includes(status)) return "free";
+
+  const items = Array.isArray(subscription.items) ? subscription.items : Array.isArray(subscription.items?.data) ? subscription.items.data : [];
+  const textParts = [
+    subscription.plan, subscription.Plan, subscription.planStatus, subscription.subscriptionPlan,
+    subscription.role, subscription.productName, subscription.product, subscription.priceId, subscription.productId,
+    subscription.price?.nickname, subscription.price?.lookup_key, subscription.price?.id, subscription.price?.metadata?.plan,
+    subscription.product?.name, subscription.product?.description, subscription.product?.metadata?.plan
+  ];
+
+  for (const item of items) {
+    const price = item?.price || item?.plan || item;
+    const product = price?.product || item?.product || {};
+    textParts.push(
+      price?.nickname, price?.lookup_key, price?.id, price?.metadata?.plan,
+      typeof product === "string" ? product : product?.name,
+      typeof product === "string" ? "" : product?.description,
+      typeof product === "string" ? "" : product?.metadata?.plan
+    );
+
+    const amount = Number(price?.unit_amount || price?.amount || 0);
+    if ([499, 4999].includes(amount) || amount >= 4900) return "guildmaster";
+    if ([299, 2999].includes(amount)) return "adventurer";
+  }
+
+  const byText = inferPlanFromStripeText(textParts.filter(Boolean).join(" "), fallback);
+  if (byText !== "free") return byText;
+
+  return readProfilePlan(subscription, fallback);
+}
+
+function inferBillingIntervalFromStripeSubscription(subscription = {}, fallback = "monthly") {
+  const items = Array.isArray(subscription.items) ? subscription.items : Array.isArray(subscription.items?.data) ? subscription.items.data : [];
+  const firstPrice = items[0]?.price || items[0]?.plan || items[0] || subscription.price || {};
+  const interval = firstPrice?.recurring?.interval || subscription.interval || subscription.billingInterval || subscription.BillingInterval;
+  return normalizeBillingInterval(interval || fallback);
+}
+
 function loadCachedUserProfile(uid) {
   return null;
 }
@@ -1029,13 +1077,21 @@ export default function DungeonCalendarApp() {
       saveCachedUserProfile(currentUserId, profile);
       const syncedPlayer = firebaseProfileToPlayer(currentUserId, profile, auth.currentUser?.email || "");
 
-      setPlan(readProfilePlan(profile || syncedPlayer, syncedPlayer.plan || "free"));
-      setBillingInterval(normalizeBillingInterval(profile?.billingInterval || syncedPlayer.billingInterval || "monthly"));
+      const syncedProfilePlan = readProfilePlan(profile || syncedPlayer, syncedPlayer.plan || "free");
+      const syncedBillingInterval = normalizeBillingInterval(profile?.billingInterval || syncedPlayer.billingInterval || "monthly");
+      setPlan((currentPlan) => syncedProfilePlan === "free" && currentPlan !== "free" ? currentPlan : syncedProfilePlan);
+      setBillingInterval((currentInterval) => syncedProfilePlan === "free" && plan !== "free" ? currentInterval : syncedBillingInterval);
       setPlayers((current) => {
+        const existingPlayer = current.find((player) =>
+          player.id === currentUserId || normalizeEmail(player.email) === normalizeEmail(syncedPlayer.email)
+        );
+        const safeSyncedPlayer = syncedProfilePlan === "free" && normalizePlan(existingPlayer?.plan || "free") !== "free"
+          ? { ...syncedPlayer, plan: existingPlayer.plan, billingInterval: existingPlayer.billingInterval || syncedBillingInterval }
+          : syncedPlayer;
         const withoutDuplicate = current.filter((player) =>
           player.id !== currentUserId && normalizeEmail(player.email) !== normalizeEmail(syncedPlayer.email)
         );
-        return [...withoutDuplicate, syncedPlayer];
+        return [...withoutDuplicate, safeSyncedPlayer];
       });
     }, (error) => {
       console.warn("Live profile sync failed:", error);
@@ -1301,14 +1357,36 @@ export default function DungeonCalendarApp() {
     const syncFirebaseCustomerPlan = async () => {
       try {
         const customerSnap = await getDoc(doc(db, "customers", currentUser.id));
-        if (cancelled || !customerSnap.exists()) return;
+        const customerData = customerSnap.exists() ? (customerSnap.data() || {}) : {};
 
-        const customerData = customerSnap.data() || {};
-        const customerPlan = readProfilePlan(customerData, "free");
-        const customerBillingInterval = readProfileBillingInterval(customerData, billingInterval || "monthly");
-        const customerActive = readBillingStatusActive(customerData) || customerPlan !== "free";
+        let customerPlan = customerSnap.exists() ? readProfilePlan(customerData, "free") : "free";
+        let customerBillingInterval = customerSnap.exists() ? readProfileBillingInterval(customerData, billingInterval || "monthly") : normalizeBillingInterval(billingInterval || "monthly");
+        let customerStatus = customerData.stripeSubscriptionStatus || customerData.subscriptionStatus || customerData.status || "";
+        let customerSubscriptionId = customerData.stripeSubscriptionId || customerData.subscriptionId || "";
+        let customerActive = customerSnap.exists() && (readBillingStatusActive(customerData) || customerPlan !== "free");
 
-        if (!customerActive || customerPlan === "free") return;
+        // Firebase Stripe extension stores live subscription data under
+        // customers/{uid}/subscriptions/{subscriptionId}. Read that path on login too;
+        // otherwise the app can keep showing Free even when Stripe is active.
+        try {
+          const subscriptionSnaps = await getDocs(collection(db, "customers", currentUser.id, "subscriptions"));
+          subscriptionSnaps.forEach((subSnap) => {
+            const subscriptionData = subSnap.data() || {};
+            const subPlan = inferPlanFromStripeSubscription(subscriptionData, customerPlan);
+            const subActive = readBillingStatusActive(subscriptionData) || subPlan !== "free";
+            if (subActive && subPlan !== "free") {
+              customerPlan = subPlan;
+              customerBillingInterval = inferBillingIntervalFromStripeSubscription(subscriptionData, customerBillingInterval);
+              customerStatus = subscriptionData.status || subscriptionData.stripeSubscriptionStatus || subscriptionData.subscriptionStatus || customerStatus || "active";
+              customerSubscriptionId = subscriptionData.id || subscriptionData.subscriptionId || subSnap.id || customerSubscriptionId;
+              customerActive = true;
+            }
+          });
+        } catch (subError) {
+          console.warn("Firebase Stripe subscriptions sync failed:", subError);
+        }
+
+        if (cancelled || !customerActive || customerPlan === "free") return;
 
         setPlan(customerPlan);
         setBillingInterval(customerBillingInterval);
@@ -1316,17 +1394,17 @@ export default function DungeonCalendarApp() {
           ...player,
           plan: customerPlan,
           billingInterval: customerBillingInterval,
-          stripeSubscriptionStatus: customerData.stripeSubscriptionStatus || customerData.subscriptionStatus || customerData.status || player.stripeSubscriptionStatus || "active"
+          stripeSubscriptionStatus: customerStatus || player.stripeSubscriptionStatus || "active"
         } : player));
 
-        if (readProfilePlan(currentUser, "free") === "free") {
+        if (readProfilePlan(currentUser, "free") === "free" || plan === "free") {
           saveUserProfile(currentUser.id, {
             plan: customerPlan,
             billingInterval: customerBillingInterval,
-            stripeSubscriptionStatus: customerData.stripeSubscriptionStatus || customerData.subscriptionStatus || customerData.status || "active",
+            stripeSubscriptionStatus: customerStatus || "active",
             stripeCustomerId: customerData.stripeCustomerId || customerData.customerId || customerData.stripeId || "",
-            stripeSubscriptionId: customerData.stripeSubscriptionId || customerData.subscriptionId || "",
-            stripeActivationSource: "firestore_customer_plan_sync",
+            stripeSubscriptionId: customerSubscriptionId || "",
+            stripeActivationSource: "firestore_customer_subscription_sync_on_login",
             updatedAt: new Date().toISOString()
           });
         }
@@ -2196,6 +2274,37 @@ export default function DungeonCalendarApp() {
     }
   }
 
+  async function sendAccountPasswordResetEmail() {
+    if (isSavingAccount) return;
+
+    const targetEmail = normalizeEmail(auth.currentUser?.email || currentUser?.email || accountEmail || "");
+    if (!targetEmail) {
+      setAccountMessage("Add an email address to your account before sending a password reset email.");
+      return;
+    }
+
+    try {
+      setIsSavingAccount(true);
+      setAccountMessage("Sending password reset email...");
+      await sendPasswordResetEmail(auth, targetEmail);
+      setAccountMessage(`Password reset email sent to ${targetEmail}. Check your inbox and spam folder.`);
+    } catch (error) {
+      console.error("Password reset email failed:", error);
+      const code = error?.code || "";
+      if (code === "auth/invalid-email") {
+        setAccountMessage("That account email address is not valid.");
+        return;
+      }
+      if (code === "auth/user-not-found") {
+        setAccountMessage("No Firebase login account was found for that email address.");
+        return;
+      }
+      setAccountMessage(error?.message || "Could not send the password reset email.");
+    } finally {
+      setIsSavingAccount(false);
+    }
+  }
+
   async function saveAccountSettings(event) {
     if (event?.preventDefault) event.preventDefault();
     if (isSavingAccount) return;
@@ -2609,6 +2718,12 @@ export default function DungeonCalendarApp() {
       { label: "Share on Reddit", href: `https://www.reddit.com/submit?url=${encodeURIComponent(shareUrl)}&title=${encodeURIComponent("Dungeon Calendar - D&D Campaign Scheduling")}` },
       { label: "Share on LinkedIn", href: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}` }
     ];
+    const openSupportEmail = () => {
+      const subject = encodeURIComponent("Dungeon Calendar Support");
+      const body = encodeURIComponent("Hello Dungeon Calendar Support,\n\n");
+      window.location.href = `mailto:support@dungeoncalendar.com?subject=${subject}&body=${body}`;
+    };
+
     const featureCards = [
       { title: "Campaign Management", text: "Create campaigns, invite players, assign Dungeon Masters, and keep every adventure organized in one place." },
       { title: "Session Scheduling", text: "Use a shared calendar to find dates that work for the whole party without endless group chats." },
@@ -2648,6 +2763,9 @@ export default function DungeonCalendarApp() {
                 <Button onClick={() => navigateTo("/")} className="rounded-xl bg-red-700 px-5 py-3 hover:bg-red-600">Start Scheduling Free</Button>
                 <Button onClick={copyShareLink} variant="ghost" className="rounded-xl border border-zinc-700 px-5 py-3 hover:bg-zinc-900">
                   <Copy className="mr-2 h-4 w-4" /> {copied ? "Copied!" : "Copy App Link"}
+                </Button>
+                <Button onClick={openSupportEmail} variant="ghost" className="rounded-xl border border-amber-700 px-5 py-3 text-amber-100 hover:bg-amber-950 hover:text-white">
+                  <Mail className="mr-2 h-4 w-4" /> Contact Us
                 </Button>
               </div>
             </div>
@@ -3532,6 +3650,14 @@ export default function DungeonCalendarApp() {
               <div>
                 <h3 className="text-2xl font-bold">Account Security</h3>
                 <p className="mt-1 text-sm text-zinc-400">Control high-impact account actions.</p>
+              </div>
+
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
+                <p className="font-bold text-zinc-100">Reset Password</p>
+                <p className="mt-2 text-sm text-zinc-400">Send a Firebase password reset email to your account email address.</p>
+                <Button onClick={sendAccountPasswordResetEmail} disabled={isSavingAccount} variant="ghost" className="mt-4 rounded-xl border border-amber-700 text-amber-200 hover:bg-amber-950 hover:text-white">
+                  {isSavingAccount ? "Sending..." : "Send Password Reset Email"}
+                </Button>
               </div>
 
               <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">

@@ -47,6 +47,28 @@ function normalizeEmail(email = "") {
   return String(email || "").trim().toLowerCase();
 }
 
+function normalizePhoneNumber(phone = "") {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  return digits;
+}
+
+function phoneMatches(a = "", b = "") {
+  const left = normalizePhoneNumber(a);
+  const right = normalizePhoneNumber(b);
+  if (!left || !right) return false;
+  return left === right || (left.length >= 10 && right.length >= 10 && left.slice(-10) === right.slice(-10));
+}
+
+function uniqueNormalizedPhones(values = []) {
+  return Array.from(new Set((Array.isArray(values) ? values : [values]).map(normalizePhoneNumber).filter(Boolean)));
+}
+
+function userPhoneKeys(user = {}) {
+  return uniqueNormalizedPhones([user.phone, user.phoneNumber, user.mobile, user.mobilePhone, user.tel]);
+}
+
 function makeId(prefix = "item") {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -71,34 +93,20 @@ function dateKeyToParts(key = "") {
 }
 
 function normalizeList(values = []) {
-  return Array.isArray(values) ? Array.from(new Set(values.filter(Boolean).map(String))) : [];
-}
-
-function getSingleDungeonMasterId(campaign = {}, fallbackId = "") {
-  const candidates = [
-    campaign.dungeonMasterId,
-    campaign.dmId,
-    campaign.ownerId,
-    campaign.createdBy,
-    ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : []),
-    fallbackId
-  ].filter(Boolean).map(String);
-  return candidates[0] || "";
+  return Array.isArray(values) ? values.filter(Boolean) : [];
 }
 
 function normalizeCampaign(campaign = {}) {
   const id = campaign.id || makeId("campaign");
-  const dungeonMasterId = getSingleDungeonMasterId(campaign, campaign.ownerId || "");
   return {
     ...campaign,
     id,
     name: campaign.name || "Untitled Campaign",
-    ownerId: dungeonMasterId || campaign.ownerId || "",
-    dungeonMasterId: dungeonMasterId || campaign.ownerId || "",
-    dmId: dungeonMasterId || campaign.ownerId || "",
-    dungeonMasterIds: (dungeonMasterId || campaign.ownerId) ? [dungeonMasterId || campaign.ownerId] : [],
+    ownerId: campaign.ownerId || "",
+    dungeonMasterIds: normalizeList(campaign.dungeonMasterIds),
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
-    invitedEmails: normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean),
+    invitedEmails: Array.from(new Set(normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean))),
+    invitedPhones: uniqueNormalizedPhones([...(campaign.invitedPhones || []), ...(campaign.phoneInvites || []), ...((campaign.invitedPlayers || []).map((player) => player.phone || player.phoneNumber || ""))]),
     invitedPlayers: Array.isArray(campaign.invitedPlayers) ? campaign.invitedPlayers : [],
     availability: campaign.availability || {},
     unavailable: campaign.unavailable || {},
@@ -117,12 +125,14 @@ function visibleToUser(campaign, user) {
   if (!user) return false;
   const uid = user.uid;
   const email = normalizeEmail(user.email || user.providerData?.[0]?.email || "");
+  const phoneKeys = userPhoneKeys(user);
   return (
     campaign.ownerId === uid ||
     campaign.dungeonMasterIds?.includes(uid) ||
     campaign.memberIds?.includes(uid) ||
-    campaign.invitedPlayers?.some((p) => p.id === uid || p.uid === uid || normalizeEmail(p.email) === email) ||
-    (!!email && campaign.invitedEmails?.includes(email))
+    campaign.invitedPlayers?.some((p) => p.id === uid || p.uid === uid || normalizeEmail(p.email) === email || userPhoneKeys(p).some((phone) => phoneKeys.some((key) => phoneMatches(phone, key)))) ||
+    (!!email && campaign.invitedEmails?.includes(email)) ||
+    uniqueNormalizedPhones(campaign.invitedPhones || []).some((phone) => phoneKeys.some((key) => phoneMatches(phone, key)))
   );
 }
 
@@ -153,6 +163,8 @@ function campaignPlayerRecord(player = {}, campaignId = "") {
     id: player.id || player.uid || email || makeId("player"),
     name: player.name || player.displayName || player.username || email || "Player",
     email,
+    phone: player.phone || player.phoneNumber || "",
+    phoneNormalized: normalizePhoneNumber(player.phone || player.phoneNumber || ""),
     role: player.role || "Player",
     campaignIds: Array.from(new Set([...(player.campaignIds || []), campaignId].filter(Boolean))),
     campaignCharacterNames: player.campaignCharacterNames || (campaignId ? { [campaignId]: player.characterName || "" } : {}),
@@ -166,7 +178,7 @@ function campaignPlayers(campaign, user) {
   const byKey = new Map();
   const add = (player) => {
     const record = campaignPlayerRecord(player, campaign.id);
-    const key = normalizeEmail(record.email) || record.id;
+    const key = normalizeEmail(record.email) || normalizePhoneNumber(record.phone || record.phoneNormalized || "") || record.id;
     byKey.set(key, { ...(byKey.get(key) || {}), ...record });
   };
   if (user) add({ ...playerFromFirebaseUser(user, campaign.id), role: campaign.dungeonMasterIds?.includes(user.uid) ? "Dungeon Master" : "Player" });
@@ -1296,6 +1308,7 @@ function PlayerEditor({ openSettings, activeCampaign, navigate }) {
       ...activeCampaign,
       invitedPlayers: [...(activeCampaign.invitedPlayers || []), nextPlayer],
       invitedEmails: Array.from(new Set([...(activeCampaign.invitedEmails || []), normalizeEmail(email)].filter(Boolean))),
+      invitedPhones: uniqueNormalizedPhones([...(activeCampaign.invitedPhones || []), nextPlayer.phone, nextPlayer.phoneNormalized]),
     });
     navigate("players");
   };

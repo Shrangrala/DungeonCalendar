@@ -94,12 +94,10 @@ const defaultPlayers = [];
 
 
 function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
-  const dungeonMasterId = ownerId || normalizeList(dungeonMasterIds)[0] || "";
   return {
     id: crypto.randomUUID(),
-    ownerId: dungeonMasterId,
-    dungeonMasterId,
-    dungeonMasterIds: dungeonMasterId ? [dungeonMasterId] : [],
+    ownerId,
+    dungeonMasterIds,
     name,
     isEditingName: true,
     availability: {},
@@ -114,19 +112,7 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
 
 
 function normalizeList(values = []) {
-  return Array.isArray(values) ? Array.from(new Set(values.filter(Boolean).map(String))) : [];
-}
-
-function getSingleDungeonMasterId(campaign = {}, fallbackId = "") {
-  const candidates = [
-    campaign.dungeonMasterId,
-    campaign.dmId,
-    campaign.ownerId,
-    campaign.createdBy,
-    ...(Array.isArray(campaign.dungeonMasterIds) ? campaign.dungeonMasterIds : []),
-    fallbackId
-  ].filter(Boolean).map(String);
-  return candidates[0] || "";
+  return Array.isArray(values) ? values.filter(Boolean) : [];
 }
 
 function normalizeDateResponseMap(map = {}) {
@@ -149,17 +135,16 @@ function normalizeCampaignPlayers(players = []) {
 
 function normalizeCampaignForSync(campaign = {}) {
   const id = campaign.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
-  const dungeonMasterId = getSingleDungeonMasterId(campaign, campaign.ownerId || "");
-  const ownerId = dungeonMasterId || campaign.ownerId || "";
+  const ownerId = campaign.ownerId || "";
+  const dungeonMasterIds = normalizeList([...(campaign.dungeonMasterIds || []), ownerId].filter(Boolean));
   return {
     ...campaign,
     id,
     ownerId,
-    dungeonMasterId: dungeonMasterId || ownerId || "",
-    dmId: dungeonMasterId || ownerId || "",
-    dungeonMasterIds: (dungeonMasterId || ownerId) ? [dungeonMasterId || ownerId] : [],
+    dungeonMasterIds,
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
-    invitedEmails: normalizeList(campaign.invitedEmails).map((email) => String(email || "").trim().toLowerCase()).filter(Boolean),
+    invitedEmails: Array.from(new Set(normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean))),
+    invitedPhones: uniqueNormalizedPhones([...(campaign.invitedPhones || []), ...(campaign.phoneInvites || []), ...((campaign.invitedPlayers || []).map((player) => player.phone || player.phoneNumber || ""))]),
     invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
     playerTokenImages: campaign.playerTokenImages || {},
     availability: normalizeDateResponseMap(campaign.availability),
@@ -203,7 +188,8 @@ function campaignPlayerRecord(player = {}, campaignId = "") {
     name: player.name || player.username || email || "Player",
     username: player.username || String(player.name || email || "player").toLowerCase().replace(/\s+/g, ""),
     email,
-    phone: player.phone || "",
+    phone: player.phone || player.phoneNumber || "",
+    phoneNormalized: normalizePhoneNumber(player.phone || player.phoneNumber || ""),
     role: player.role || "Player",
     campaignIds: Array.from(new Set([...(player.campaignIds || []), campaignId].filter(Boolean))),
     campaignCharacterNames: player.campaignCharacterNames || (campaignId ? { [campaignId]: "" } : {}),
@@ -215,7 +201,7 @@ function campaignPlayerRecord(player = {}, campaignId = "") {
 }
 
 function playerIdentityKey(player = {}) {
-  return normalizeEmail(player.email || "") || player.id || player.uid || "";
+  return normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || player.id || player.uid || "";
 }
 
 function upsertCampaignPlayer(campaign = {}, player = {}) {
@@ -239,6 +225,7 @@ function upsertCampaignPlayer(campaign = {}, player = {}) {
     ...campaign,
     memberIds: Array.from(new Set([...(campaign.memberIds || []), record.id].filter(Boolean))),
     invitedEmails: Array.from(new Set([...(campaign.invitedEmails || []), record.email].filter(Boolean).map(normalizeEmail))),
+    invitedPhones: uniqueNormalizedPhones([...(campaign.invitedPhones || []), record.phone, record.phoneNormalized]),
     invitedPlayers: [...nextInvitedPlayers, nextRecord]
   });
 }
@@ -246,6 +233,7 @@ function upsertCampaignPlayer(campaign = {}, player = {}) {
 function removeCampaignPlayer(campaign = {}, player = {}) {
   const id = typeof player === "string" ? player : player.id;
   const email = normalizeEmail(typeof player === "string" ? "" : player.email || "");
+  const phone = normalizePhoneNumber(typeof player === "string" ? "" : player.phone || player.phoneNumber || player.phoneNormalized || "");
   const campaignId = campaign.id || "";
   const playerTokenImages = { ...(campaign.playerTokenImages || {}) };
   if (id) delete playerTokenImages[id];
@@ -260,6 +248,7 @@ function removeCampaignPlayer(campaign = {}, player = {}) {
     ...campaign,
     memberIds: (campaign.memberIds || []).filter((playerId) => playerId !== id),
     invitedEmails: (campaign.invitedEmails || []).filter((item) => normalizeEmail(item) !== email),
+    invitedPhones: (campaign.invitedPhones || []).filter((item) => !phone || !phoneMatches(item, phone)),
     invitedPlayers: (campaign.invitedPlayers || []).filter((item) => item.id !== id && (!email || normalizeEmail(item.email || "") !== email)),
     playerTokenImages,
     availability: removeFromDateMap(campaign.availability),
@@ -312,12 +301,14 @@ function isUserDungeonMasterForCampaign(campaign = {}, currentUser = null, activ
   if ([...currentIds].some((id) => dmIds.has(id))) return true;
 
   const currentEmail = normalizeEmail(currentUser.email || activePlayer?.email || '');
+  const currentPhones = uniqueNormalizedPhones([...userPhoneKeys(currentUser), ...userPhoneKeys(activePlayer)]);
   const campaignPlayers = [currentUser, activePlayer, ...(campaign.invitedPlayers || []), ...(players || [])].filter(Boolean);
   return campaignPlayers.some((player) => {
     const playerIds = [player.id, player.uid].filter(Boolean);
     const sameId = playerIds.some((id) => currentIds.has(id));
     const sameEmail = currentEmail && normalizeEmail(player.email || '') === currentEmail;
-    return (sameId || sameEmail) && hasDungeonMasterRole(player);
+    const samePhone = currentPhones.length && userPhoneKeys(player).some((phone) => currentPhones.some((key) => phoneMatches(phone, key)));
+    return (sameId || sameEmail || samePhone) && hasDungeonMasterRole(player);
   });
 }
 
@@ -498,7 +489,42 @@ async function loadUserProfileViaRest(uid) {
 }
 
 function normalizeEmail(email = "") {
-  return email.trim().toLowerCase();
+  return String(email || "").trim().toLowerCase();
+}
+
+function normalizePhoneNumber(phone = "") {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  return digits;
+}
+
+function phoneMatches(a = "", b = "") {
+  const left = normalizePhoneNumber(a);
+  const right = normalizePhoneNumber(b);
+  if (!left || !right) return false;
+  return left === right || (left.length >= 10 && right.length >= 10 && left.slice(-10) === right.slice(-10));
+}
+
+function uniqueNormalizedPhones(values = []) {
+  return Array.from(new Set((Array.isArray(values) ? values : [values])
+    .map(normalizePhoneNumber)
+    .filter(Boolean)));
+}
+
+function userPhoneKeys(user = {}) {
+  return uniqueNormalizedPhones([user.phone, user.phoneNumber, user.mobile, user.mobilePhone, user.tel]);
+}
+
+function campaignHasPhoneInvite(campaign = {}, phoneKeys = []) {
+  const keys = uniqueNormalizedPhones(phoneKeys);
+  if (!keys.length) return false;
+  const invitedPhones = uniqueNormalizedPhones(campaign.invitedPhones || campaign.invitePhones || campaign.phoneInvites || []);
+  if (invitedPhones.some((phone) => keys.some((key) => phoneMatches(phone, key)))) return true;
+  return (campaign.invitedPlayers || []).some((player) => {
+    const playerPhones = userPhoneKeys(player);
+    return playerPhones.some((phone) => keys.some((key) => phoneMatches(phone, key)));
+  });
 }
 
 function normalizePlan(planId = "free") {
@@ -654,7 +680,9 @@ function buildAuthFallbackPlayer(user, existingLocal = {}, activeCampaignId = ""
     billingInterval: readProfileBillingInterval(existingLocal, existingLocal?.billingInterval || "monthly"),
     campaignIds: existingLocal?.campaignIds || (activeCampaignId ? [activeCampaignId] : []),
     campaignCharacterNames: existingLocal?.campaignCharacterNames || (activeCampaignId ? { [activeCampaignId]: "" } : {}),
-    avatarUrl: existingLocal?.avatarUrl || user?.photoURL || ""
+    avatarUrl: existingLocal?.avatarUrl || user?.photoURL || "",
+    phone: existingLocal?.phone || user?.phoneNumber || "",
+    phoneNormalized: normalizePhoneNumber(existingLocal?.phone || user?.phoneNumber || "")
   };
 }
 
@@ -760,7 +788,8 @@ function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
     name,
     email,
     password: "",
-    phone: profile.phone || "",
+    phone: profile.phone || profile.phoneNumber || "",
+    phoneNormalized: normalizePhoneNumber(profile.phone || profile.phoneNumber || ""),
     plan: readProfilePlan(profile, "free"),
     billingInterval: normalizeBillingInterval(profile.billingInterval || "monthly"),
     campaignIds: profile.campaignIds || [],
@@ -851,7 +880,6 @@ export default function DungeonCalendarApp() {
   }, [publicRoute, page]);
   const lastSavedCampaignContentKeyRef = useRef("");
   const loadingCampaignsFromFirestoreRef = useRef(false);
-  const cleanedSingleDmCampaignIdsRef = useRef(new Set());
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -1031,12 +1059,14 @@ export default function DungeonCalendarApp() {
   const visibleCampaigns = useMemo(() => {
     if (!currentUser) return [];
     const userEmail = normalizeEmail(currentUser.email || "");
+    const userPhones = userPhoneKeys(currentUser);
     return campaigns.map(normalizeCampaignForSync).filter((campaign) =>
       (currentUser.campaignIds ?? []).includes(campaign.id) ||
       (campaign.memberIds ?? []).includes(currentUser.id) ||
       (campaign.dungeonMasterIds ?? []).includes(currentUser.id) ||
       campaign.ownerId === currentUser.id ||
-      (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail))
+      (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail)) ||
+      campaignHasPhoneInvite(campaign, userPhones)
     );
   }, [campaigns, currentUser]);
   const activeCampaign = visibleCampaigns.find((campaign) => campaign.id === activeCampaignId) ?? visibleCampaigns[0];
@@ -1199,32 +1229,16 @@ export default function DungeonCalendarApp() {
 
     const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
       loadingCampaignsFromFirestoreRef.current = true;
-      const dirtySingleDmCampaigns = [];
-      const remoteCampaigns = snapshot.docs.map((item) => {
-        const raw = { id: item.id, ...item.data() };
-        const normalized = normalizeCampaignForSync(raw);
-        const rawDmIds = Array.isArray(raw.dungeonMasterIds) ? raw.dungeonMasterIds.filter(Boolean).map(String) : [];
-        const normalizedDmIds = normalized.dungeonMasterIds || [];
-        const needsSingleDmCleanup =
-          rawDmIds.length !== normalizedDmIds.length ||
-          rawDmIds[0] !== normalizedDmIds[0] ||
-          raw.dungeonMasterId !== normalized.dungeonMasterId ||
-          raw.dmId !== normalized.dmId ||
-          raw.ownerId !== normalized.ownerId;
-        if (needsSingleDmCleanup && !cleanedSingleDmCampaignIdsRef.current.has(item.id)) {
-          cleanedSingleDmCampaignIdsRef.current.add(item.id);
-          dirtySingleDmCampaigns.push(normalized);
-        }
-        return normalized;
-      });
-      dirtySingleDmCampaigns.forEach((campaign) => saveCampaignToFirestore(campaign));
+      const remoteCampaigns = snapshot.docs.map((item) => normalizeCampaignForSync({ id: item.id, ...item.data() }));
       const userEmail = normalizeEmail(currentUser.email || "");
+      const userPhones = userPhoneKeys(currentUser);
       const visibleRemoteCampaigns = remoteCampaigns.filter((campaign) =>
         (currentUser.campaignIds || []).includes(campaign.id) ||
         (campaign.memberIds || []).includes(currentUserId) ||
         (campaign.dungeonMasterIds || []).includes(currentUserId) ||
         campaign.ownerId === currentUserId ||
-        (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail))
+        (!!userEmail && (campaign.invitedEmails || []).map(normalizeEmail).includes(userEmail)) ||
+        campaignHasPhoneInvite(campaign, userPhones)
       );
 
       if (visibleRemoteCampaigns.length) {
@@ -1264,9 +1278,13 @@ export default function DungeonCalendarApp() {
   }, [currentUserId, currentUser?.email, currentUser?.campaignIds]);
 
   useEffect(() => {
-    // Do not autosave every campaign snapshot back to Firestore.
-    // Campaigns are saved only from explicit user actions through updateActiveCampaign/saveCampaignToFirestore.
-    // This prevents repeated DM IDs and other duplicated array data from being written on every live sync render.
+    if (!currentUserId || loadingCampaignsFromFirestoreRef.current) return;
+    const contentKey = JSON.stringify(campaigns.map(campaignContentKey).sort());
+    if (contentKey === lastSavedCampaignContentKeyRef.current) return;
+    lastSavedCampaignContentKeyRef.current = contentKey;
+    campaigns.map(normalizeCampaignForSync).forEach((campaign) => {
+      if (campaign.id) saveCampaignToFirestore(campaign);
+    });
   }, [campaigns, currentUserId]);
 
 
@@ -1701,7 +1719,7 @@ export default function DungeonCalendarApp() {
         const credential = await signInWithEmailAndPassword(auth, trimmedEmail, loginPassword);
         uid = credential.user.uid;
         const profile = await loadUserProfile(uid);
-        const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === trimmedEmail);
+        const existingLocal = players.find((item) => item.id === uid || normalizeEmail(item.email) === trimmedEmail || phoneMatches(item.phone || item.phoneNumber || "", auth.currentUser?.phoneNumber || ""));
 
         player = {
           ...firebaseProfileToPlayer(uid, profile || existingLocal || {}, trimmedEmail),
@@ -1712,7 +1730,7 @@ export default function DungeonCalendarApp() {
       } else {
         const credential = await createUserWithEmailAndPassword(auth, trimmedEmail, loginPassword);
         uid = credential.user.uid;
-        const existingInvite = players.find((item) => normalizeEmail(item.email) === trimmedEmail);
+        const existingInvite = players.find((item) => normalizeEmail(item.email) === trimmedEmail || phoneMatches(item.phone || item.phoneNumber || "", auth.currentUser?.phoneNumber || ""));
 
         player = {
           id: uid,
@@ -2193,21 +2211,16 @@ export default function DungeonCalendarApp() {
     }
     setCampaigns((current) => current.map((campaign) => {
       if (campaign.id !== campaignId) return campaign;
+      const currentDmIds = campaign.dungeonMasterIds ?? [];
       return role === "Dungeon Master"
-        ? normalizeCampaignForSync({
+        ? {
             ...campaign,
-            ownerId: currentUser.id,
-            dungeonMasterId: currentUser.id,
-            dmId: currentUser.id,
-            dungeonMasterIds: [currentUser.id]
-          })
-        : normalizeCampaignForSync({
+            dungeonMasterIds: currentDmIds.includes(currentUser.id) ? currentDmIds : [...currentDmIds, currentUser.id]
+          }
+        : {
             ...campaign,
-            ownerId: campaign.ownerId === currentUser.id ? "" : campaign.ownerId,
-            dungeonMasterId: campaign.dungeonMasterId === currentUser.id ? "" : campaign.dungeonMasterId,
-            dmId: campaign.dmId === currentUser.id ? "" : campaign.dmId,
-            dungeonMasterIds: (campaign.dungeonMasterIds || []).filter((id) => id !== currentUser.id).slice(0, 1)
-          });
+            dungeonMasterIds: currentDmIds.filter((id) => id !== currentUser.id)
+          };
     }));
   }
 
@@ -2253,6 +2266,7 @@ export default function DungeonCalendarApp() {
         name: updatedUser.name || "",
         email: normalizeEmail(updatedUser.email || ""),
         phone: updatedUser.phone || "",
+        phoneNormalized: normalizePhoneNumber(updatedUser.phone || ""),
         plan: normalizePlan(plan),
         campaignIds: updatedUser.campaignIds || [],
         campaignCharacterNames: updatedUser.campaignCharacterNames || {},
@@ -2271,22 +2285,26 @@ export default function DungeonCalendarApp() {
     if (!trimmed || !isDungeonMaster || !activeCampaign?.id) return;
 
     const trimmedEmail = normalizeEmail(newPlayerEmail);
+    const trimmedPhone = normalizePhoneNumber(newPlayerPhone);
     const duplicate = activeCampaignPlayers.some((player) =>
       player.name?.toLowerCase() === trimmed.toLowerCase() ||
-      (!!trimmedEmail && normalizeEmail(player.email || "") === trimmedEmail)
+      (!!trimmedEmail && normalizeEmail(player.email || "") === trimmedEmail) ||
+      (!!trimmedPhone && phoneMatches(player.phone || player.phoneNumber || player.phoneNormalized || "", trimmedPhone))
     );
     if (duplicate) return;
 
     const existingByEmail = trimmedEmail ? players.find((player) => normalizeEmail(player.email || "") === trimmedEmail) : null;
+    const existingByPhone = trimmedPhone ? players.find((player) => phoneMatches(player.phone || player.phoneNumber || player.phoneNormalized || "", trimmedPhone)) : null;
+    const existingInvite = existingByEmail || existingByPhone;
     const player = campaignPlayerRecord({
-      ...(existingByEmail || {}),
-      id: existingByEmail?.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+      ...(existingInvite || {}),
+      id: existingInvite?.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
       role: "Player",
       name: trimmed,
       email: trimmedEmail,
       password: "dndplayer",
       phone: newPlayerPhone.trim(),
-      color: existingByEmail?.color || playerColors[players.length % playerColors.length]
+      color: existingInvite?.color || playerColors[players.length % playerColors.length]
     }, activeCampaign.id);
 
     setPlayers((current) => {
@@ -2540,6 +2558,7 @@ export default function DungeonCalendarApp() {
         name: updatedProfile.name || "",
         email: normalizeEmail(updatedProfile.email || ""),
         phone: updatedProfile.phone || "",
+        phoneNormalized: normalizePhoneNumber(updatedProfile.phone || ""),
         plan: normalizePlan(plan),
         billingInterval: normalizeBillingInterval(billingInterval),
         campaignIds: updatedProfile.campaignIds || [],

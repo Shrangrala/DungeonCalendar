@@ -72,6 +72,45 @@
     gtag('js', new Date());
     gtag('config', 'G-40KPRTKQT8');
   </script>
+
+  <script>
+    function copyWebsiteUrl(event) {
+      event.preventDefault();
+      var url = 'https://dungeoncalendar.com';
+      function fallbackCopy() {
+        var textArea = document.createElement('textarea');
+        textArea.value = url;
+        textArea.setAttribute('readonly', '');
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        var copied = false;
+        try { copied = document.execCommand('copy'); } catch (error) { copied = false; }
+        document.body.removeChild(textArea);
+        return copied;
+      }
+      var button = event.currentTarget;
+      var done = function(copied) {
+        if (copied) {
+          button.textContent = 'Copied!';
+          setTimeout(function(){ button.textContent = 'Copy Website URL'; }, 1600);
+        } else {
+          window.prompt('Copy this website URL:', url);
+        }
+      };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(url).then(function(){ done(true); }).catch(function(){ done(fallbackCopy()); });
+      } else {
+        done(fallbackCopy());
+      }
+    }
+    function contactSupport(event) {
+      event.preventDefault();
+      window.location.href = 'mailto:support@dungeoncalendar.com?subject=Dungeon%20Calendar%20Support&body=Hello%20Dungeon%20Calendar%20Support,%0A%0A';
+    }
+  </script>
 </head>
 <body>
   <main class="wrap">
@@ -93,7 +132,8 @@
         <p>Dungeon Calendar is a campaign scheduling and player management app built for Dungeons & Dragons, Pathfinder, and other tabletop RPG groups. Dungeon Masters can manage campaigns, collect player availability, invite party members, and choose final session dates from one organized calendar.</p>
         <div class="buttonrow" style="justify-content:flex-start">
           <a class="btn red" href="/">Start Scheduling Free</a>
-          <a class="btn" href="https://dungeoncalendar.com/about">Copy Website URL</a>
+          <a class="btn" href="https://dungeoncalendar.com" onclick="copyWebsiteUrl(event)">Copy Website URL</a>
+          <a class="btn" href="mailto:support@dungeoncalendar.com?subject=Dungeon%20Calendar%20Support" onclick="contactSupport(event)">Contact Us</a>
         </div>
       </div>
       <aside class="card" style="background:rgba(69,26,3,.32)">
@@ -151,7 +191,7 @@
           <a class="tile" href="https://www.reddit.com/submit?url=https%3A%2F%2Fdungeoncalendar.com%2Fabout&title=Dungeon%20Calendar%20-%20D%26D%20Campaign%20Scheduling">Share on Reddit</a>
           <a class="tile" href="https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fdungeoncalendar.com%2Fabout">Share on LinkedIn</a>
         </div>
-        <p class="share">https://dungeoncalendar.com/about</p>
+        <p class="share">https://dungeoncalendar.com</p>
       </div>
     </section>
 

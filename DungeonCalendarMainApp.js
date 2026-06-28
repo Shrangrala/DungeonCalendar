@@ -2798,18 +2798,47 @@ export default function DungeonCalendarApp() {
 
   function navigateTo(path) {
     if (typeof window === "undefined") return;
-    window.history.pushState({}, "", path);
-    setPublicRoute(path);
+    const nextPath = path || "/";
+    window.history.pushState({}, "", nextPath);
+    setPublicRoute(nextPath);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function copyShareLink() {
+  function writeTextFallback(text) {
+    if (typeof document === "undefined") return false;
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.setAttribute("readonly", "");
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "0";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    let successful = false;
     try {
-      await navigator.clipboard.writeText("https://dungeoncalendar.com");
+      successful = document.execCommand("copy");
+    } catch {
+      successful = false;
+    }
+    document.body.removeChild(textArea);
+    return successful;
+  }
+
+  async function copyShareLink() {
+    const websiteUrl = "https://dungeoncalendar.com";
+    try {
+      if (navigator?.clipboard?.writeText && window?.isSecureContext) {
+        await navigator.clipboard.writeText(websiteUrl);
+      } else if (!writeTextFallback(websiteUrl)) {
+        throw new Error("Clipboard fallback failed");
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
-      setCopied(false);
+      const fallbackCopied = writeTextFallback(websiteUrl);
+      setCopied(fallbackCopied);
+      if (fallbackCopied) setTimeout(() => setCopied(false), 1600);
     }
   }
 
@@ -2893,7 +2922,7 @@ export default function DungeonCalendarApp() {
               <div className="mt-7 flex flex-wrap gap-3">
                 <Button onClick={() => navigateTo("/")} className="rounded-xl bg-red-700 px-5 py-3 hover:bg-red-600">Start Scheduling Free</Button>
                 <Button onClick={copyShareLink} variant="ghost" className="rounded-xl border border-zinc-700 px-5 py-3 hover:bg-zinc-900">
-                  <Copy className="mr-2 h-4 w-4" /> {copied ? "Copied!" : "Copy App Link"}
+                  <Copy className="mr-2 h-4 w-4" /> {copied ? "Copied!" : "Copy Website URL"}
                 </Button>
                 <Button onClick={() => setSupportEmailOpen(true)} variant="ghost" className="rounded-xl border border-amber-700 px-5 py-3 text-amber-100 hover:bg-amber-950 hover:text-white">
                   <Mail className="mr-2 h-4 w-4" /> Contact Us
@@ -4628,7 +4657,7 @@ export default function DungeonCalendarApp() {
     return DashboardPage();
   }
 
-  if (publicRoute === "/about") {
+  if ((publicRoute || "/") === "/about" || (publicRoute || "/").startsWith("/about/")) {
     return AboutPage();
   }
 

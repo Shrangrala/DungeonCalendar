@@ -109,6 +109,7 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
     unavailable: {},
     chosenDate: "",
     sessionTime: "18:00",
+    defaultLocation: "",
     sessionDuration: 4,
     reminderHours: 24
   };
@@ -212,6 +213,7 @@ function normalizeCampaignForSync(campaign = {}) {
     recurringCadence: campaign.recurringCadence || "weekly",
     recurringSessionCount: Number(campaign.recurringSessionCount || 4),
     sessionTime: campaign.sessionTime || "18:00",
+    defaultLocation: campaign.defaultLocation || campaign.location || "",
     sessionDuration: campaign.sessionDuration || 4,
     reminderHours: campaign.reminderHours || 24
   };
@@ -1215,6 +1217,7 @@ export default function DungeonCalendarApp() {
   const chosenDate = activeCampaign?.chosenDate ?? "";
   const generatedSessionDates = activeCampaign?.generatedSessionDates ?? [];
   const sessionTime = activeCampaign?.sessionTime ?? "18:00";
+  const defaultLocation = activeCampaign?.defaultLocation ?? activeCampaign?.location ?? "";
   const sessionDuration = activeCampaign?.sessionDuration ?? 4;
   const reminderHours = activeCampaign?.reminderHours ?? 24;
   const isDungeonMaster = !!activeCampaign && isUserDungeonMasterForCampaign(activeCampaign, currentUser, activePlayer, players);
@@ -1805,6 +1808,7 @@ export default function DungeonCalendarApp() {
   }, [availability, players, activeCampaign]);
 
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
+  const selectedSessionDetails = chosenDate ? `${selectedDateLabel} · ${sessionTime || "18:00"} · ${defaultLocation || "Location not set"}` : selectedDateLabel;
 
   // Email/password auth intentionally does not render a custom reCAPTCHA widget.
   // Firebase Auth handles account creation directly; a separate page widget was
@@ -3536,7 +3540,7 @@ export default function DungeonCalendarApp() {
   function StatCards() {
     return (
       <div className="grid gap-4 md:grid-cols-4">
-        <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><CalendarCheck className="mb-3 h-8 w-8 text-red-400" /><p className="text-sm text-zinc-400">Next Session</p><p className="text-xl font-bold">{chosenDate ? selectedDateLabel : "TBD"}</p></CardContent></Card>
+        <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><CalendarCheck className="mb-3 h-8 w-8 text-red-400" /><p className="text-sm text-zinc-400">Next Session</p><p className="text-xl font-bold">{chosenDate ? selectedSessionDetails : "TBD"}</p></CardContent></Card>
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><Users className="mb-3 h-8 w-8 text-amber-400" /><p className="text-sm text-zinc-400">Players</p><p className="text-xl font-bold">{activeCampaignPlayers.length}</p></CardContent></Card>
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><UserCheck className="mb-3 h-8 w-8 text-blue-400" /><p className="text-sm text-zinc-400">Dates Proposed</p><p className="text-xl font-bold">{Object.keys(availability).length}</p></CardContent></Card>
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><Shield className="mb-3 h-8 w-8 text-emerald-400" /><p className="text-sm text-zinc-400">Campaign</p><p className="text-xl font-bold">{campaignName || "Unnamed"}</p></CardContent></Card>
@@ -4279,6 +4283,10 @@ export default function DungeonCalendarApp() {
                   <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Duration</span>
                   <input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
                 </label>
+                <label className="block md:col-span-3">
+                  <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Location</span>
+                  <textarea value={defaultLocation} onChange={(event) => updateActiveCampaign(() => ({ defaultLocation: event.target.value, location: event.target.value }))} onBlur={(event) => updateActiveCampaign(() => ({ defaultLocation: event.target.value.trim(), location: event.target.value.trim() }))} placeholder="Enter the session location, address, VTT link, or meeting notes" rows={3} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+                </label>
                 <label className="block">
                   <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Reminder Time</span>
                   <select value={reminderHours} onChange={(event) => updateActiveCampaign(() => ({ reminderHours: event.target.value }))} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2">
@@ -4415,7 +4423,7 @@ export default function DungeonCalendarApp() {
             )}
           </div>
 
-          <p className="text-zinc-300">{selectedDateLabel}</p>
+          <p className="text-zinc-300">{selectedSessionDetails}</p>
 
           {chosenDate && (
             <div className="mt-5 grid gap-3 sm:grid-cols-2">

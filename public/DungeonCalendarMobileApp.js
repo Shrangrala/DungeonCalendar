@@ -1095,7 +1095,8 @@ function Dashboard({ navigate, openSettings, user, campaigns = [], activeCampaig
               <View style={styles.sessionInfo}>
                 <Text style={styles.sessionTitle}>{activeCampaign.name}</Text>
                 <Text style={styles.sessionText}>{nextDate.full || `${nextDate.label}`}</Text>
-                <Text style={styles.sessionAccent}>{activeCampaign.sessionTime || "18:00"} · {nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
+                <Text style={styles.sessionAccent}>{activeCampaign.sessionTime || "18:00"} · {activeCampaign.defaultLocation || activeCampaign.location || "Location not set"}</Text>
+                <Text style={styles.sessionAccent}>{nextDate.available || 0} available · {nextDate.unavailable || 0} unavailable</Text>
               </View>
               <Text style={styles.chevron}>›</Text>
             </TouchableOpacity>

@@ -109,7 +109,6 @@ function createCampaign(name = "", dungeonMasterIds = [], ownerId = "") {
     unavailable: {},
     chosenDate: "",
     sessionTime: "18:00",
-    defaultLocation: "",
     sessionDuration: 4,
     reminderHours: 24
   };
@@ -158,13 +157,27 @@ function normalizeDateResponseMap(map = {}) {
 }
 
 function normalizeCampaignPlayers(players = []) {
-  const seen = new Set();
-  return safePlayerList(players).filter((player) => {
-    const key = playerIdentityKey(player) || player.id || player.uid;
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  const byKey = new Map();
+  safePlayerList(players).forEach((player) => {
+    const record = safePlayerRecord(player);
+    const uidKey = record.uid || record.firebaseUid || record.userId || record.id || "";
+    const emailKey = normalizeEmail(record.email || "");
+    const phoneKey = normalizePhoneNumber(record.phone || record.phoneNumber || record.phoneNormalized || "");
+    const key = uidKey || emailKey || phoneKey;
+    if (!key) return;
+    const existing = byKey.get(key) || {};
+    byKey.set(key, {
+      ...existing,
+      ...record,
+      id: uidKey || existing.id || record.id,
+      uid: record.uid || record.firebaseUid || record.userId || existing.uid,
+      campaignCharacterNames: { ...(existing.campaignCharacterNames || {}), ...(record.campaignCharacterNames || {}) },
+      campaignTokenImages: { ...(existing.campaignTokenImages || {}), ...(record.campaignTokenImages || {}) }
+    });
+    if (emailKey && emailKey !== key) byKey.set(emailKey, byKey.get(key));
+    if (phoneKey && phoneKey !== key) byKey.set(phoneKey, byKey.get(key));
   });
+  return Array.from(new Set(byKey.values()));
 }
 
 function campaignSnapshotPayload(snapshotDoc) {
@@ -213,7 +226,6 @@ function normalizeCampaignForSync(campaign = {}) {
     recurringCadence: campaign.recurringCadence || "weekly",
     recurringSessionCount: Number(campaign.recurringSessionCount || 4),
     sessionTime: campaign.sessionTime || "18:00",
-    defaultLocation: campaign.defaultLocation || campaign.location || "",
     sessionDuration: campaign.sessionDuration || 4,
     reminderHours: campaign.reminderHours || 24
   };
@@ -247,7 +259,7 @@ async function saveCampaignToFirestore(campaign) {
 
 function campaignPlayerRecord(player = {}, campaignId = "") {
   player = safePlayerRecord(player);
-  const id = player.id || player.uid || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+  const id = player.uid || player.firebaseUid || player.userId || player.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
   const email = normalizeEmail(player.email || "");
   return {
     id,
@@ -277,7 +289,15 @@ function upsertCampaignPlayer(campaign = {}, player = {}) {
   const record = campaignPlayerRecord(player, campaignId);
   const recordKey = playerIdentityKey(record);
   const existingPlayers = safePlayerList(campaign.invitedPlayers);
-  const nextInvitedPlayers = existingPlayers.filter((item) => playerIdentityKey(item) !== recordKey && item.id !== record.id);
+  const recordEmail = normalizeEmail(record.email || "");
+  const recordPhone = normalizePhoneNumber(record.phone || record.phoneNumber || record.phoneNormalized || "");
+  const recordIds = new Set([record.id, record.uid, record.firebaseUid, record.userId].filter(Boolean));
+  const nextInvitedPlayers = existingPlayers.filter((item) => {
+    const itemEmail = normalizeEmail(item.email || "");
+    const itemPhone = normalizePhoneNumber(item.phone || item.phoneNumber || item.phoneNormalized || "");
+    const itemIds = [item.id, item.uid, item.firebaseUid, item.userId].filter(Boolean);
+    return playerIdentityKey(item) !== recordKey && !itemIds.some((id) => recordIds.has(id)) && (!recordEmail || itemEmail !== recordEmail) && (!recordPhone || !phoneMatches(itemPhone, recordPhone));
+  });
   const existingTokenImage = campaign.playerTokenImages?.[record.id] || record.campaignTokenImages?.[campaignId] || "";
   const nextRecord = existingTokenImage
     ? {
@@ -1217,7 +1237,6 @@ export default function DungeonCalendarApp() {
   const chosenDate = activeCampaign?.chosenDate ?? "";
   const generatedSessionDates = activeCampaign?.generatedSessionDates ?? [];
   const sessionTime = activeCampaign?.sessionTime ?? "18:00";
-  const defaultLocation = activeCampaign?.defaultLocation ?? activeCampaign?.location ?? "";
   const sessionDuration = activeCampaign?.sessionDuration ?? 4;
   const reminderHours = activeCampaign?.reminderHours ?? 24;
   const isDungeonMaster = !!activeCampaign && isUserDungeonMasterForCampaign(activeCampaign, currentUser, activePlayer, players);
@@ -1808,7 +1827,6 @@ export default function DungeonCalendarApp() {
   }, [availability, players, activeCampaign]);
 
   const selectedDateLabel = chosenDate ? new Date(chosenDate + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "No sessions scheduled yet.";
-  const selectedSessionDetails = chosenDate ? `${selectedDateLabel} · ${sessionTime || "18:00"} · ${defaultLocation || "Location not set"}` : selectedDateLabel;
 
   // Email/password auth intentionally does not render a custom reCAPTCHA widget.
   // Firebase Auth handles account creation directly; a separate page widget was
@@ -2656,7 +2674,7 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    if (nextEmail) {
+    if (emailChanged && nextEmail) {
       const emailUsed = players.some((player) => player.id !== currentUser.id && normalizeEmail(player.email) === nextEmail);
       if (emailUsed) {
         setAccountMessage("That email is already used by another account.");
@@ -3344,10 +3362,11 @@ export default function DungeonCalendarApp() {
       {currentUser && (
         <nav className="mt-5 grid grid-cols-2 gap-2 lg:mt-7 lg:block lg:space-y-2">
           {navItems.filter((item) => isDungeonMaster || (item.id !== "settings" && item.id !== "players")).map((item) => {
-            const Icon = item.icon;
+            const displayItem = item.id === "results" && !isDungeonMaster ? { ...item, label: "Players", icon: Users } : item;
+            const Icon = displayItem.icon;
             return (
               <button key={item.id} onClick={() => setPage(item.id)} className={classNames("flex w-full items-center justify-center gap-2 rounded-xl px-3 py-3 text-center text-sm transition lg:justify-start lg:gap-3 lg:px-4 lg:text-left lg:text-base", page === item.id ? "bg-red-900/60 text-white" : "text-zinc-300 hover:bg-zinc-900/80 hover:text-white")}>
-                <Icon className="h-5 w-5" /> {item.label}
+                <Icon className="h-5 w-5" /> {displayItem.label}
               </button>
             );
           })}
@@ -3540,7 +3559,7 @@ export default function DungeonCalendarApp() {
   function StatCards() {
     return (
       <div className="grid gap-4 md:grid-cols-4">
-        <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><CalendarCheck className="mb-3 h-8 w-8 text-red-400" /><p className="text-sm text-zinc-400">Next Session</p><p className="text-xl font-bold">{chosenDate ? selectedSessionDetails : "TBD"}</p></CardContent></Card>
+        <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><CalendarCheck className="mb-3 h-8 w-8 text-red-400" /><p className="text-sm text-zinc-400">Next Session</p><p className="text-xl font-bold">{chosenDate ? selectedDateLabel : "TBD"}</p></CardContent></Card>
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><Users className="mb-3 h-8 w-8 text-amber-400" /><p className="text-sm text-zinc-400">Players</p><p className="text-xl font-bold">{activeCampaignPlayers.length}</p></CardContent></Card>
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><UserCheck className="mb-3 h-8 w-8 text-blue-400" /><p className="text-sm text-zinc-400">Dates Proposed</p><p className="text-xl font-bold">{Object.keys(availability).length}</p></CardContent></Card>
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur"><CardContent className="p-5"><Shield className="mb-3 h-8 w-8 text-emerald-400" /><p className="text-sm text-zinc-400">Campaign</p><p className="text-xl font-bold">{campaignName || "Unnamed"}</p></CardContent></Card>
@@ -3764,7 +3783,7 @@ export default function DungeonCalendarApp() {
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
           <CardContent className="p-6">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-2xl font-bold">Availability Results</h2>
+              <h2 className="text-2xl font-bold">{isDungeonMaster ? "Availability Results" : "Players"}</h2>
               {isDungeonMaster && plan !== "free" && (
                 <Button onClick={chooseBestDateAutomatically} className="rounded-xl bg-emerald-700 hover:bg-emerald-600">
                   Auto Pick Best Date
@@ -3787,6 +3806,17 @@ export default function DungeonCalendarApp() {
                 </div>
                 {chosenDate && <Button onClick={clearFinalDate} variant="ghost" className="mt-3 rounded-xl border border-zinc-700 hover:bg-zinc-900 hover:text-white">Remove Final Date</Button>}
                 {generatedSessionDates.length > 0 && <p className="mt-3 text-sm text-zinc-400">Generated session records saved outside availability/results: {generatedSessionDates.map((key) => new Date(key + "T00:00:00").toLocaleDateString()).join(", ")}</p>}
+              </div>
+            )}
+            {!isDungeonMaster && activeCampaign && (
+              <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+                <h3 className="mb-2 font-bold text-amber-200">Your Player Token</h3>
+                <p className="mb-3 text-sm text-zinc-400">Guildmaster players can upload their own token image for this campaign. It syncs to the same campaign player record used by the mobile app.</p>
+                {hasPlanFeature("tokenUploads") ? (
+                  <input type="file" accept="image/*" onChange={(event) => updatePlayerToken(currentUser.id, event.target.files?.[0], activeCampaign.id)} className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
+                ) : (
+                  <Button onClick={() => setPage("billing")} className="rounded-xl bg-red-700 hover:bg-red-600">Upgrade to Guildmaster</Button>
+                )}
               </div>
             )}
             <div className="space-y-3">
@@ -4201,16 +4231,7 @@ export default function DungeonCalendarApp() {
                       <label className="text-xs uppercase tracking-wider text-zinc-500">Character Name</label>
                       <input
                         value={currentUser?.campaignCharacterNames?.[campaign.id] || ""}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          setPlayers((current) => current.map((player) => player.id === currentUser.id ? {
-                            ...player,
-                            campaignCharacterNames: {
-                              ...(player.campaignCharacterNames || {}),
-                              [campaign.id]: value
-                            }
-                          } : player));
-                        }}
+                        onChange={(event) => saveCurrentUserCharacterName(campaign.id, event.target.value)}
                         placeholder="Enter character name"
                         className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
                       />
@@ -4249,6 +4270,30 @@ export default function DungeonCalendarApp() {
     );
   }
 
+
+  async function saveCurrentUserCharacterName(campaignId, value) {
+    if (!currentUser?.id || !campaignId) return;
+    const cleanValue = String(value || "");
+    const nextCharacterNames = {
+      ...(currentUser.campaignCharacterNames || {}),
+      [campaignId]: cleanValue
+    };
+    const profileUpdatePayload = {
+      campaignCharacterNames: nextCharacterNames,
+      updatedAt: new Date().toISOString()
+    };
+    const updatedUser = { ...currentUser, campaignCharacterNames: nextCharacterNames };
+    saveCachedUserProfile(currentUser.id, profileUpdatePayload);
+    setPlayers((current) => current.map((player) => player.id === currentUser.id ? { ...player, campaignCharacterNames: nextCharacterNames } : player));
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== campaignId) return campaign;
+      const nextCampaign = normalizeCampaignForSync(upsertCampaignPlayer(campaign, updatedUser));
+      saveCampaignToFirestore(nextCampaign);
+      return nextCampaign;
+    }));
+    saveUserProfileQuick(currentUser.id, profileUpdatePayload).catch((error) => console.warn("Could not save character name:", error));
+  }
+
   function SettingsPage() {
     return (
       <div className="space-y-5">
@@ -4282,10 +4327,6 @@ export default function DungeonCalendarApp() {
                 <label className="block">
                   <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Duration</span>
                   <input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
-                </label>
-                <label className="block md:col-span-3">
-                  <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Location</span>
-                  <textarea value={defaultLocation} onChange={(event) => updateActiveCampaign(() => ({ defaultLocation: event.target.value, location: event.target.value }))} onBlur={(event) => updateActiveCampaign(() => ({ defaultLocation: event.target.value.trim(), location: event.target.value.trim() }))} placeholder="Enter the session location, address, VTT link, or meeting notes" rows={3} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Reminder Time</span>
@@ -4423,7 +4464,7 @@ export default function DungeonCalendarApp() {
             )}
           </div>
 
-          <p className="text-zinc-300">{selectedSessionDetails}</p>
+          <p className="text-zinc-300">{selectedDateLabel}</p>
 
           {chosenDate && (
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -4618,11 +4659,12 @@ export default function DungeonCalendarApp() {
           <h2 className="mb-4 text-2xl font-bold">Quick Actions</h2>
           <div className="space-y-3">
             {actions.map((item) => {
-              const Icon = item.icon;
+              const quickItem = item.target === "results" && !isDungeonMaster ? { ...item, label: "Players", icon: Users, description: "View campaign players and your token." } : item;
+              const Icon = quickItem.icon;
               return (
-                <button key={item.label} onClick={() => setPage(item.target)} className="flex w-full items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4 text-left hover:bg-red-950/40">
+                <button key={quickItem.label} onClick={() => setPage(item.target)} className="flex w-full items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4 text-left hover:bg-red-950/40">
                   <Icon className="h-5 w-5 text-red-400" />
-                  <span><b>{item.label}</b><span className="block text-sm text-zinc-400">{item.description}</span></span>
+                  <span><b>{quickItem.label}</b><span className="block text-sm text-zinc-400">{quickItem.description}</span></span>
                 </button>
               );
             })}

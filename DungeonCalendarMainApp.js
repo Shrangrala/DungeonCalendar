@@ -157,27 +157,13 @@ function normalizeDateResponseMap(map = {}) {
 }
 
 function normalizeCampaignPlayers(players = []) {
-  const byKey = new Map();
-  safePlayerList(players).forEach((player) => {
-    const record = safePlayerRecord(player);
-    const uidKey = record.uid || record.firebaseUid || record.userId || record.id || "";
-    const emailKey = normalizeEmail(record.email || "");
-    const phoneKey = normalizePhoneNumber(record.phone || record.phoneNumber || record.phoneNormalized || "");
-    const key = uidKey || emailKey || phoneKey;
-    if (!key) return;
-    const existing = byKey.get(key) || {};
-    byKey.set(key, {
-      ...existing,
-      ...record,
-      id: uidKey || existing.id || record.id,
-      uid: record.uid || record.firebaseUid || record.userId || existing.uid,
-      campaignCharacterNames: { ...(existing.campaignCharacterNames || {}), ...(record.campaignCharacterNames || {}) },
-      campaignTokenImages: { ...(existing.campaignTokenImages || {}), ...(record.campaignTokenImages || {}) }
-    });
-    if (emailKey && emailKey !== key) byKey.set(emailKey, byKey.get(key));
-    if (phoneKey && phoneKey !== key) byKey.set(phoneKey, byKey.get(key));
+  const seen = new Set();
+  return safePlayerList(players).filter((player) => {
+    const key = playerIdentityKey(player) || player.id || player.uid;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
-  return Array.from(new Set(byKey.values()));
 }
 
 function campaignSnapshotPayload(snapshotDoc) {
@@ -259,7 +245,7 @@ async function saveCampaignToFirestore(campaign) {
 
 function campaignPlayerRecord(player = {}, campaignId = "") {
   player = safePlayerRecord(player);
-  const id = player.uid || player.firebaseUid || player.userId || player.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+  const id = player.id || player.uid || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
   const email = normalizeEmail(player.email || "");
   return {
     id,
@@ -280,7 +266,9 @@ function campaignPlayerRecord(player = {}, campaignId = "") {
 
 function playerIdentityKey(player = {}) {
   player = safePlayerRecord(player);
-  return normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || player.id || player.uid || "";
+  const uid = String(player.uid || player.firebaseUid || player.userId || player.id || "").trim();
+  if (uid && !uid.includes("@") && !uid.startsWith("player_") && !uid.startsWith("invite_")) return uid;
+  return normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || uid || "";
 }
 
 function upsertCampaignPlayer(campaign = {}, player = {}) {
@@ -289,15 +277,7 @@ function upsertCampaignPlayer(campaign = {}, player = {}) {
   const record = campaignPlayerRecord(player, campaignId);
   const recordKey = playerIdentityKey(record);
   const existingPlayers = safePlayerList(campaign.invitedPlayers);
-  const recordEmail = normalizeEmail(record.email || "");
-  const recordPhone = normalizePhoneNumber(record.phone || record.phoneNumber || record.phoneNormalized || "");
-  const recordIds = new Set([record.id, record.uid, record.firebaseUid, record.userId].filter(Boolean));
-  const nextInvitedPlayers = existingPlayers.filter((item) => {
-    const itemEmail = normalizeEmail(item.email || "");
-    const itemPhone = normalizePhoneNumber(item.phone || item.phoneNumber || item.phoneNormalized || "");
-    const itemIds = [item.id, item.uid, item.firebaseUid, item.userId].filter(Boolean);
-    return playerIdentityKey(item) !== recordKey && !itemIds.some((id) => recordIds.has(id)) && (!recordEmail || itemEmail !== recordEmail) && (!recordPhone || !phoneMatches(itemPhone, recordPhone));
-  });
+  const nextInvitedPlayers = existingPlayers.filter((item) => playerIdentityKey(item) !== recordKey && item.id !== record.id);
   const existingTokenImage = campaign.playerTokenImages?.[record.id] || record.campaignTokenImages?.[campaignId] || "";
   const nextRecord = existingTokenImage
     ? {
@@ -1271,16 +1251,12 @@ export default function DungeonCalendarApp() {
     });
 
     return safePlayerList(relevantPlayers).filter((player, index, list) => {
-      const key = normalizeEmail(player.email || "") || player.name?.toLowerCase() || player.id;
-      const matchingPlayers = list.filter((candidate) =>
-        (normalizeEmail(candidate.email || "") || candidate.name?.toLowerCase() || candidate.id) === key
-      );
+      const key = playerIdentityKey(player);
+      const matchingPlayers = list.filter((candidate) => playerIdentityKey(candidate) === key);
       const matchingDungeonMaster = matchingPlayers.find((candidate) => activeCampaign?.dungeonMasterIds?.includes(candidate.id));
 
       if (matchingDungeonMaster) return player.id === matchingDungeonMaster.id;
-      return index === list.findIndex((candidate) =>
-        (normalizeEmail(candidate.email || "") || candidate.name?.toLowerCase() || candidate.id) === key
-      );
+      return index === list.findIndex((candidate) => playerIdentityKey(candidate) === key);
     });
   }, [players, activeCampaign]);
 
@@ -2674,7 +2650,7 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    if (emailChanged && nextEmail) {
+    if (emailChanged) {
       const emailUsed = players.some((player) => player.id !== currentUser.id && normalizeEmail(player.email) === nextEmail);
       if (emailUsed) {
         setAccountMessage("That email is already used by another account.");
@@ -2721,8 +2697,14 @@ export default function DungeonCalendarApp() {
         updatedAt: new Date().toISOString()
       };
 
-      saveCachedUserProfile(currentUser.id, profileUpdatePayload);
-      setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedProfile : player));
+      await saveUserProfileQuick(currentUser.id, profileUpdatePayload);
+      setPlayers((current) => current.map((player) => player.id === currentUser.id ? { ...player, ...updatedProfile, ...profileUpdatePayload } : player));
+      setCampaigns((current) => current.map((campaign) => {
+        const updatedInvitedPlayers = safePlayerList(campaign.invitedPlayers).map((player) => playerIdentityKey(player) === playerIdentityKey(updatedProfile) ? { ...player, ...profileUpdatePayload, id: currentUser.id, uid: currentUser.id, invitePending: false } : player);
+        const nextCampaign = normalizeCampaignForSync({ ...campaign, invitedPlayers: updatedInvitedPlayers });
+        if (campaign.id && updatedInvitedPlayers !== campaign.invitedPlayers) saveCampaignToFirestore(nextCampaign);
+        return nextCampaign;
+      }));
       setAccountUsername(updatedProfile.username || "");
       setAccountName(updatedProfile.name || "");
       setAccountPhone(updatedProfile.phone || "");
@@ -2730,11 +2712,6 @@ export default function DungeonCalendarApp() {
       setEditingField("");
       setAccountPassword("");
       setAccountMessage("Account settings saved.");
-
-      saveUserProfileQuick(currentUser.id, profileUpdatePayload).catch((error) => {
-        console.error("Background profile save failed:", error);
-        setAccountMessage(profileSaveErrorMessage(error));
-      });
     } catch (error) {
       const code = error?.code || "";
       if (code === "auth/requires-recent-login") {
@@ -3362,11 +3339,10 @@ export default function DungeonCalendarApp() {
       {currentUser && (
         <nav className="mt-5 grid grid-cols-2 gap-2 lg:mt-7 lg:block lg:space-y-2">
           {navItems.filter((item) => isDungeonMaster || (item.id !== "settings" && item.id !== "players")).map((item) => {
-            const displayItem = item.id === "results" && !isDungeonMaster ? { ...item, label: "Players", icon: Users } : item;
-            const Icon = displayItem.icon;
+            const Icon = item.icon;
             return (
               <button key={item.id} onClick={() => setPage(item.id)} className={classNames("flex w-full items-center justify-center gap-2 rounded-xl px-3 py-3 text-center text-sm transition lg:justify-start lg:gap-3 lg:px-4 lg:text-left lg:text-base", page === item.id ? "bg-red-900/60 text-white" : "text-zinc-300 hover:bg-zinc-900/80 hover:text-white")}>
-                <Icon className="h-5 w-5" /> {displayItem.label}
+                <Icon className="h-5 w-5" /> {item.label}
               </button>
             );
           })}
@@ -3725,7 +3701,7 @@ export default function DungeonCalendarApp() {
                       </button>
 
                       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-                        {isDungeonMaster && hasPlanFeature("tokenUploads") && (
+                        {hasPlanFeature("tokenUploads") && (isDungeonMaster || player.id === currentUser?.id || player.id === currentUserId) && (
                           <div className="flex flex-col gap-2">
                             <label className="cursor-pointer rounded-lg border border-amber-700 px-3 py-2 text-center text-xs font-bold text-amber-200 hover:bg-amber-950/40">
                               Upload Token
@@ -3783,7 +3759,7 @@ export default function DungeonCalendarApp() {
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
           <CardContent className="p-6">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-2xl font-bold">{isDungeonMaster ? "Availability Results" : "Players"}</h2>
+              <h2 className="text-2xl font-bold">Availability Results</h2>
               {isDungeonMaster && plan !== "free" && (
                 <Button onClick={chooseBestDateAutomatically} className="rounded-xl bg-emerald-700 hover:bg-emerald-600">
                   Auto Pick Best Date
@@ -3806,17 +3782,6 @@ export default function DungeonCalendarApp() {
                 </div>
                 {chosenDate && <Button onClick={clearFinalDate} variant="ghost" className="mt-3 rounded-xl border border-zinc-700 hover:bg-zinc-900 hover:text-white">Remove Final Date</Button>}
                 {generatedSessionDates.length > 0 && <p className="mt-3 text-sm text-zinc-400">Generated session records saved outside availability/results: {generatedSessionDates.map((key) => new Date(key + "T00:00:00").toLocaleDateString()).join(", ")}</p>}
-              </div>
-            )}
-            {!isDungeonMaster && activeCampaign && (
-              <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
-                <h3 className="mb-2 font-bold text-amber-200">Your Player Token</h3>
-                <p className="mb-3 text-sm text-zinc-400">Guildmaster players can upload their own token image for this campaign. It syncs to the same campaign player record used by the mobile app.</p>
-                {hasPlanFeature("tokenUploads") ? (
-                  <input type="file" accept="image/*" onChange={(event) => updatePlayerToken(currentUser.id, event.target.files?.[0], activeCampaign.id)} className="w-full rounded-xl border border-zinc-700 bg-black/50 px-3 py-2" />
-                ) : (
-                  <Button onClick={() => setPage("billing")} className="rounded-xl bg-red-700 hover:bg-red-600">Upgrade to Guildmaster</Button>
-                )}
               </div>
             )}
             <div className="space-y-3">
@@ -4231,7 +4196,20 @@ export default function DungeonCalendarApp() {
                       <label className="text-xs uppercase tracking-wider text-zinc-500">Character Name</label>
                       <input
                         value={currentUser?.campaignCharacterNames?.[campaign.id] || ""}
-                        onChange={(event) => saveCurrentUserCharacterName(campaign.id, event.target.value)}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          const nextCharacterNames = { ...(currentUser?.campaignCharacterNames || {}), [campaign.id]: value };
+                          const nextUser = { ...currentUser, campaignCharacterNames: nextCharacterNames };
+                          setPlayers((current) => current.map((player) => player.id === currentUser.id ? { ...player, campaignCharacterNames: nextCharacterNames } : player));
+                          saveUserProfileQuick(currentUser.id, { ...nextUser, campaignCharacterNames: nextCharacterNames }).catch((error) => setAccountMessage(profileSaveErrorMessage(error)));
+                          setCampaigns((current) => current.map((item) => {
+                            if (item.id !== campaign.id) return item;
+                            const currentRecord = campaignPlayerRecord({ ...nextUser, id: currentUser.id, uid: currentUser.id, invitePending: false }, campaign.id);
+                            const nextCampaign = upsertCampaignPlayer(item, { ...currentRecord, campaignCharacterNames: nextCharacterNames });
+                            saveCampaignToFirestore(nextCampaign);
+                            return nextCampaign;
+                          }));
+                        }}
                         placeholder="Enter character name"
                         className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
                       />
@@ -4268,30 +4246,6 @@ export default function DungeonCalendarApp() {
         </Card>
       </div>
     );
-  }
-
-
-  async function saveCurrentUserCharacterName(campaignId, value) {
-    if (!currentUser?.id || !campaignId) return;
-    const cleanValue = String(value || "");
-    const nextCharacterNames = {
-      ...(currentUser.campaignCharacterNames || {}),
-      [campaignId]: cleanValue
-    };
-    const profileUpdatePayload = {
-      campaignCharacterNames: nextCharacterNames,
-      updatedAt: new Date().toISOString()
-    };
-    const updatedUser = { ...currentUser, campaignCharacterNames: nextCharacterNames };
-    saveCachedUserProfile(currentUser.id, profileUpdatePayload);
-    setPlayers((current) => current.map((player) => player.id === currentUser.id ? { ...player, campaignCharacterNames: nextCharacterNames } : player));
-    setCampaigns((current) => current.map((campaign) => {
-      if (campaign.id !== campaignId) return campaign;
-      const nextCampaign = normalizeCampaignForSync(upsertCampaignPlayer(campaign, updatedUser));
-      saveCampaignToFirestore(nextCampaign);
-      return nextCampaign;
-    }));
-    saveUserProfileQuick(currentUser.id, profileUpdatePayload).catch((error) => console.warn("Could not save character name:", error));
   }
 
   function SettingsPage() {
@@ -4384,7 +4338,7 @@ export default function DungeonCalendarApp() {
                       </button>
 
                       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-                        {isDungeonMaster && hasPlanFeature("tokenUploads") && (
+                        {hasPlanFeature("tokenUploads") && (isDungeonMaster || player.id === currentUser?.id || player.id === currentUserId) && (
                           <div className="flex flex-col gap-2">
                             <label className="cursor-pointer rounded-lg border border-amber-700 px-3 py-2 text-center text-xs font-bold text-amber-200 hover:bg-amber-950/40">
                               Upload Token
@@ -4659,12 +4613,11 @@ export default function DungeonCalendarApp() {
           <h2 className="mb-4 text-2xl font-bold">Quick Actions</h2>
           <div className="space-y-3">
             {actions.map((item) => {
-              const quickItem = item.target === "results" && !isDungeonMaster ? { ...item, label: "Players", icon: Users, description: "View campaign players and your token." } : item;
-              const Icon = quickItem.icon;
+              const Icon = item.icon;
               return (
-                <button key={quickItem.label} onClick={() => setPage(item.target)} className="flex w-full items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4 text-left hover:bg-red-950/40">
+                <button key={item.label} onClick={() => setPage(item.target)} className="flex w-full items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4 text-left hover:bg-red-950/40">
                   <Icon className="h-5 w-5 text-red-400" />
-                  <span><b>{quickItem.label}</b><span className="block text-sm text-zinc-400">{quickItem.description}</span></span>
+                  <span><b>{item.label}</b><span className="block text-sm text-zinc-400">{item.description}</span></span>
                 </button>
               );
             })}

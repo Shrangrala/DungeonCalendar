@@ -3,6 +3,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/policy",
+      "destination": "/policy/index.html"
+    },
+    {
       "source": "/privacy",
       "destination": "/privacy/index.html"
     },
@@ -16,6 +20,15 @@
     }
   ],
   "headers": [
+    {
+      "source": "/policy",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/html; charset=utf-8"
+        }
+      ]
+    },
     {
       "source": "/privacy",
       "headers": [

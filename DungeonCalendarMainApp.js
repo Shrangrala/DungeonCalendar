@@ -156,10 +156,49 @@ function normalizeDateResponseMap(map = {}) {
   );
 }
 
-function normalizeCampaignPlayers(players = []) {
+function campaignLocalPlayerRecord(player = {}, campaignId = "") {
+  player = safePlayerRecord(player);
+  const uid = player.uid || player.userId || player.id || "";
+  const email = normalizeEmail(player.email || "");
+  const phone = player.phone || player.phoneNumber || "";
+  const phoneNormalized = normalizePhoneNumber(phone || player.phoneNormalized || "");
+  const characterName =
+    player.characterName ||
+    player.campaignPlayerName ||
+    player.playerName ||
+    (campaignId ? player.campaignCharacterNames?.[campaignId] : "") ||
+    "";
+  const tokenImage =
+    player.tokenImage ||
+    player.tokenUrl ||
+    (campaignId ? player.campaignTokenImages?.[campaignId] : "") ||
+    "";
+
+  return {
+    id: uid || email || phoneNormalized || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+    uid: uid || undefined,
+    userId: uid || undefined,
+    name: player.name || player.username || characterName || email || "Player",
+    username: player.username || String(player.name || characterName || email || "player").toLowerCase().replace(/\s+/g, ""),
+    email,
+    phone,
+    phoneNormalized,
+    role: player.role || "Player",
+    characterName,
+    campaignPlayerName: characterName,
+    playerName: characterName,
+    tokenImage,
+    tokenUrl: tokenImage,
+    color: player.color || playerColors[0],
+    lockedColorCampaignIds: Array.isArray(player.lockedColorCampaignIds) && campaignId && player.lockedColorCampaignIds.includes(campaignId) ? [campaignId] : [],
+    invitePending: player.invitePending !== false
+  };
+}
+
+function normalizeCampaignPlayers(players = [], campaignId = "") {
   const seen = new Set();
-  return safePlayerList(players).filter((player) => {
-    const key = playerIdentityKey(player) || player.id || player.uid;
+  return safePlayerList(players).map((player) => campaignLocalPlayerRecord(player, campaignId)).filter((player) => {
+    const key = playerIdentityKey(player);
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -202,7 +241,7 @@ function normalizeCampaignForSync(campaign = {}) {
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: Array.from(new Set(normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean))),
     invitedPhones: uniqueNormalizedPhones([...(campaign.invitedPhones || []), ...(campaign.phoneInvites || []), ...safePlayerList(campaign.invitedPlayers).map((player) => player.phone || player.phoneNumber || "")]),
-    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
+    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers, id),
     playerTokenImages: campaign.playerTokenImages || {},
     availability: normalizeDateResponseMap(campaign.availability),
     unavailable: normalizeDateResponseMap(campaign.unavailable),
@@ -244,23 +283,12 @@ async function saveCampaignToFirestore(campaign) {
 }
 
 function campaignPlayerRecord(player = {}, campaignId = "") {
-  player = safePlayerRecord(player);
-  const id = player.id || player.uid || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
-  const email = normalizeEmail(player.email || "");
+  const local = campaignLocalPlayerRecord(player, campaignId);
   return {
-    id,
-    name: player.name || player.username || email || "Player",
-    username: player.username || String(player.name || email || "player").toLowerCase().replace(/\s+/g, ""),
-    email,
-    phone: player.phone || player.phoneNumber || "",
-    phoneNormalized: normalizePhoneNumber(player.phone || player.phoneNumber || ""),
-    role: player.role || "Player",
-    campaignIds: Array.from(new Set([...(player.campaignIds || []), campaignId].filter(Boolean))),
-    campaignCharacterNames: player.campaignCharacterNames || (campaignId ? { [campaignId]: "" } : {}),
-    color: player.color || playerColors[0],
-    campaignTokenImages: player.campaignTokenImages || {},
-    lockedColorCampaignIds: player.lockedColorCampaignIds || [],
-    invitePending: player.invitePending !== false
+    ...local,
+    campaignIds: campaignId ? [campaignId] : [],
+    campaignCharacterNames: campaignId ? { [campaignId]: local.characterName || "" } : {},
+    campaignTokenImages: campaignId && local.tokenImage ? { [campaignId]: local.tokenImage } : {},
   };
 }
 
@@ -278,16 +306,8 @@ function upsertCampaignPlayer(campaign = {}, player = {}) {
   const recordKey = playerIdentityKey(record);
   const existingPlayers = safePlayerList(campaign.invitedPlayers);
   const nextInvitedPlayers = existingPlayers.filter((item) => playerIdentityKey(item) !== recordKey && item.id !== record.id);
-  const existingTokenImage = campaign.playerTokenImages?.[record.id] || record.campaignTokenImages?.[campaignId] || "";
-  const nextRecord = existingTokenImage
-    ? {
-        ...record,
-        campaignTokenImages: {
-          ...(record.campaignTokenImages || {}),
-          [campaignId]: existingTokenImage
-        }
-      }
-    : record;
+  const existingTokenImage = campaign.playerTokenImages?.[record.id] || record.tokenImage || "";
+  const nextRecord = existingTokenImage ? { ...record, tokenImage: existingTokenImage, tokenUrl: existingTokenImage } : record;
 
   return normalizeCampaignForSync({
     ...campaign,

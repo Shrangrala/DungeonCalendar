@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
-import { collection, deleteField, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
+import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -166,6 +166,29 @@ function normalizeCampaignPlayers(players = []) {
   });
 }
 
+function campaignSnapshotPayload(snapshotDoc) {
+  const data = snapshotDoc?.data ? snapshotDoc.data() : {};
+  // Firestore document ID is the only canonical campaign ID. A stale `id` field inside
+  // the document must never override it, because that recreates duplicate campaign docs.
+  return { ...data, id: snapshotDoc.id, firestoreId: snapshotDoc.id, storedCampaignId: data?.id || "" };
+}
+
+async function deleteDuplicateCampaignDocIfSafe(raw = {}, normalized = {}) {
+  const docId = String(raw.firestoreId || raw.id || "").trim();
+  const storedId = String(raw.storedCampaignId || "").trim();
+  if (!docId || !storedId || docId === storedId) return false;
+  // If a duplicate doc contains another campaign's internal id, keep the canonical doc
+  // and remove this stray document instead of writing back to the wrong ID.
+  if (String(normalized.id || "") !== docId) return false;
+  try {
+    await deleteDoc(doc(db, "campaigns", docId));
+    return true;
+  } catch (error) {
+    console.warn("Could not delete duplicate campaign document:", error);
+    return false;
+  }
+}
+
 function normalizeCampaignForSync(campaign = {}) {
   campaign = safeObject(campaign);
   const id = campaign.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
@@ -209,6 +232,8 @@ async function saveCampaignToFirestore(campaign) {
       dungeonMasterId: canonicalDungeonMasterId(campaign),
       dmIds: deleteField(),
       dmUIDs: deleteField(),
+      firestoreId: deleteField(),
+      storedCampaignId: deleteField(),
       updatedAt: new Date().toISOString()
     }, { merge: true });
     return true;
@@ -1337,14 +1362,18 @@ export default function DungeonCalendarApp() {
     const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
       loadingCampaignsFromFirestoreRef.current = true;
       snapshot.docs.forEach((item) => {
-        const raw = { id: item.id, ...item.data() };
+        const raw = campaignSnapshotPayload(item);
         const normalized = normalizeCampaignForSync(raw);
+        if (raw.storedCampaignId && raw.storedCampaignId !== raw.firestoreId) {
+          deleteDuplicateCampaignDocIfSafe(raw, normalized).catch((error) => console.warn("Could not remove duplicate campaign doc:", error));
+          return;
+        }
         const rawDmIds = Array.isArray(raw.dungeonMasterIds) ? raw.dungeonMasterIds.filter(Boolean) : [];
         if (rawDmIds.length !== normalized.dungeonMasterIds.length || rawDmIds[0] !== normalized.dungeonMasterIds[0]) {
           saveCampaignToFirestore(normalized).catch((error) => console.warn("Could not clean duplicate Dungeon Master IDs:", error));
         }
       });
-      const remoteCampaigns = snapshot.docs.map((item) => normalizeCampaignForSync({ id: item.id, ...item.data() }));
+      const remoteCampaigns = snapshot.docs.map((item) => normalizeCampaignForSync(campaignSnapshotPayload(item)));
       const userEmail = normalizeEmail(currentUser.email || "");
       const userPhones = userPhoneKeys(currentUser);
       const visibleRemoteCampaigns = remoteCampaigns.filter((campaign) =>

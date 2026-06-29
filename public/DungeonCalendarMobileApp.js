@@ -217,6 +217,29 @@ function normalizeList(values = []) {
   return Array.isArray(values) ? values.filter(Boolean) : [];
 }
 
+function campaignSnapshotPayload(snapshotDoc) {
+  const data = snapshotDoc?.data ? snapshotDoc.data() : {};
+  // Firestore document ID is the only canonical campaign ID. A stale `id` field inside
+  // the document must never override it, because that recreates duplicate campaign docs.
+  return { ...data, id: snapshotDoc.id, firestoreId: snapshotDoc.id, storedCampaignId: data?.id || "" };
+}
+
+async function deleteDuplicateCampaignDocIfSafe(raw = {}, normalized = {}) {
+  const docId = String(raw.firestoreId || raw.id || "").trim();
+  const storedId = String(raw.storedCampaignId || "").trim();
+  if (!docId || !storedId || docId === storedId) return false;
+  // If a duplicate doc contains another campaign's internal id, keep the canonical doc
+  // and remove this stray document instead of writing back to the wrong ID.
+  if (String(normalized.id || "") !== docId) return false;
+  try {
+    await deleteDoc(doc(db, "campaigns", docId));
+    return true;
+  } catch (error) {
+    console.warn("Could not delete duplicate campaign document:", error);
+    return false;
+  }
+}
+
 function normalizeCampaign(campaign = {}) {
   const id = campaign.id || makeId("campaign");
   const ownerId = canonicalDungeonMasterId(campaign);
@@ -607,6 +630,8 @@ async function saveCampaign(campaign) {
     dungeonMasterId: canonicalDungeonMasterId(normalized),
     dmIds: deleteField(),
     dmUIDs: deleteField(),
+    firestoreId: deleteField(),
+    storedCampaignId: deleteField(),
     updatedAt: new Date().toISOString(),
     updatedAtServer: serverTimestamp(),
   }, { merge: true });
@@ -2641,15 +2666,19 @@ export default function DungeonCalendarMobileApp() {
       }
       setSyncStatus("live");
       snapshot.docs.forEach((item) => {
-        const raw = { id: item.id, ...item.data() };
+        const raw = campaignSnapshotPayload(item);
         const normalized = normalizeCampaign(raw);
+        if (raw.storedCampaignId && raw.storedCampaignId !== raw.firestoreId) {
+          deleteDuplicateCampaignDocIfSafe(raw, normalized).catch((error) => console.warn("Could not remove duplicate campaign doc:", error));
+          return;
+        }
         const rawDmIds = Array.isArray(raw.dungeonMasterIds) ? raw.dungeonMasterIds.filter(Boolean) : [];
         if (rawDmIds.length !== normalized.dungeonMasterIds.length || rawDmIds[0] !== normalized.dungeonMasterIds[0]) {
           saveCampaign(normalized).catch((error) => console.warn("Could not clean duplicate Dungeon Master IDs:", error));
         }
       });
       const visibleCampaigns = snapshot.docs
-        .map((item) => normalizeCampaign({ id: item.id, ...item.data() }))
+        .map((item) => normalizeCampaign(campaignSnapshotPayload(item)))
         .filter((campaign) => visibleToUser(campaign, user))
         .sort((a, b) => String(a.name).localeCompare(String(b.name)));
       setCampaigns(visibleCampaigns);

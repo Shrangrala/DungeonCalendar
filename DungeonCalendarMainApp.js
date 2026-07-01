@@ -78,6 +78,7 @@ const navItems = [
   { id: "dashboard", label: "Dashboard", icon: Home },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "results", label: "Results", icon: BarChart3 },
+  { id: "players", label: "Players", icon: Users },
   { id: "settings", label: "Campaign Settings", icon: Settings }
 ];
 
@@ -156,49 +157,10 @@ function normalizeDateResponseMap(map = {}) {
   );
 }
 
-function campaignLocalPlayerRecord(player = {}, campaignId = "") {
-  player = safePlayerRecord(player);
-  const uid = player.uid || player.userId || player.id || "";
-  const email = normalizeEmail(player.email || "");
-  const phone = player.phone || player.phoneNumber || "";
-  const phoneNormalized = normalizePhoneNumber(phone || player.phoneNormalized || "");
-  const characterName =
-    player.characterName ||
-    player.campaignPlayerName ||
-    player.playerName ||
-    (campaignId ? player.campaignCharacterNames?.[campaignId] : "") ||
-    "";
-  const tokenImage =
-    player.tokenImage ||
-    player.tokenUrl ||
-    (campaignId ? player.campaignTokenImages?.[campaignId] : "") ||
-    "";
-
-  return {
-    id: uid || email || phoneNormalized || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
-    uid: uid || undefined,
-    userId: uid || undefined,
-    name: player.name || player.username || characterName || email || "Player",
-    username: player.username || String(player.name || characterName || email || "player").toLowerCase().replace(/\s+/g, ""),
-    email,
-    phone,
-    phoneNormalized,
-    role: player.role || "Player",
-    characterName,
-    campaignPlayerName: characterName,
-    playerName: characterName,
-    tokenImage,
-    tokenUrl: tokenImage,
-    color: player.color || playerColors[0],
-    lockedColorCampaignIds: Array.isArray(player.lockedColorCampaignIds) && campaignId && player.lockedColorCampaignIds.includes(campaignId) ? [campaignId] : [],
-    invitePending: player.invitePending !== false
-  };
-}
-
-function normalizeCampaignPlayers(players = [], campaignId = "") {
+function normalizeCampaignPlayers(players = []) {
   const seen = new Set();
-  return safePlayerList(players).map((player) => campaignLocalPlayerRecord(player, campaignId)).filter((player) => {
-    const key = playerIdentityKey(player);
+  return safePlayerList(players).filter((player) => {
+    const key = playerIdentityKey(player) || player.id || player.uid;
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -241,7 +203,7 @@ function normalizeCampaignForSync(campaign = {}) {
     memberIds: normalizeList(campaign.memberIds || campaign.playerIds || campaign.members),
     invitedEmails: Array.from(new Set(normalizeList(campaign.invitedEmails).map(normalizeEmail).filter(Boolean))),
     invitedPhones: uniqueNormalizedPhones([...(campaign.invitedPhones || []), ...(campaign.phoneInvites || []), ...safePlayerList(campaign.invitedPlayers).map((player) => player.phone || player.phoneNumber || "")]),
-    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers, id),
+    invitedPlayers: normalizeCampaignPlayers(campaign.invitedPlayers),
     playerTokenImages: campaign.playerTokenImages || {},
     availability: normalizeDateResponseMap(campaign.availability),
     unavailable: normalizeDateResponseMap(campaign.unavailable),
@@ -283,20 +245,29 @@ async function saveCampaignToFirestore(campaign) {
 }
 
 function campaignPlayerRecord(player = {}, campaignId = "") {
-  const local = campaignLocalPlayerRecord(player, campaignId);
+  player = safePlayerRecord(player);
+  const id = player.id || player.uid || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+  const email = normalizeEmail(player.email || "");
   return {
-    ...local,
-    campaignIds: campaignId ? [campaignId] : [],
-    campaignCharacterNames: campaignId ? { [campaignId]: local.characterName || "" } : {},
-    campaignTokenImages: campaignId && local.tokenImage ? { [campaignId]: local.tokenImage } : {},
+    id,
+    name: player.name || player.username || email || "Player",
+    username: player.username || String(player.name || email || "player").toLowerCase().replace(/\s+/g, ""),
+    email,
+    phone: player.phone || player.phoneNumber || "",
+    phoneNormalized: normalizePhoneNumber(player.phone || player.phoneNumber || ""),
+    role: player.role || "Player",
+    campaignIds: Array.from(new Set([...(player.campaignIds || []), campaignId].filter(Boolean))),
+    campaignCharacterNames: player.campaignCharacterNames || (campaignId ? { [campaignId]: "" } : {}),
+    color: player.color || playerColors[0],
+    campaignTokenImages: player.campaignTokenImages || {},
+    lockedColorCampaignIds: player.lockedColorCampaignIds || [],
+    invitePending: player.invitePending !== false
   };
 }
 
 function playerIdentityKey(player = {}) {
   player = safePlayerRecord(player);
-  const uid = String(player.uid || player.firebaseUid || player.userId || player.id || "").trim();
-  if (uid && !uid.includes("@") && !uid.startsWith("player_") && !uid.startsWith("invite_")) return uid;
-  return normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || uid || "";
+  return normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || player.id || player.uid || "";
 }
 
 function upsertCampaignPlayer(campaign = {}, player = {}) {
@@ -306,8 +277,16 @@ function upsertCampaignPlayer(campaign = {}, player = {}) {
   const recordKey = playerIdentityKey(record);
   const existingPlayers = safePlayerList(campaign.invitedPlayers);
   const nextInvitedPlayers = existingPlayers.filter((item) => playerIdentityKey(item) !== recordKey && item.id !== record.id);
-  const existingTokenImage = campaign.playerTokenImages?.[record.id] || record.tokenImage || "";
-  const nextRecord = existingTokenImage ? { ...record, tokenImage: existingTokenImage, tokenUrl: existingTokenImage } : record;
+  const existingTokenImage = campaign.playerTokenImages?.[record.id] || record.campaignTokenImages?.[campaignId] || "";
+  const nextRecord = existingTokenImage
+    ? {
+        ...record,
+        campaignTokenImages: {
+          ...(record.campaignTokenImages || {}),
+          [campaignId]: existingTokenImage
+        }
+      }
+    : record;
 
   return normalizeCampaignForSync({
     ...campaign,
@@ -963,9 +942,6 @@ export default function DungeonCalendarApp() {
   const today = new Date();
   const [page, setPage] = useState("dashboard");
 
-  useEffect(() => {
-    if (page === "players") setPage("settings");
-  }, [page]);
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const dates = useMemo(() => buildMonth(viewDate.getFullYear(), viewDate.getMonth()), [viewDate]);
   const [players, setPlayers] = useState(defaultPlayers);
@@ -1271,12 +1247,16 @@ export default function DungeonCalendarApp() {
     });
 
     return safePlayerList(relevantPlayers).filter((player, index, list) => {
-      const key = playerIdentityKey(player);
-      const matchingPlayers = list.filter((candidate) => playerIdentityKey(candidate) === key);
+      const key = normalizeEmail(player.email || "") || player.name?.toLowerCase() || player.id;
+      const matchingPlayers = list.filter((candidate) =>
+        (normalizeEmail(candidate.email || "") || candidate.name?.toLowerCase() || candidate.id) === key
+      );
       const matchingDungeonMaster = matchingPlayers.find((candidate) => activeCampaign?.dungeonMasterIds?.includes(candidate.id));
 
       if (matchingDungeonMaster) return player.id === matchingDungeonMaster.id;
-      return index === list.findIndex((candidate) => playerIdentityKey(candidate) === key);
+      return index === list.findIndex((candidate) =>
+        (normalizeEmail(candidate.email || "") || candidate.name?.toLowerCase() || candidate.id) === key
+      );
     });
   }, [players, activeCampaign]);
 
@@ -2670,7 +2650,7 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    if (emailChanged) {
+    if (nextEmail) {
       const emailUsed = players.some((player) => player.id !== currentUser.id && normalizeEmail(player.email) === nextEmail);
       if (emailUsed) {
         setAccountMessage("That email is already used by another account.");
@@ -2717,14 +2697,8 @@ export default function DungeonCalendarApp() {
         updatedAt: new Date().toISOString()
       };
 
-      await saveUserProfileQuick(currentUser.id, profileUpdatePayload);
-      setPlayers((current) => current.map((player) => player.id === currentUser.id ? { ...player, ...updatedProfile, ...profileUpdatePayload } : player));
-      setCampaigns((current) => current.map((campaign) => {
-        const updatedInvitedPlayers = safePlayerList(campaign.invitedPlayers).map((player) => playerIdentityKey(player) === playerIdentityKey(updatedProfile) ? { ...player, ...profileUpdatePayload, id: currentUser.id, uid: currentUser.id, invitePending: false } : player);
-        const nextCampaign = normalizeCampaignForSync({ ...campaign, invitedPlayers: updatedInvitedPlayers });
-        if (campaign.id && updatedInvitedPlayers !== campaign.invitedPlayers) saveCampaignToFirestore(nextCampaign);
-        return nextCampaign;
-      }));
+      saveCachedUserProfile(currentUser.id, profileUpdatePayload);
+      setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedProfile : player));
       setAccountUsername(updatedProfile.username || "");
       setAccountName(updatedProfile.name || "");
       setAccountPhone(updatedProfile.phone || "");
@@ -2732,6 +2706,11 @@ export default function DungeonCalendarApp() {
       setEditingField("");
       setAccountPassword("");
       setAccountMessage("Account settings saved.");
+
+      saveUserProfileQuick(currentUser.id, profileUpdatePayload).catch((error) => {
+        console.error("Background profile save failed:", error);
+        setAccountMessage(profileSaveErrorMessage(error));
+      });
     } catch (error) {
       const code = error?.code || "";
       if (code === "auth/requires-recent-login") {
@@ -3358,7 +3337,7 @@ export default function DungeonCalendarApp() {
 
       {currentUser && (
         <nav className="mt-5 grid grid-cols-2 gap-2 lg:mt-7 lg:block lg:space-y-2">
-          {navItems.filter((item) => isDungeonMaster || (item.id !== "settings" && item.id !== "players")).map((item) => {
+          {navItems.filter((item) => isDungeonMaster ? item.id !== "players" : item.id !== "settings" && item.id !== "results").map((item) => {
             const Icon = item.icon;
             return (
               <button key={item.id} onClick={() => setPage(item.id)} className={classNames("flex w-full items-center justify-center gap-2 rounded-xl px-3 py-3 text-center text-sm transition lg:justify-start lg:gap-3 lg:px-4 lg:text-left lg:text-base", page === item.id ? "bg-red-900/60 text-white" : "text-zinc-300 hover:bg-zinc-900/80 hover:text-white")}>
@@ -3721,7 +3700,7 @@ export default function DungeonCalendarApp() {
                       </button>
 
                       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-                        {hasPlanFeature("tokenUploads") && (isDungeonMaster || player.id === currentUser?.id || player.id === currentUserId) && (
+                        {isDungeonMaster && hasPlanFeature("tokenUploads") && (
                           <div className="flex flex-col gap-2">
                             <label className="cursor-pointer rounded-lg border border-amber-700 px-3 py-2 text-center text-xs font-bold text-amber-200 hover:bg-amber-950/40">
                               Upload Token
@@ -4218,17 +4197,13 @@ export default function DungeonCalendarApp() {
                         value={currentUser?.campaignCharacterNames?.[campaign.id] || ""}
                         onChange={(event) => {
                           const value = event.target.value;
-                          const nextCharacterNames = { ...(currentUser?.campaignCharacterNames || {}), [campaign.id]: value };
-                          const nextUser = { ...currentUser, campaignCharacterNames: nextCharacterNames };
-                          setPlayers((current) => current.map((player) => player.id === currentUser.id ? { ...player, campaignCharacterNames: nextCharacterNames } : player));
-                          saveUserProfileQuick(currentUser.id, { ...nextUser, campaignCharacterNames: nextCharacterNames }).catch((error) => setAccountMessage(profileSaveErrorMessage(error)));
-                          setCampaigns((current) => current.map((item) => {
-                            if (item.id !== campaign.id) return item;
-                            const currentRecord = campaignPlayerRecord({ ...nextUser, id: currentUser.id, uid: currentUser.id, invitePending: false }, campaign.id);
-                            const nextCampaign = upsertCampaignPlayer(item, { ...currentRecord, campaignCharacterNames: nextCharacterNames });
-                            saveCampaignToFirestore(nextCampaign);
-                            return nextCampaign;
-                          }));
+                          setPlayers((current) => current.map((player) => player.id === currentUser.id ? {
+                            ...player,
+                            campaignCharacterNames: {
+                              ...(player.campaignCharacterNames || {}),
+                              [campaign.id]: value
+                            }
+                          } : player));
                         }}
                         placeholder="Enter character name"
                         className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
@@ -4358,7 +4333,7 @@ export default function DungeonCalendarApp() {
                       </button>
 
                       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-                        {hasPlanFeature("tokenUploads") && (isDungeonMaster || player.id === currentUser?.id || player.id === currentUserId) && (
+                        {isDungeonMaster && hasPlanFeature("tokenUploads") && (
                           <div className="flex flex-col gap-2">
                             <label className="cursor-pointer rounded-lg border border-amber-700 px-3 py-2 text-center text-xs font-bold text-amber-200 hover:bg-amber-950/40">
                               Upload Token
@@ -4978,6 +4953,7 @@ export default function DungeonCalendarApp() {
     if (page === "dashboard") return DashboardPage();
     if (page === "calendar") return CalendarGrid();
     if (page === "results") return ResultsPage();
+    if (page === "players") return PlayersPage();
     if (page === "settings") return SettingsPage();
     if (page === "account") return AccountSettingsPage();
     if (page === "billing") return BillingPage();

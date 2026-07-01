@@ -532,10 +532,14 @@ function AppBackground() {
   );
 }
 
-function PlayerToken({ player, campaignId = "", size = "sm", className = "" }) {
+function PlayerToken({ player, campaignId = "", campaign = null, size = "sm", className = "" }) {
   const sizeClass = size === "xl" ? "h-16 w-16" : size === "lg" ? "h-12 w-12" : size === "md" ? "h-9 w-9" : "h-6 w-6";
+  const uid = uidFromAny(player?.uid || player?.userId || player?.id || "") || player?.id || "";
+  const email = normalizeEmail(player?.email || "");
   const campaignTokenImage = campaignId ? player?.campaignTokenImages?.[campaignId] : "";
-  const tokenImage = campaignTokenImage || player?.tokenImage;
+  const campaignMapToken = uid ? campaign?.playerTokenImages?.[uid] : "";
+  const emailMapToken = email ? campaign?.playerTokenImages?.[email] : "";
+  const tokenImage = campaignTokenImage || campaignMapToken || emailMapToken || player?.tokenImage || player?.tokenUrl || player?.avatar || player?.photoURL || "";
 
   if (tokenImage) {
     return (
@@ -4617,13 +4621,16 @@ export default function DungeonCalendarApp() {
       return fullName.trim().split(/\s+/)[0];
     }
 
+    const playerLookup = new Map(safePlayerList(activeCampaignPlayers).map((player) => [uidFromAny(player.uid || player.userId || player.id || "") || player.id, player]));
     const availablePlayers = chosenDate
-      ? (availability[chosenDate] ?? []).map((id) => safePlayerList(players).find((p) => p.id === id)).filter(Boolean)
+      ? (availability[chosenDate] ?? []).map((id) => playerLookup.get(uidFromAny(id) || id)).filter(Boolean)
       : [];
 
     const unavailablePlayers = chosenDate
-      ? (unavailable[chosenDate] ?? []).map((id) => safePlayerList(players).find((p) => p.id === id)).filter(Boolean)
+      ? (unavailable[chosenDate] ?? []).map((id) => playerLookup.get(uidFromAny(id) || id)).filter(Boolean)
       : [];
+    const sessionTimeLabel = activeCampaign?.sessionTime || "Time TBD";
+    const sessionLocationLabel = activeCampaign?.defaultLocation || activeCampaign?.location || "Location TBD";
 
     return (
       <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
@@ -4659,6 +4666,9 @@ export default function DungeonCalendarApp() {
           </div>
 
           <p className="text-zinc-300">{selectedDateLabel}</p>
+          {chosenDate && (
+            <p className="mt-1 text-sm text-amber-200">{sessionTimeLabel} · {sessionLocationLabel}</p>
+          )}
 
           {chosenDate && (
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -4688,7 +4698,7 @@ export default function DungeonCalendarApp() {
                     key={player.id}
                     className="flex w-24 flex-col items-center gap-2 rounded-2xl border border-zinc-700 bg-black/50 px-3 py-4 text-center text-sm font-semibold"
                   >
-                    <PlayerToken player={player} campaignId={activeCampaign?.id} size="xl" />
+                    <PlayerToken player={player} campaignId={activeCampaign?.id} campaign={activeCampaign} size="xl" />
                     <div className="flex max-w-full items-center justify-center gap-1.5">
                       <span className={classNames("h-2.5 w-2.5 shrink-0 rounded-full", activeCampaign?.dungeonMasterIds?.includes(player.id) ? "bg-red-600" : player.color)} />
                       <span className="truncate">{firstName(player)}</span>
@@ -4709,7 +4719,7 @@ export default function DungeonCalendarApp() {
                     key={player.id}
                     className="flex w-24 flex-col items-center gap-2 rounded-2xl border border-red-900/70 bg-red-950/50 px-3 py-4 text-center text-sm font-semibold text-red-100"
                   >
-                    <PlayerToken player={player} campaignId={activeCampaign?.id} size="xl" />
+                    <PlayerToken player={player} campaignId={activeCampaign?.id} campaign={activeCampaign} size="xl" />
                     <div className="flex max-w-full items-center justify-center gap-1.5">
                       <span className={classNames("h-2.5 w-2.5 shrink-0 rounded-full", activeCampaign?.dungeonMasterIds?.includes(player.id) ? "bg-red-600" : player.color)} />
                       <span className="truncate">{firstName(player)}</span>

@@ -1228,6 +1228,41 @@ export default function DungeonCalendarApp() {
     }
   }
 
+  async function updateCampaignImage(file, campaignId = activeCampaign?.id) {
+    if (!file || !campaignId) return;
+
+    if (!isDungeonMaster) {
+      setBillingMessage("Only the Dungeon Master can update the campaign image.");
+      return;
+    }
+
+    if (!hasPlanFeature("tokenUploads")) {
+      setBillingMessage("Custom campaign images are included with the Guildmaster plan.");
+      setPage("billing");
+      return;
+    }
+
+    try {
+      const safeFileName = `campaign-${Date.now()}-${String(file.name || "campaign-image").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const imageRef = storageRef(storage, `token-images/${campaignId}/${safeFileName}`);
+      await uploadBytes(imageRef, file, { contentType: file.type || "image/png" });
+      const imageUrl = await getDownloadURL(imageRef);
+
+      updateActiveCampaign(() => ({
+        campaignTokenUrl: imageUrl,
+        campaignImageUrl: imageUrl,
+        imageUrl,
+        coverImageUrl: imageUrl,
+        image: imageUrl,
+        tokenUrl: imageUrl,
+        tokenImage: imageUrl
+      }));
+    } catch (error) {
+      console.error("Campaign image upload failed:", error);
+      setBillingMessage(error?.message || "Campaign image upload failed. Check Firebase Storage rules and try again.");
+    }
+  }
+
   function removePlayerToken(playerId, campaignId = activeCampaign?.id) {
     if (!campaignId) return;
 
@@ -1288,6 +1323,7 @@ export default function DungeonCalendarApp() {
   const generatedSessionDates = activeCampaign?.generatedSessionDates ?? [];
   const sessionTime = activeCampaign?.sessionTime ?? "18:00";
   const sessionDuration = activeCampaign?.sessionDuration ?? 4;
+  const defaultLocation = activeCampaign?.defaultLocation ?? activeCampaign?.location ?? "";
   const reminderHours = activeCampaign?.reminderHours ?? 24;
   const isDungeonMaster = !!activeCampaign && isUserDungeonMasterForCampaign(activeCampaign, currentUser, activePlayer, players);
   const dungeonMasterIds = useMemo(() => {
@@ -4342,9 +4378,44 @@ export default function DungeonCalendarApp() {
               </div>
             )}
 
+            {isDungeonMaster && (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h3 className="font-bold">Campaign Image</h3>
+                    <p className="text-sm text-zinc-400">Uses the same Firebase Storage path and campaign image fields as the mobile app.</p>
+                  </div>
+                  {hasPlanFeature("tokenUploads") ? (
+                    <label className="cursor-pointer rounded-xl border border-amber-700 bg-amber-950/30 px-4 py-3 text-center text-sm font-bold text-amber-100 hover:bg-amber-900/40">
+                      Upload Campaign Image
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) updateCampaignImage(file, activeCampaign?.id);
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                  ) : (
+                    <Button onClick={() => setPage("billing")} className="rounded-xl bg-amber-700 hover:bg-amber-600">Upgrade for Image Uploads</Button>
+                  )}
+                </div>
+                {(activeCampaign?.campaignImageUrl || activeCampaign?.campaignTokenUrl || activeCampaign?.imageUrl || activeCampaign?.coverImageUrl || activeCampaign?.tokenUrl || activeCampaign?.tokenImage || activeCampaign?.image) && (
+                  <img
+                    src={activeCampaign?.campaignImageUrl || activeCampaign?.campaignTokenUrl || activeCampaign?.imageUrl || activeCampaign?.coverImageUrl || activeCampaign?.tokenUrl || activeCampaign?.tokenImage || activeCampaign?.image}
+                    alt={`${campaignName || "Campaign"} image`}
+                    className="mt-4 h-36 w-full rounded-xl border border-zinc-800 object-cover"
+                  />
+                )}
+              </div>
+            )}
+
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
               <h3 className="font-bold">Session Defaults</h3>
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <div className="mt-3 grid gap-3 md:grid-cols-4">
                 <label className="block">
                   <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Start Time</span>
                   <input type="time" value={sessionTime} onChange={(event) => updateActiveCampaign(() => ({ sessionTime: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
@@ -4352,6 +4423,10 @@ export default function DungeonCalendarApp() {
                 <label className="block">
                   <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Duration</span>
                   <input type="number" min="1" max="12" value={sessionDuration} onChange={(event) => updateActiveCampaign(() => ({ sessionDuration: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Location</span>
+                  <input type="text" value={defaultLocation} onChange={(event) => updateActiveCampaign(() => ({ defaultLocation: event.target.value, location: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} placeholder="Session location" className="w-full rounded-xl border border-zinc-700 bg-black/60 px-3 py-2" />
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Reminder Time</span>

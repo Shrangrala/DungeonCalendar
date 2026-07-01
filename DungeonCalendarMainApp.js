@@ -1188,16 +1188,38 @@ export default function DungeonCalendarApp() {
       await uploadBytes(tokenImageRef, file, { contentType: file.type || "image/png" });
       const tokenUrl = await getDownloadURL(tokenImageRef);
 
+      let updatedProfileForToken = null;
       setPlayers((current) => current.map((player) => {
         if (player.id !== playerId) return player;
-        return {
+        const updatedPlayer = {
           ...player,
           campaignTokenImages: {
             ...(player.campaignTokenImages || {}),
             [campaignId]: tokenUrl
           }
         };
+        if (currentUser?.id === playerId) updatedProfileForToken = updatedPlayer;
+        return updatedPlayer;
       }));
+
+      if (updatedProfileForToken && auth.currentUser?.uid === playerId) {
+        saveUserProfileQuick(playerId, {
+          role: updatedProfileForToken.role || "Player",
+          username: updatedProfileForToken.username || "",
+          name: updatedProfileForToken.name || "",
+          email: normalizeEmail(updatedProfileForToken.email || ""),
+          phone: updatedProfileForToken.phone || "",
+          phoneNormalized: normalizePhoneNumber(updatedProfileForToken.phone || ""),
+          plan: normalizePlan(plan),
+          billingInterval: normalizeBillingInterval(billingInterval),
+          campaignIds: updatedProfileForToken.campaignIds || [],
+          campaignCharacterNames: updatedProfileForToken.campaignCharacterNames || {},
+          lockedColorCampaignIds: updatedProfileForToken.lockedColorCampaignIds || [],
+          color: updatedProfileForToken.color || "",
+          campaignTokenImages: updatedProfileForToken.campaignTokenImages || {},
+          updatedAt: new Date().toISOString()
+        }).catch((error) => console.warn("Could not save player token to profile:", error));
+      }
 
       setCampaigns((current) => current.map((campaign) => {
         if (campaign.id !== campaignId) return campaign;
@@ -2436,6 +2458,70 @@ export default function DungeonCalendarApp() {
         : { ...player, campaignIds: [...existingCampaignIds, campaignId] };
     }));
     setActiveCampaignId(campaignId);
+  }
+
+  function saveCurrentUserCampaignCharacterName(campaignId, rawValue) {
+    if (!currentUser?.id || !campaignId) return;
+    const value = String(rawValue || "").trim();
+    const nextCharacterNames = {
+      ...(currentUser.campaignCharacterNames || {}),
+      [campaignId]: value
+    };
+    const updatedUser = {
+      ...currentUser,
+      campaignIds: Array.from(new Set([...(currentUser.campaignIds || []), campaignId])),
+      campaignCharacterNames: nextCharacterNames
+    };
+
+    setPlayers((current) => current.map((player) => player.id === currentUser.id ? updatedUser : player));
+
+    const profilePayload = {
+      role: updatedUser.role || "Player",
+      username: updatedUser.username || "",
+      name: updatedUser.name || "",
+      email: normalizeEmail(updatedUser.email || ""),
+      phone: updatedUser.phone || "",
+      phoneNormalized: normalizePhoneNumber(updatedUser.phone || ""),
+      plan: normalizePlan(plan),
+      billingInterval: normalizeBillingInterval(billingInterval),
+      campaignIds: updatedUser.campaignIds || [],
+      campaignCharacterNames: updatedUser.campaignCharacterNames || {},
+      lockedColorCampaignIds: updatedUser.lockedColorCampaignIds || [],
+      color: updatedUser.color || "",
+      campaignTokenImages: updatedUser.campaignTokenImages || {},
+      updatedAt: new Date().toISOString()
+    };
+
+    if (auth.currentUser?.uid === currentUser.id) {
+      saveUserProfileQuick(currentUser.id, profilePayload).catch((error) => {
+        console.warn("Could not save campaign character name to user profile:", error);
+        setAccountMessage(profileSaveErrorMessage(error));
+      });
+    }
+
+    setCampaigns((current) => current.map((campaign) => {
+      if (campaign.id !== campaignId) return campaign;
+      const nextCampaign = normalizeCampaignForSync({
+        ...campaign,
+        memberIds: Array.from(new Set([...(campaign.memberIds || []), currentUser.id])),
+        characterNames: {
+          ...(campaign.characterNames || {}),
+          [currentUser.id]: value
+        },
+        campaignPlayerNames: {
+          ...(campaign.campaignPlayerNames || {}),
+          [currentUser.id]: value
+        },
+        playerNames: {
+          ...(campaign.playerNames || {}),
+          [currentUser.id]: value
+        }
+      });
+      saveCampaignToFirestore(nextCampaign).catch((error) => console.warn("Could not save campaign player name:", error));
+      return nextCampaign;
+    }));
+
+    setAccountMessage("Character name saved.");
   }
 
   function setCampaignRoleForCurrentUser(campaignId, role) {
@@ -3812,14 +3898,14 @@ export default function DungeonCalendarApp() {
                       </button>
 
                       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-                        {isDungeonMaster && hasPlanFeature("tokenUploads") && (
+                        {hasPlanFeature("tokenUploads") && (isDungeonMaster || player.id === currentUser?.id) && (
                           <div className="flex flex-col gap-2">
                             <label className="cursor-pointer rounded-lg border border-amber-700 px-3 py-2 text-center text-xs font-bold text-amber-200 hover:bg-amber-950/40">
                               Upload Token
                               <input type="file" accept="image/*" className="hidden" onChange={(event) => updatePlayerToken(player.id, event.target.files?.[0], activeCampaign?.id)} />
                             </label>
 
-                            {player.campaignTokenImages?.[activeCampaign?.id] && (
+                            {(player.campaignTokenImages?.[activeCampaign?.id] || activeCampaign?.playerTokenImages?.[player.id]) && (
                               <button
                                 onClick={() => removePlayerToken(player.id, activeCampaign?.id)}
                                 className="rounded-lg border border-red-800 px-3 py-2 text-xs font-bold text-red-200 hover:bg-red-950/50"
@@ -4317,7 +4403,15 @@ export default function DungeonCalendarApp() {
                             }
                           } : player));
                         }}
-                        placeholder="Enter character name"
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            saveCurrentUserCampaignCharacterName(campaign.id, event.currentTarget.value);
+                            event.currentTarget.blur();
+                          }
+                        }}
+                        onBlur={(event) => saveCurrentUserCampaignCharacterName(campaign.id, event.currentTarget.value)}
+                        placeholder="Enter character name and press Enter"
                         className="mt-2 w-full rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 outline-none ring-red-600/40 focus:ring-2"
                       />
                     </div>
@@ -4484,7 +4578,7 @@ export default function DungeonCalendarApp() {
                       </button>
 
                       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-                        {isDungeonMaster && hasPlanFeature("tokenUploads") && (
+                        {hasPlanFeature("tokenUploads") && (isDungeonMaster || player.id === currentUser?.id) && (
                           <div className="flex flex-col gap-2">
                             <label className="cursor-pointer rounded-lg border border-amber-700 px-3 py-2 text-center text-xs font-bold text-amber-200 hover:bg-amber-950/40">
                               Upload Token

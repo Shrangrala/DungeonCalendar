@@ -339,6 +339,38 @@ function campaignPlayerRecord(player = {}, campaignId = "") {
     invitePending: player.invitePending !== false
   };
 }
+
+function campaignMemberRecordFromUid(uid, campaign = {}, allPlayers = []) {
+  uid = uidFromAny(uid);
+  campaign = safeObject(campaign);
+  const campaignId = campaign.id || "";
+  const dmIds = new Set([campaign.ownerId, campaign.dungeonMasterId, ...(campaign.dungeonMasterIds || [])].map(uidFromAny).filter(Boolean));
+  const base = safePlayerList(allPlayers).find((player) => uidFromAny(player.uid || player.userId || player.id || "") === uid) || {};
+  const campaignName = campaign.campaignPlayerNames?.[uid] || campaign.playerNames?.[uid] || campaign.characterNames?.[uid] || base.campaignCharacterNames?.[campaignId] || base.campaignPlayerName || base.characterName || base.playerName || "";
+  const realName = base.name || base.displayName || base.username || base.email || "Campaign Member";
+  const tokenImage = campaign.playerTokenImages?.[uid] || base.campaignTokenImages?.[campaignId] || base.tokenImage || base.tokenUrl || base.avatar || base.photoURL || "";
+  return {
+    ...base,
+    id: uid,
+    uid,
+    userId: uid,
+    name: campaignName || realName,
+    username: base.username || realName,
+    email: normalizeEmail(base.email || ""),
+    phone: base.phone || base.phoneNumber || "",
+    phoneNormalized: normalizePhoneNumber(base.phone || base.phoneNumber || ""),
+    role: dmIds.has(uid) ? "Dungeon Master" : "Player",
+    invitePending: false,
+    campaignPlayerName: campaignName || "",
+    characterName: campaign.characterNames?.[uid] || campaignName || "",
+    playerName: campaign.playerNames?.[uid] || campaignName || "",
+    campaignCharacterNames: { ...(base.campaignCharacterNames || {}), ...(campaignName ? { [campaignId]: campaignName } : {}) },
+    campaignTokenImages: { ...(base.campaignTokenImages || {}), ...(tokenImage ? { [campaignId]: tokenImage } : {}) },
+    tokenImage: tokenImage || base.tokenImage || base.tokenUrl || "",
+    tokenUrl: tokenImage || base.tokenUrl || base.tokenImage || "",
+  };
+}
+
 function playerIdentityKey(player = {}) {
   player = safePlayerRecord(player);
   return normalizeEmail(player.email || "") || normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "") || player.id || player.uid || "";
@@ -1362,39 +1394,38 @@ export default function DungeonCalendarApp() {
   const activeCampaignPlayers = useMemo(() => {
     if (!activeCampaign?.id) return [];
     const campaignId = activeCampaign.id;
-    const dmIdSet = new Set([activeCampaign.ownerId, ...(activeCampaign.dungeonMasterIds || [])].filter(Boolean));
-    const memberIdSet = new Set(activeCampaign.memberIds || []);
-    const campaignRecords = normalizeCampaignPlayers(activeCampaign.invitedPlayers, activeCampaign).map((player) => campaignPlayerRecord(player, campaignId));
-    const relevantPlayers = [
-      ...safePlayerList(players).filter((player) =>
-        (player.campaignIds ?? []).includes(campaignId) ||
-        (activeCampaign.memberIds ?? []).includes(player.id) ||
-        activeCampaign?.dungeonMasterIds?.includes(player.id)
-      ),
-      ...campaignRecords
-    ].map((player) => {
-      player = safePlayerRecord(player);
-      const tokenFromCampaign = activeCampaign.playerTokenImages?.[player.id];
-      return tokenFromCampaign ? {
-        ...player,
-        campaignTokenImages: {
-          ...(player.campaignTokenImages || {}),
-          [campaignId]: tokenFromCampaign
-        }
-      } : player;
+    const dmIdSet = new Set([activeCampaign.ownerId, activeCampaign.dungeonMasterId, ...(activeCampaign.dungeonMasterIds || [])].map(uidFromAny).filter(Boolean));
+    const memberIdSet = new Set(normalizeUidList([activeCampaign.ownerId, activeCampaign.dungeonMasterId, ...(activeCampaign.dungeonMasterIds || []), ...(activeCampaign.memberIds || [])]));
+
+    const memberRecords = Array.from(memberIdSet).map((uid) => campaignMemberRecordFromUid(uid, activeCampaign, players));
+    const pendingInviteRecords = normalizeCampaignPlayers(activeCampaign.invitedPlayers, activeCampaign).map((player) => campaignPlayerRecord(player, campaignId));
+    const legacyUserRecords = safePlayerList(players)
+      .filter((player) => {
+        const uid = uidFromAny(player.uid || player.userId || player.id || "");
+        return uid && ((player.campaignIds || []).includes(campaignId) || memberIdSet.has(uid) || dmIdSet.has(uid));
+      })
+      .map((player) => campaignMemberRecordFromUid(uidFromAny(player.uid || player.userId || player.id || ""), activeCampaign, players));
+
+    const byIdentity = new Map();
+    [...memberRecords, ...legacyUserRecords, ...pendingInviteRecords].forEach((rawPlayer) => {
+      const player = safePlayerRecord(rawPlayer);
+      const uid = uidFromAny(player.uid || player.userId || player.id || "");
+      const email = normalizeEmail(player.email || "");
+      const phone = normalizePhoneNumber(player.phone || player.phoneNumber || player.phoneNormalized || "");
+      const key = uid ? `uid:${uid}` : email ? `email:${email}` : phone ? `phone:${phone}` : player.id ? `id:${player.id}` : "";
+      if (!key) return;
+      const existing = byIdentity.get(key);
+      if (!existing || (uid && memberIdSet.has(uid)) || dmIdSet.has(uid)) {
+        byIdentity.set(key, player);
+      }
     });
 
-    return safePlayerList(relevantPlayers).filter((player, index, list) => {
-      const key = uidFromAny(player.uid || player.userId || player.id || "") || normalizeEmail(player.email || "") || player.name?.toLowerCase() || player.id;
-      const matchingPlayers = list.filter((candidate) =>
-        (uidFromAny(candidate.uid || candidate.userId || candidate.id || "") || normalizeEmail(candidate.email || "") || candidate.name?.toLowerCase() || candidate.id) === key
-      );
-      const matchingDungeonMaster = matchingPlayers.find((candidate) => dmIdSet.has(uidFromAny(candidate.uid || candidate.userId || candidate.id || "")));
-
-      if (matchingDungeonMaster) return uidFromAny(player.uid || player.userId || player.id || "") === uidFromAny(matchingDungeonMaster.uid || matchingDungeonMaster.userId || matchingDungeonMaster.id || "");
-      return index === list.findIndex((candidate) =>
-        (uidFromAny(candidate.uid || candidate.userId || candidate.id || "") || normalizeEmail(candidate.email || "") || candidate.name?.toLowerCase() || candidate.id) === key
-      );
+    return Array.from(byIdentity.values()).sort((a, b) => {
+      const aUid = uidFromAny(a.uid || a.userId || a.id || "");
+      const bUid = uidFromAny(b.uid || b.userId || b.id || "");
+      if (dmIdSet.has(aUid) && !dmIdSet.has(bUid)) return -1;
+      if (!dmIdSet.has(aUid) && dmIdSet.has(bUid)) return 1;
+      return String(a.name || "").localeCompare(String(b.name || ""));
     });
   }, [players, activeCampaign]);
 
@@ -3881,8 +3912,9 @@ export default function DungeonCalendarApp() {
 
             <div className="grid gap-4 lg:grid-cols-2">
               {safePlayerList(activeCampaignPlayers).map((player) => {
-                const isDmPlayer = activeCampaign?.dungeonMasterIds?.includes(player.id);
-                const displayName = player?.campaignCharacterNames?.[activeCampaign?.id] || player?.name;
+                const playerUid = uidFromAny(player.uid || player.userId || player.id || "");
+                const isDmPlayer = playerUid && new Set([activeCampaign?.ownerId, activeCampaign?.dungeonMasterId, ...(activeCampaign?.dungeonMasterIds || [])].map(uidFromAny).filter(Boolean)).has(playerUid);
+                const displayName = activeCampaign?.campaignPlayerNames?.[playerUid] || activeCampaign?.playerNames?.[playerUid] || activeCampaign?.characterNames?.[playerUid] || player?.campaignCharacterNames?.[activeCampaign?.id] || player?.campaignPlayerName || player?.characterName || player?.playerName || player?.name || "Campaign Member";
 
                 return (
                   <div key={player.id} className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4">
@@ -3891,7 +3923,7 @@ export default function DungeonCalendarApp() {
                         onClick={() => isDungeonMaster ? setActivePlayerId(player.id) : setActivePlayerId(currentUserId)}
                         className="flex min-w-0 flex-1 items-center gap-3 text-left"
                       >
-                        <PlayerToken player={player} campaignId={activeCampaign?.id} size="md" />
+                        <PlayerToken player={player} campaignId={activeCampaign?.id} campaign={activeCampaign} size="md" />
                         <span className="min-w-0">
                           <b className="block truncate text-base text-zinc-100">{displayName}</b>
                           {player?.campaignCharacterNames?.[activeCampaign?.id] && (

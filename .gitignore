@@ -5,3 +5,21 @@ dist
 
 .vercel
 .env*
+
+# Do not keep generated/exported duplicate app sources in public
+public/public/
+public/assets/
+public/App.js
+public/DungeonCalendarMainApp.js
+public/DungeonCalendarMobileApp.js
+public/PrivacyPolicy.js
+public/TermsOfService.js
+public/firebase.js
+public/index.js
+public/package.json
+public/package-lock.json
+public/app.json
+public/babel.config.js
+public/vercel.json
+public/request.json
+public/DungeonCalendar

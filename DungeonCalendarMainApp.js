@@ -47,16 +47,27 @@ function trackGoogleAnalyticsPageView(path) {
 
 
 function PromoMarqueeBanner() {
-  const message = "ACT NOW FOR 10% OFF YEARLY SUBSCRIPTIONS WITH PROMO CODE 10OFFYEAR";
+  const promoMessages = [
+    "ACT NOW: 10% OFF YEARLY SUBSCRIPTIONS",
+    "PROMO CODE 10OFFYEAR",
+    "PLAN BETTER CAMPAIGNS",
+    "KEEP EVERY PLAYER ON SCHEDULE",
+    "SYNC QUESTS, SESSIONS, AND AVAILABILITY",
+    "UPGRADE YOUR TABLETOP PLANNING"
+  ];
+  const ariaMessage = `${promoMessages[0]} with promo code 10OFFYEAR`;
+  const marqueeItems = [...promoMessages, ...promoMessages];
+
   return (
-    <div className="promo-marquee-banner" role="status" aria-label={message}>
+    <div className="promo-marquee-banner" role="status" aria-label={ariaMessage}>
       <div className="promo-marquee-track" aria-hidden="true">
-        <span>{message}</span>
-        <span>{message}</span>
-        <span>{message}</span>
-        <span>{message}</span>
+        {marqueeItems.map((item, index) => (
+          <span key={`${item}-${index}`} className={item.includes("10OFFYEAR") ? "promo-marquee-code" : ""}>
+            {item}
+          </span>
+        ))}
       </div>
-      <span className="sr-only">{message}</span>
+      <span className="sr-only">{ariaMessage}</span>
     </div>
   );
 }
@@ -5267,11 +5278,21 @@ export default function DungeonCalendarApp() {
   const activePublicRoute = publicRoute || (typeof window !== "undefined" ? window.location.pathname : "/") || "/";
 
   if (page === "about" || activePublicRoute === "/about" || activePublicRoute.startsWith("/about/")) {
-    return <><PromoMarqueeBanner /><AboutPage /></>;
+    return (
+      <div className="relative min-h-screen w-full overflow-x-hidden text-zinc-100">
+        <PromoMarqueeBanner />
+        <AboutPage />
+      </div>
+    );
   }
 
   if (publicRoute === "/subscription-complete") {
-    return <><PromoMarqueeBanner /><SubscriptionCompletePage /></>;
+    return (
+      <div className="relative min-h-screen w-full overflow-x-hidden text-zinc-100">
+        <PromoMarqueeBanner />
+        <SubscriptionCompletePage />
+      </div>
+    );
   }
 
   if (!authProfileLoaded) {

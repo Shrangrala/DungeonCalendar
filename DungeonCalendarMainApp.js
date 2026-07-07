@@ -4939,26 +4939,26 @@ export default function DungeonCalendarApp() {
     );
   }
 
-  async function sendPromoEmailToAllUsers() {
+  async function sendPromoEmailToAllCustomers() {
     if (!isAppAdmin) {
       setPromoEmailStatus("Only the Dungeon Calendar admin account can send email campaigns.");
       return;
     }
 
-    const confirmed = typeof window === "undefined" ? true : window.confirm("Send the 10OFFYEAR promo email to every user with an email address? This queues one email document per user.");
+    const confirmed = typeof window === "undefined" ? true : window.confirm("Send the 10OFFYEAR promo email to every customer with an email address? This queues one email document per customer.");
     if (!confirmed) return;
 
     setPromoEmailSending(true);
-    setPromoEmailStatus("Loading users...");
+    setPromoEmailStatus("Loading customers...");
     try {
-      const usersSnapshot = await getDocs(collection(db, "users"));
-      const recipientEmails = Array.from(new Set(usersSnapshot.docs
-        .map((userDoc) => normalizeEmail(userDoc.data()?.email || userDoc.data()?.Email || userDoc.data()?.userEmail || userDoc.data()?.contactEmail || ""))
+      const customersSnapshot = await getDocs(collection(db, "customers"));
+      const recipientEmails = Array.from(new Set(customersSnapshot.docs
+        .map((customerDoc) => normalizeEmail(customerDoc.data()?.email || customerDoc.data()?.Email || customerDoc.data()?.userEmail || customerDoc.data()?.contactEmail || ""))
         .filter(Boolean)
       ));
 
       if (!recipientEmails.length) {
-        setPromoEmailStatus("No user email addresses were found in users/{uid}.email.");
+        setPromoEmailStatus("No customer email addresses were found in customers/{customerId}.email.");
         return;
       }
 
@@ -4990,7 +4990,7 @@ export default function DungeonCalendarApp() {
     } catch (error) {
       console.error("Promo email campaign failed:", error);
       setPromoEmailStatus(error?.code === "permission-denied"
-        ? "Firestore denied access. Update rules so only your admin account can read users and create mail documents."
+        ? "Firestore denied access. Update rules so only your admin account can read customers and create mail documents."
         : (error?.message || "Unable to queue promo emails."));
     } finally {
       setPromoEmailSending(false);
@@ -5006,10 +5006,10 @@ export default function DungeonCalendarApp() {
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-amber-300">Admin Only</p>
               <h2 className="mt-1 text-2xl font-bold">Send 10OFFYEAR Promo</h2>
-              <p className="mt-1 max-w-2xl text-sm text-amber-100/80">Queues one private email per user in Firestore's <span className="font-mono">mail</span> collection. Recipients will not see each other.</p>
+              <p className="mt-1 max-w-2xl text-sm text-amber-100/80">Queues one private email per customer in Firestore's <span className="font-mono">mail</span> collection. Recipients will not see each other.</p>
             </div>
-            <Button onClick={sendPromoEmailToAllUsers} disabled={promoEmailSending} className="rounded-xl bg-amber-700 px-5 py-3 text-white hover:bg-amber-600 disabled:opacity-60">
-              <Mail className="mr-2 h-4 w-4" /> {promoEmailSending ? "Queueing..." : "Send Promo to All Users"}
+            <Button onClick={sendPromoEmailToAllCustomers} disabled={promoEmailSending} className="rounded-xl bg-amber-700 px-5 py-3 text-white hover:bg-amber-600 disabled:opacity-60">
+              <Mail className="mr-2 h-4 w-4" /> {promoEmailSending ? "Queueing..." : "Send Promo to All Customers"}
             </Button>
           </div>
           {promoEmailStatus && <p className="mt-4 rounded-xl border border-amber-700/60 bg-black/30 p-3 text-sm text-amber-100">{promoEmailStatus}</p>}
@@ -5025,8 +5025,8 @@ export default function DungeonCalendarApp() {
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
           <CardContent className="space-y-3 p-6">
             <h2 className="text-2xl font-bold">Before sending</h2>
-            <p className="text-sm text-zinc-300">This button reads email addresses from <span className="font-mono">users</span> and creates documents in <span className="font-mono">mail</span>. Make sure your Firebase email extension is working with the PrivateEmail app password before sending to everyone.</p>
-            <p className="text-sm text-zinc-400">Recommended Firestore rules: only your admin account should be able to read all users and create bulk mail documents.</p>
+            <p className="text-sm text-zinc-300">This button reads email addresses from <span className="font-mono">customers</span> and creates documents in <span className="font-mono">mail</span>. Make sure your Firebase email extension is working with the PrivateEmail app password before sending to everyone.</p>
+            <p className="text-sm text-zinc-400">Recommended Firestore rules: only your admin account should be able to read all customers and create bulk mail documents.</p>
           </CardContent>
         </Card>
       </div>
@@ -5038,7 +5038,7 @@ export default function DungeonCalendarApp() {
       { label: "Calendar", description: "Open the calendar and mark availability.", icon: CalendarDays, target: "calendar" },
       { label: "View all Results", description: "Compare every proposed date.", icon: BarChart3, target: "results" },
       ...(isDungeonMaster ? [{ label: "Campaign Settings", description: "Edit campaign and reminder settings.", icon: Settings, target: "settings" }] : []),
-      ...(isAppAdmin ? [{ label: "Admin Email", description: "Send the 10OFFYEAR promotion to all users.", icon: Mail, target: "adminEmail" }] : [])
+      ...(isAppAdmin ? [{ label: "Admin Email", description: "Send the 10OFFYEAR promotion to all customers.", icon: Mail, target: "adminEmail" }] : [])
     ];
 
     return (

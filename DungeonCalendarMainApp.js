@@ -11,7 +11,7 @@ if (typeof window !== "undefined") {
 }
 
 
-const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-40KPRTKQT8";
+const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-VF5ZRYTWJD";
 
 function ensureGoogleAnalytics() {
   if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -23,7 +23,7 @@ function ensureGoogleAnalytics() {
     script.id = "google-analytics-gtag";
     script.async = true;
     script.src = `https://www.googletagmanager.com/gtag/js?id=${GOOGLE_ANALYTICS_MEASUREMENT_ID}`;
-    document.head.appendChild(script);
+    document.head.insertBefore(script, document.head.firstChild);
   }
 
   if (!window.__dungeonCalendarGoogleAnalyticsInitialized) {

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
-import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -11,7 +11,33 @@ if (typeof window !== "undefined") {
 }
 
 
-const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-40KPRTKQT8";
+const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-VF5ZRYTWJD";
+
+const ADMIN_EMAILS = new Set([
+  "support@dungeoncalendar.com",
+  "dungeoncalendarsupport@gmail.com",
+  "jdunworth08@gmail.com"
+]);
+const PROMO_EMAIL_SUBJECT = "Save 10% on Dungeon Calendar yearly subscriptions";
+const PROMO_EMAIL_HTML = `
+<div style="margin:0;background:#100708;color:#f8fafc;font-family:Arial,Helvetica,sans-serif;line-height:1.6;padding:0;">
+  <div style="max-width:640px;margin:0 auto;padding:28px 18px;">
+    <div style="border:1px solid #7f1d1d;background:#050505;border-radius:18px;padding:28px;text-align:center;">
+      <h1 style="margin:0;color:#ffffff;font-size:30px;letter-spacing:-0.02em;">Dungeon Calendar</h1>
+      <p style="margin:8px 0 0;color:#fca5a5;font-size:12px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;">Campaign scheduling made easier</p>
+      <div style="margin:24px auto 0;display:inline-block;border-radius:999px;background:#f59e0b;color:#111827;padding:10px 18px;font-size:14px;font-weight:800;letter-spacing:0.08em;">LIMITED TIME OFFER</div>
+      <h2 style="margin:22px 0 8px;color:#ffffff;font-size:26px;">Save 10% on yearly subscriptions</h2>
+      <p style="margin:0 auto;color:#d4d4d8;font-size:16px;max-width:520px;">Upgrade to a yearly Dungeon Calendar plan and keep your campaigns, players, availability, and session planning organized for less.</p>
+      <div style="margin:26px auto;padding:18px;border-radius:16px;border:1px dashed #f59e0b;background:#451a03;color:#fffbeb;max-width:360px;">
+        <div style="font-size:12px;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;color:#fed7aa;">Promo Code</div>
+        <div style="margin-top:6px;font-size:34px;font-weight:900;letter-spacing:0.08em;">10OFFYEAR</div>
+      </div>
+      <a href="https://dungeoncalendar.com" style="display:inline-block;border-radius:12px;background:#b91c1c;color:#ffffff;text-decoration:none;padding:14px 22px;font-weight:800;">Upgrade Now</a>
+      <p style="margin:24px 0 0;color:#a1a1aa;font-size:13px;">Thank you for being part of Dungeon Calendar.</p>
+    </div>
+    <p style="margin:18px 0 0;text-align:center;color:#71717a;font-size:12px;">You are receiving this because you created a Dungeon Calendar account. Reply to this email for support.</p>
+  </div>
+</div>`;
 
 function ensureGoogleAnalytics() {
   if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -1140,6 +1166,8 @@ export default function DungeonCalendarApp() {
   const [pendingStripeActivation, setPendingStripeActivation] = useState(null);
   const [stripeAutoVerifyAttempted, setStripeAutoVerifyAttempted] = useState(false);
   const [stripeLoginVerifyUserId, setStripeLoginVerifyUserId] = useState("");
+  const [promoEmailSending, setPromoEmailSending] = useState(false);
+  const [promoEmailStatus, setPromoEmailStatus] = useState("");
   const [publicRoute, setPublicRoute] = useState(() => typeof window !== "undefined" ? window.location.pathname : "/");
 
   useEffect(() => {
@@ -1384,6 +1412,8 @@ export default function DungeonCalendarApp() {
 
   const savedCurrentUser = safePlayerList(players).find((player) => player.id === currentUserId);
   const currentUser = savedCurrentUser || (auth.currentUser?.uid === currentUserId ? buildAuthFallbackPlayer(auth.currentUser, {}, activeCampaignId || "") : null);
+  const signedInAdminEmail = normalizeEmail(auth.currentUser?.email || currentUser?.email || accountEmail || "");
+  const isAppAdmin = ADMIN_EMAILS.has(signedInAdminEmail) || currentUser?.isAdmin === true || currentUser?.admin === true || currentUser?.role === "admin";
   const activePlayer = safePlayerList(players).find((player) => player.id === activePlayerId);
   const visibleCampaigns = useMemo(() => {
     if (!currentUser) return [];
@@ -4909,11 +4939,106 @@ export default function DungeonCalendarApp() {
     );
   }
 
+  async function sendPromoEmailToAllUsers() {
+    if (!isAppAdmin) {
+      setPromoEmailStatus("Only the Dungeon Calendar admin account can send email campaigns.");
+      return;
+    }
+
+    const confirmed = typeof window === "undefined" ? true : window.confirm("Send the 10OFFYEAR promo email to every user with an email address? This queues one email document per user.");
+    if (!confirmed) return;
+
+    setPromoEmailSending(true);
+    setPromoEmailStatus("Loading users...");
+    try {
+      const usersSnapshot = await getDocs(collection(db, "users"));
+      const recipientEmails = Array.from(new Set(usersSnapshot.docs
+        .map((userDoc) => normalizeEmail(userDoc.data()?.email || userDoc.data()?.Email || userDoc.data()?.userEmail || userDoc.data()?.contactEmail || ""))
+        .filter(Boolean)
+      ));
+
+      if (!recipientEmails.length) {
+        setPromoEmailStatus("No user email addresses were found in users/{uid}.email.");
+        return;
+      }
+
+      setPromoEmailStatus(`Queueing ${recipientEmails.length} promo email${recipientEmails.length === 1 ? "" : "s"}...`);
+
+      let sentCount = 0;
+      for (const email of recipientEmails) {
+        await addDoc(collection(db, "mail"), {
+          to: [email],
+          message: {
+            subject: PROMO_EMAIL_SUBJECT,
+            html: PROMO_EMAIL_HTML
+          },
+          campaign: {
+            type: "promo",
+            code: "10OFFYEAR",
+            name: "2026 yearly subscription promo"
+          },
+          createdAt: serverTimestamp(),
+          createdBy: signedInAdminEmail || auth.currentUser?.uid || "admin"
+        });
+        sentCount += 1;
+        if (sentCount % 10 === 0 || sentCount === recipientEmails.length) {
+          setPromoEmailStatus(`Queued ${sentCount} of ${recipientEmails.length} promo emails.`);
+        }
+      }
+
+      setPromoEmailStatus(`Done. Queued ${recipientEmails.length} promo email${recipientEmails.length === 1 ? "" : "s"}. The Firebase email extension will send them from the mail collection.`);
+    } catch (error) {
+      console.error("Promo email campaign failed:", error);
+      setPromoEmailStatus(error?.code === "permission-denied"
+        ? "Firestore denied access. Update rules so only your admin account can read users and create mail documents."
+        : (error?.message || "Unable to queue promo emails."));
+    } finally {
+      setPromoEmailSending(false);
+    }
+  }
+
+  function AdminPromoEmailPanel() {
+    if (!isAppAdmin) return null;
+    return (
+      <Card className="border-amber-700 bg-amber-950/25 text-zinc-100 backdrop-blur">
+        <CardContent className="p-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-amber-300">Admin Only</p>
+              <h2 className="mt-1 text-2xl font-bold">Send 10OFFYEAR Promo</h2>
+              <p className="mt-1 max-w-2xl text-sm text-amber-100/80">Queues one private email per user in Firestore's <span className="font-mono">mail</span> collection. Recipients will not see each other.</p>
+            </div>
+            <Button onClick={sendPromoEmailToAllUsers} disabled={promoEmailSending} className="rounded-xl bg-amber-700 px-5 py-3 text-white hover:bg-amber-600 disabled:opacity-60">
+              <Mail className="mr-2 h-4 w-4" /> {promoEmailSending ? "Queueing..." : "Send Promo to All Users"}
+            </Button>
+          </div>
+          {promoEmailStatus && <p className="mt-4 rounded-xl border border-amber-700/60 bg-black/30 p-3 text-sm text-amber-100">{promoEmailStatus}</p>}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  function AdminEmailPage() {
+    return (
+      <div className="space-y-5">
+        <AdminPromoEmailPanel />
+        <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
+          <CardContent className="space-y-3 p-6">
+            <h2 className="text-2xl font-bold">Before sending</h2>
+            <p className="text-sm text-zinc-300">This button reads email addresses from <span className="font-mono">users</span> and creates documents in <span className="font-mono">mail</span>. Make sure your Firebase email extension is working with the PrivateEmail app password before sending to everyone.</p>
+            <p className="text-sm text-zinc-400">Recommended Firestore rules: only your admin account should be able to read all users and create bulk mail documents.</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   function QuickActions() {
     const actions = [
       { label: "Calendar", description: "Open the calendar and mark availability.", icon: CalendarDays, target: "calendar" },
       { label: "View all Results", description: "Compare every proposed date.", icon: BarChart3, target: "results" },
-      ...(isDungeonMaster ? [{ label: "Campaign Settings", description: "Edit campaign and reminder settings.", icon: Settings, target: "settings" }] : [])
+      ...(isDungeonMaster ? [{ label: "Campaign Settings", description: "Edit campaign and reminder settings.", icon: Settings, target: "settings" }] : []),
+      ...(isAppAdmin ? [{ label: "Admin Email", description: "Send the 10OFFYEAR promotion to all users.", icon: Mail, target: "adminEmail" }] : [])
     ];
 
     return (
@@ -4937,7 +5062,7 @@ export default function DungeonCalendarApp() {
   }
 
   function DashboardPage() {
-    return <div className="space-y-5">{StatCards()}<div className="grid gap-5 xl:grid-cols-[1fr_420px]">{UpcomingSession()}{QuickActions()}</div><div className="grid gap-5 xl:grid-cols-[1fr_420px]">{CalendarOverview()}{RecentResults()}</div></div>;
+    return <div className="space-y-5">{isAppAdmin && <AdminPromoEmailPanel />}{StatCards()}<div className="grid gap-5 xl:grid-cols-[1fr_420px]">{UpcomingSession()}{QuickActions()}</div><div className="grid gap-5 xl:grid-cols-[1fr_420px]">{CalendarOverview()}{RecentResults()}</div></div>;
   }
 
   function BillingPage() {
@@ -5271,6 +5396,7 @@ export default function DungeonCalendarApp() {
     if (page === "settings") return SettingsPage();
     if (page === "account") return AccountSettingsPage();
     if (page === "billing") return BillingPage();
+    if (page === "adminEmail" && isAppAdmin) return AdminEmailPage();
     if (page === "about") return AboutPage();
     return DashboardPage();
   }

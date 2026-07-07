@@ -11,7 +11,7 @@ if (typeof window !== "undefined") {
 }
 
 
-const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-VF5ZRYTWJD";
+const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-40KPRTKQT8";
 
 function ensureGoogleAnalytics() {
   if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -23,7 +23,7 @@ function ensureGoogleAnalytics() {
     script.id = "google-analytics-gtag";
     script.async = true;
     script.src = `https://www.googletagmanager.com/gtag/js?id=${GOOGLE_ANALYTICS_MEASUREMENT_ID}`;
-    document.head.insertBefore(script, document.head.firstChild);
+    document.head.appendChild(script);
   }
 
   if (!window.__dungeonCalendarGoogleAnalyticsInitialized) {
@@ -43,6 +43,22 @@ function trackGoogleAnalyticsPageView(path) {
       page_title: document.title || "Dungeon Calendar"
     });
   }
+}
+
+
+function PromoMarqueeBanner() {
+  const message = "ACT NOW FOR 10% OFF YEARLY SUBSCRIPTIONS WITH PROMO CODE 10OFFYEAR";
+  return (
+    <div className="promo-marquee-banner" role="status" aria-label={message}>
+      <div className="promo-marquee-track" aria-hidden="true">
+        <span>{message}</span>
+        <span>{message}</span>
+        <span>{message}</span>
+        <span>{message}</span>
+      </div>
+      <span className="sr-only">{message}</span>
+    </div>
+  );
 }
 
 function Button({ children, className = "", variant = "default", type = "button", ...props }) {
@@ -5251,23 +5267,24 @@ export default function DungeonCalendarApp() {
   const activePublicRoute = publicRoute || (typeof window !== "undefined" ? window.location.pathname : "/") || "/";
 
   if (page === "about" || activePublicRoute === "/about" || activePublicRoute.startsWith("/about/")) {
-    return <AboutPage />;
+    return <><PromoMarqueeBanner /><AboutPage /></>;
   }
 
   if (publicRoute === "/subscription-complete") {
-    return <SubscriptionCompletePage />;
+    return <><PromoMarqueeBanner /><SubscriptionCompletePage /></>;
   }
 
   if (!authProfileLoaded) {
-    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full items-center justify-center px-3 py-5"><div className="rounded-2xl border border-zinc-800 bg-black/70 px-6 py-5 text-center shadow-2xl"><p className="text-lg font-bold">Loading Dungeon Calendar...</p><p className="mt-2 text-sm text-zinc-400">Restoring your Firebase session.</p></div></main></div>;
+    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><PromoMarqueeBanner /><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full items-center justify-center px-3 py-5"><div className="rounded-2xl border border-zinc-800 bg-black/70 px-6 py-5 text-center shadow-2xl"><p className="text-lg font-bold">Loading Dungeon Calendar...</p><p className="mt-2 text-sm text-zinc-400">Restoring your Firebase session.</p></div></main></div>;
   }
 
   if (!currentUser) {
-    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-3 py-5 sm:px-6 sm:py-10"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
+    return <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100"><PromoMarqueeBanner /><AppBackground /><main className="relative z-10 mx-auto flex min-h-screen w-full max-w-2xl items-center justify-center px-3 py-5 sm:px-6 sm:py-10"><div className="w-full max-w-xl">{Sidebar}</div></main></div>;
   }
 
   return (
     <div className="relative min-h-screen w-full overflow-x-hidden overflow-y-auto text-zinc-100">
+      <PromoMarqueeBanner />
       <AppBackground />
       <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1600px] gap-4 overflow-visible px-3 py-4 sm:px-5 sm:py-6 lg:grid-cols-[300px_minmax(0,1fr)] lg:gap-6 lg:px-6">
         {Sidebar}

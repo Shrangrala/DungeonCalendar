@@ -47,3 +47,57 @@ body {
     border-radius: 1rem;
   }
 }
+
+.promo-marquee-banner {
+  position: sticky;
+  top: 0;
+  z-index: 9999;
+  width: 100%;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(250, 204, 21, 0.45);
+  background: linear-gradient(90deg, #facc15, #f59e0b, #facc15);
+  color: #1c1400;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+}
+
+.promo-marquee-track {
+  display: flex;
+  width: max-content;
+  min-width: 200%;
+  animation: dungeon-calendar-promo-marquee 22s linear infinite;
+  white-space: nowrap;
+}
+
+.promo-marquee-track span {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.55rem 2.25rem;
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+@keyframes dungeon-calendar-promo-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .promo-marquee-track {
+    animation: none;
+    transform: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .promo-marquee-track span {
+    padding: 0.5rem 1.5rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+  }
+}

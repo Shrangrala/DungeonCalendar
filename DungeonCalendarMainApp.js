@@ -11,7 +11,7 @@ if (typeof window !== "undefined") {
 }
 
 
-const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-VF5ZRYTWJD";
+const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-YRP7187GYT";
 
 const ADMIN_EMAILS = new Set([
   "support@dungeoncalendar.com",

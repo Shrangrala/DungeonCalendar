@@ -10,7 +10,7 @@ const firebaseConfig = {
   storageBucket: "dungeon-calendar-app.firebasestorage.app",
   messagingSenderId: "1089961645011",
   appId: "1:1089961645011:web:07da2f00587b54d41e5526",
-  measurementId: "G-YRP7187GYT"
+  measurementId: "G-D3BQVGC6BV"
 };
 
 const app = initializeApp(firebaseConfig);

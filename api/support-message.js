@@ -2,7 +2,7 @@ const admin = require('firebase-admin');
 
 const allowedOrigins = [
   'https://www.dungeoncalendar.com',
-  'https://dungeoncalendar.com',
+  'https://www.dungeoncalendar.com',
   'https://dungeoncalendarmobile.vercel.app'
 ];
 

@@ -32,7 +32,7 @@ const PROMO_EMAIL_HTML = `
         <div style="font-size:12px;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;color:#fed7aa;">Promo Code</div>
         <div style="margin-top:6px;font-size:34px;font-weight:900;letter-spacing:0.08em;">10OFFYEAR</div>
       </div>
-      <a href="https://dungeoncalendar.com" style="display:inline-block;border-radius:12px;background:#b91c1c;color:#ffffff;text-decoration:none;padding:14px 22px;font-weight:800;">Upgrade Now</a>
+      <a href="https://www.dungeoncalendar.com" style="display:inline-block;border-radius:12px;background:#b91c1c;color:#ffffff;text-decoration:none;padding:14px 22px;font-weight:800;">Upgrade Now</a>
       <p style="margin:24px 0 0;color:#a1a1aa;font-size:13px;">Thank you for being part of Dungeon Calendar.</p>
     </div>
     <p style="margin:18px 0 0;text-align:center;color:#71717a;font-size:12px;">You are receiving this because you created a Dungeon Calendar account. Reply to this email for support.</p>
@@ -3216,7 +3216,7 @@ export default function DungeonCalendarApp() {
   }
 
   function getLoginLink(playerName = "") {
-    const baseUrl = "https://dungeoncalendar.com";
+    const baseUrl = "https://www.dungeoncalendar.com";
     const params = new URLSearchParams({
       role: "Player",
       name: playerName,
@@ -3376,7 +3376,7 @@ export default function DungeonCalendarApp() {
   }
 
   async function copyShareLink() {
-    const websiteUrl = "https://dungeoncalendar.com";
+    const websiteUrl = "https://www.dungeoncalendar.com";
     try {
       if (navigator?.clipboard?.writeText && window?.isSecureContext) {
         await navigator.clipboard.writeText(websiteUrl);
@@ -3409,7 +3409,7 @@ export default function DungeonCalendarApp() {
     const [supportMessage, setSupportMessage] = useState("Hello Dungeon Calendar Support,\n\n");
     const [supportSending, setSupportSending] = useState(false);
     const [supportStatus, setSupportStatus] = useState("");
-    const shareUrl = "https://dungeoncalendar.com";
+    const shareUrl = "https://www.dungeoncalendar.com";
     const shareText = "Organize your D&D campaigns with Dungeon Calendar — schedule sessions, track availability, and invite your party.";
     const socialLinks = [
       { label: "Share on Facebook", href: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}` },
@@ -3554,7 +3554,7 @@ export default function DungeonCalendarApp() {
               </div>
               <div className="mt-5 rounded-2xl border border-zinc-800 bg-black/40 p-4">
                 <p className="text-xs uppercase tracking-widest text-zinc-500">Direct link</p>
-                <p className="mt-2 break-all font-semibold text-amber-200">https://dungeoncalendar.com</p>
+                <p className="mt-2 break-all font-semibold text-amber-200">https://www.dungeoncalendar.com</p>
               </div>
             </div>
           </section>

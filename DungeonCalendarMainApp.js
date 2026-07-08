@@ -71,6 +71,27 @@ function trackGoogleAnalyticsPageView(path) {
   }
 }
 
+function trackGoogleAnalyticsEvent(eventName, params = {}) {
+  if (typeof window === "undefined") return;
+  ensureGoogleAnalytics();
+  if (typeof window.gtag === "function") {
+    window.gtag("event", eventName, {
+      app_name: "Dungeon Calendar",
+      ...params
+    });
+  }
+}
+
+function getPlanAnalyticsValue(planId, interval = "monthly") {
+  const safePlan = normalizePlan(planId);
+  const safeInterval = normalizeBillingInterval(interval);
+  const priceTable = {
+    adventurer: { monthly: 4.99, yearly: 49.99 },
+    guildmaster: { monthly: 9.99, yearly: 99.99 }
+  };
+  return priceTable[safePlan]?.[safeInterval] || 0;
+}
+
 
 function PromoMarqueeBanner() {
   const promoMessages = [
@@ -1775,6 +1796,16 @@ export default function DungeonCalendarApp() {
       stripeActivationSource: source
     });
 
+    const purchaseValue = getPlanAnalyticsValue(safePlan, safeInterval);
+    trackGoogleAnalyticsEvent("purchase", {
+      transaction_id: `${currentUser.id}-${safePlan}-${safeInterval}-${Date.now()}`,
+      affiliation: source,
+      currency: "USD",
+      value: purchaseValue,
+      items: [{ item_id: safePlan, item_name: planLimits[safePlan]?.name || safePlan, item_category: "subscription", item_variant: safeInterval, price: purchaseValue, quantity: 1 }]
+    });
+    trackGoogleAnalyticsEvent("subscribe", { plan: safePlan, billing_interval: safeInterval, value: purchaseValue, currency: "USD", source });
+
     setPendingStripeActivation(null);
     setSelectedPaymentPlan("");
     setCheckoutLoading(false);
@@ -1840,6 +1871,15 @@ export default function DungeonCalendarApp() {
                 stripeActivationSource: "stripe_checkout_session_confirmed",
                 stripeVerifiedAt: new Date().toISOString()
               });
+              const purchaseValue = getPlanAnalyticsValue(confirmedPlan, confirmedInterval);
+              trackGoogleAnalyticsEvent("purchase", {
+                transaction_id: data.stripeCheckoutSessionId || sessionId || `${currentUser.id}-${confirmedPlan}-${confirmedInterval}-${Date.now()}`,
+                affiliation: "stripe_checkout_session_confirmed",
+                currency: "USD",
+                value: purchaseValue,
+                items: [{ item_id: confirmedPlan, item_name: planLimits[confirmedPlan]?.name || confirmedPlan, item_category: "subscription", item_variant: confirmedInterval, price: purchaseValue, quantity: 1 }]
+              });
+              trackGoogleAnalyticsEvent("subscribe", { plan: confirmedPlan, billing_interval: confirmedInterval, value: purchaseValue, currency: "USD", source: "stripe_checkout_session_confirmed" });
               setPendingStripeActivation(null);
               setSelectedPaymentPlan("");
               setBillingMessage(`${planLimits[confirmedPlan]?.name || "Paid"} plan activated from Stripe checkout.`);
@@ -2072,6 +2112,7 @@ export default function DungeonCalendarApp() {
       if (authMode === "login") {
         const credential = await signInWithEmailAndPassword(auth, trimmedEmail, loginPassword);
         uid = credential.user.uid;
+        trackGoogleAnalyticsEvent("login", { method: "email" });
         const profile = await loadUserProfile(uid);
         const existingLocal = safePlayerList(players).find((item) => item.id === uid || normalizeEmail(item.email) === trimmedEmail || phoneMatches(item.phone || item.phoneNumber || "", auth.currentUser?.phoneNumber || ""));
 
@@ -2103,6 +2144,7 @@ export default function DungeonCalendarApp() {
         };
 
         await saveUserProfile(uid, player);
+        trackGoogleAnalyticsEvent("sign_up", { method: "email" });
       }
 
       setPlayers((current) => {
@@ -2174,6 +2216,9 @@ export default function DungeonCalendarApp() {
 
       if (!profile) {
         await saveUserProfile(uid, player);
+        trackGoogleAnalyticsEvent("sign_up", { method: "google" });
+      } else {
+        trackGoogleAnalyticsEvent("login", { method: "google" });
       }
 
       setPlayers((current) => {
@@ -2380,6 +2425,18 @@ export default function DungeonCalendarApp() {
         stripeActivationSource: source
       });
 
+      if (!automaticLoginCheck) {
+        const purchaseValue = getPlanAnalyticsValue(verifiedPlan, verifiedInterval);
+        trackGoogleAnalyticsEvent("purchase", {
+          transaction_id: data.subscriptionId || `${currentUser.id}-${verifiedPlan}-${verifiedInterval}-${Date.now()}`,
+          affiliation: source,
+          currency: "USD",
+          value: purchaseValue,
+          items: [{ item_id: verifiedPlan, item_name: planLimits[verifiedPlan]?.name || verifiedPlan, item_category: "subscription", item_variant: verifiedInterval, price: purchaseValue, quantity: 1 }]
+        });
+        trackGoogleAnalyticsEvent("subscribe", { plan: verifiedPlan, billing_interval: verifiedInterval, value: purchaseValue, currency: "USD", source });
+      }
+
       setPendingStripeActivation(null);
       setSelectedPaymentPlan("");
       if (!automaticLoginCheck) {
@@ -2430,6 +2487,12 @@ export default function DungeonCalendarApp() {
     try {
       const email = paymentEmail.trim() || currentUser?.email || auth.currentUser?.email || "";
       rememberPendingStripePlan(activatedPlan, activatedInterval);
+      const checkoutValue = getPlanAnalyticsValue(activatedPlan, activatedInterval);
+      trackGoogleAnalyticsEvent("begin_checkout", {
+        currency: "USD",
+        value: checkoutValue,
+        items: [{ item_id: activatedPlan, item_name: planLimits[activatedPlan]?.name || activatedPlan, item_category: "subscription", item_variant: activatedInterval, price: checkoutValue, quantity: 1 }]
+      });
 
       // Use a server-created Stripe Checkout Session first. Payment Links do not reliably
       // honor success_url/cancel_url query parameters on every account/browser, which can

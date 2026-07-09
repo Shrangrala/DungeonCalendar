@@ -103,9 +103,24 @@ async function updateUserAndCustomer(userId, data) {
 
   const db = initFirebaseAdmin();
   const now = new Date().toISOString();
+  const stripeCustomerId = typeof data.stripeCustomerId === 'string' ? data.stripeCustomerId : data.stripeCustomerId?.id || '';
   const cleanData = Object.fromEntries(
-    Object.entries({ ...data, updatedAt: now }).filter(([, value]) => value !== undefined)
+    Object.entries({ ...data, stripeCustomerId, customerId: stripeCustomerId || data.customerId, updatedAt: now }).filter(([, value]) => value !== undefined)
   );
+
+  if (stripeCustomerId) {
+    try {
+      await stripe.customers.update(stripeCustomerId, {
+        metadata: {
+          userId,
+          uid: userId,
+          firebaseUid: userId
+        }
+      });
+    } catch (error) {
+      console.warn(`Stripe webhook: could not stamp Firebase UID on customer ${stripeCustomerId}.`, error.message);
+    }
+  }
 
   await Promise.all([
     db.collection('users').doc(userId).set(cleanData, { merge: true }),

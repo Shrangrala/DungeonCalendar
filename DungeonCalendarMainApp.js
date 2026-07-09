@@ -2384,6 +2384,7 @@ export default function DungeonCalendarApp() {
       const expectedBillingInterval = normalizeBillingInterval(selectedBillingInterval || pendingForVerification?.billingInterval || currentUser?.pendingStripeBillingInterval || billingInterval || "monthly");
       const statusUrl = new URL("/api/stripe-subscription-status", window.location.origin);
       statusUrl.searchParams.set("email", email);
+      statusUrl.searchParams.set("userId", currentUser.id);
       if (expectedPlan !== "free") statusUrl.searchParams.set("expectedPlan", expectedPlan);
       statusUrl.searchParams.set("expectedBillingInterval", expectedBillingInterval);
 

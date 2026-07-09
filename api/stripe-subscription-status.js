@@ -1,4 +1,54 @@
 const Stripe = require('stripe');
+const admin = require('firebase-admin');
+
+
+function initFirebaseAdmin() {
+  if (admin.apps.length) return admin.firestore();
+
+  const rawJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const rawBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+  if (!rawJson && !rawBase64) return null;
+
+  try {
+    const jsonText = rawJson || Buffer.from(rawBase64, 'base64').toString('utf8');
+    const serviceAccount = JSON.parse(jsonText);
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    return admin.firestore();
+  } catch (error) {
+    console.warn('Could not initialize Firebase Admin for Stripe subscription lookup:', error.message);
+    return null;
+  }
+}
+
+async function getStoredStripeCustomerId(db, userId) {
+  if (!db || !userId) return '';
+  const [userSnap, customerSnap] = await Promise.all([
+    db.collection('users').doc(userId).get(),
+    db.collection('customers').doc(userId).get()
+  ]);
+  const userData = userSnap.exists ? userSnap.data() || {} : {};
+  const customerData = customerSnap.exists ? customerSnap.data() || {} : {};
+  return customerData.stripeCustomerId || customerData.customerId || customerData.stripeId || userData.stripeCustomerId || userData.customerId || userData.stripeId || '';
+}
+
+async function saveStripeStatusToFirestore(db, userId, data) {
+  if (!db || !userId || !data?.customerId) return;
+  const update = {
+    plan: data.plan || 'free',
+    billingInterval: data.billingInterval || 'monthly',
+    stripeCustomerId: data.customerId,
+    customerId: data.customerId,
+    stripeSubscriptionId: data.subscriptionId || '',
+    stripeSubscriptionStatus: data.status || '',
+    stripeVerifiedEmail: data.email || '',
+    stripeVerifiedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await Promise.all([
+    db.collection('users').doc(userId).set(update, { merge: true }),
+    db.collection('customers').doc(userId).set(update, { merge: true })
+  ]);
+}
 
 function normalizeEmail(email = '') {
   return String(email).trim().toLowerCase();
@@ -72,6 +122,7 @@ module.exports = async function handler(req, res) {
 
   const body = req.body || {};
   const email = normalizeEmail(req.query?.email || body.email || '');
+  const userId = String(req.query?.userId || body.userId || '').trim();
   const expectedPlan = normalizePlan(req.query?.expectedPlan || body.expectedPlan || 'free');
   const expectedBillingInterval = normalizeBillingInterval(req.query?.expectedBillingInterval || body.expectedBillingInterval || 'monthly');
 
@@ -83,11 +134,35 @@ module.exports = async function handler(req, res) {
 
   try {
     const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-    const customers = await stripe.customers.list({ email, limit: 5 });
+    const db = initFirebaseAdmin();
+    const storedCustomerId = await getStoredStripeCustomerId(db, userId);
+    let customers = [];
+
+    if (storedCustomerId) {
+      try {
+        const customer = await stripe.customers.retrieve(storedCustomerId);
+        if (customer && !customer.deleted) customers.push(customer);
+      } catch (error) {
+        console.warn(`Stored Stripe customer ${storedCustomerId} could not be retrieved during verification:`, error.message);
+      }
+    }
+
+    if (!customers.length && userId) {
+      const uidMatches = await stripe.customers.search({
+        query: `metadata['firebaseUid']:'${String(userId).replace(/'/g, "\'")}'`,
+        limit: 5
+      });
+      customers = uidMatches.data || [];
+    }
+
+    if (!customers.length) {
+      const emailMatches = await stripe.customers.list({ email, limit: 5 });
+      customers = emailMatches.data || [];
+    }
 
     let best = null;
 
-    for (const customer of customers.data || []) {
+    for (const customer of customers || []) {
       const subscriptions = await stripe.subscriptions.list({
         customer: customer.id,
         status: 'all',
@@ -146,6 +221,7 @@ module.exports = async function handler(req, res) {
     }
 
     delete best.created;
+    await saveStripeStatusToFirestore(db, userId, best);
     res.statusCode = 200;
     res.end(JSON.stringify(best));
   } catch (error) {

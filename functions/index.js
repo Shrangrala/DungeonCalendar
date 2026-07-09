@@ -220,8 +220,18 @@ app.get(['/confirm-checkout-session', '/api/confirm-checkout-session'], async (r
 
     const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ['subscription', 'line_items.data.price.product'] });
     const subscription = typeof session.subscription === 'object' ? session.subscription : null;
-    const paid = session.payment_status === 'paid' && subscription && ['active', 'trialing'].includes(subscription.status);
-    if (!paid) return res.status(402).json({ active: false, error: 'Stripe checkout is not paid/active yet.' });
+    const checkoutComplete = session.status === 'complete';
+    const subscriptionActive = subscription && ['active', 'trialing'].includes(subscription.status);
+    const paymentOk = ['paid', 'no_payment_required'].includes(session.payment_status);
+    if (!checkoutComplete || !subscriptionActive || !paymentOk) {
+      return res.status(402).json({
+        active: false,
+        error: 'Stripe checkout is not complete/active yet.',
+        sessionStatus: session.status,
+        paymentStatus: session.payment_status,
+        subscriptionStatus: subscription?.status || ''
+      });
+    }
 
     await applyCheckoutSession(session);
     return res.json({
@@ -240,13 +250,58 @@ app.get(['/confirm-checkout-session', '/api/confirm-checkout-session'], async (r
   }
 });
 
+async function resolveUidForStripeCustomer(customerId, stripe) {
+  if (!customerId) return '';
+
+  try {
+    const customer = await stripe.customers.retrieve(customerId);
+    const uidFromCustomer = customer?.metadata?.userId || customer?.metadata?.firebaseUID || '';
+    if (uidFromCustomer) return uidFromCustomer;
+
+    if (customer?.email) {
+      const byEmail = await db.collection('customers').where('email', '==', customer.email).limit(1).get();
+      if (!byEmail.empty) return byEmail.docs[0].id;
+      const usersByEmail = await db.collection('users').where('email', '==', customer.email).limit(1).get();
+      if (!usersByEmail.empty) return usersByEmail.docs[0].id;
+    }
+  } catch (error) {
+    console.warn('Unable to resolve UID from Stripe customer:', customerId, error.message || error);
+  }
+
+  const byStripeCustomerId = await db.collection('customers').where('stripeCustomerId', '==', customerId).limit(1).get();
+  if (!byStripeCustomerId.empty) return byStripeCustomerId.docs[0].id;
+
+  const byStripeId = await db.collection('customers').where('stripeId', '==', customerId).limit(1).get();
+  if (!byStripeId.empty) return byStripeId.docs[0].id;
+
+  const usersByStripeCustomerId = await db.collection('users').where('stripeCustomerId', '==', customerId).limit(1).get();
+  if (!usersByStripeCustomerId.empty) return usersByStripeCustomerId.docs[0].id;
+
+  return '';
+}
+
+async function resolveUidForSubscription(subscription, extra = {}) {
+  const directUid = extra.uid || subscription.metadata?.userId || subscription.metadata?.firebaseUID || '';
+  if (directUid) return directUid;
+
+  const customerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id || '';
+  return resolveUidForStripeCustomer(customerId, getStripe());
+}
+
 async function applyCheckoutSession(session) {
   const stripe = getStripe();
   const subscription = typeof session.subscription === 'string'
     ? await stripe.subscriptions.retrieve(session.subscription, { expand: ['items.data.price.product'] })
     : session.subscription;
-  const uid = session.client_reference_id || session.metadata?.userId || session.metadata?.firebaseUID || subscription?.metadata?.userId || subscription?.metadata?.firebaseUID;
-  if (!uid || !subscription || !['active', 'trialing'].includes(subscription.status)) return;
+  if (!subscription || !['active', 'trialing'].includes(subscription.status)) return;
+
+  const sessionUid = session.client_reference_id || session.metadata?.userId || session.metadata?.firebaseUID || subscription?.metadata?.userId || subscription?.metadata?.firebaseUID || '';
+  const uid = sessionUid || await resolveUidForSubscription(subscription);
+  if (!uid) {
+    console.error('Could not resolve Firebase UID for checkout session:', session.id, 'customer:', session.customer);
+    return;
+  }
+
   await applySubscription(subscription, { uid, checkoutSessionId: session.id });
 }
 
@@ -266,8 +321,11 @@ function intervalFromSubscription(subscription) {
 }
 
 async function applySubscription(subscription, extra = {}) {
-  const uid = extra.uid || subscription.metadata?.userId || subscription.metadata?.firebaseUID;
-  if (!uid) return;
+  const uid = await resolveUidForSubscription(subscription, extra);
+  if (!uid) {
+    console.error('Could not resolve Firebase UID for subscription:', subscription.id, 'customer:', subscription.customer);
+    return;
+  }
   const active = ['active', 'trialing'].includes(subscription.status);
   const plan = active ? planFromSubscription(subscription) : 'free';
   const billingInterval = intervalFromSubscription(subscription);

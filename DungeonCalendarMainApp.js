@@ -1886,14 +1886,18 @@ export default function DungeonCalendarApp() {
               return;
             }
           } else {
-            console.warn("Checkout session confirmation failed; falling back to return URL activation.", data?.error || response.status);
+            console.warn("Checkout session confirmation failed.", data?.error || response.status);
+            setBillingMessage(data?.error || "Stripe checkout could not be confirmed yet. Your plan will update automatically after Stripe sends the subscription webhook.");
+            return;
           }
         } catch (confirmError) {
-          console.warn("Checkout session confirmation failed; falling back to return URL activation.", confirmError);
+          console.warn("Checkout session confirmation failed.", confirmError);
+          setBillingMessage("Stripe checkout could not be confirmed yet. Your plan will update automatically after Stripe sends the subscription webhook.");
+          return;
         }
       }
 
-      await activateStripePlan(planToActivate, intervalToActivate, stripeSuccess || urlPlan ? "stripe_return" : "stripe_coupon_or_existing_subscription_return");
+      setBillingMessage("Stripe checkout returned without a confirmed paid session. No plan changes were made.");
     };
 
     finishStripeReturn()
@@ -2004,61 +2008,11 @@ export default function DungeonCalendarApp() {
     const pendingPlan = normalizePlan(currentUser.pendingStripePlan || "free");
     if (pendingPlan === "free" || plan !== "free") return;
 
-    let cancelled = false;
-    const pendingInterval = normalizeBillingInterval(currentUser.pendingStripeBillingInterval || "monthly");
-
-    const activateFromCustomerDoc = async () => {
-      try {
-        const customerSnap = await getDoc(doc(db, "customers", currentUser.id));
-        if (cancelled || !customerSnap.exists()) return;
-
-        const customerData = customerSnap.data() || {};
-        const status = String(
-          customerData.subscriptionStatus ||
-          customerData.status ||
-          customerData.stripeSubscriptionStatus ||
-          ""
-        ).toLowerCase();
-
-        const hasStripeCustomer = !!(
-          customerData.stripeId ||
-          customerData.stripeCustomerId ||
-          customerData.customerId ||
-          customerData.stripeLink
-        );
-
-        const hasPaidSignal = !!(
-          customerData.subscriptionId ||
-          customerData.stripeSubscriptionId ||
-          customerData.priceId ||
-          customerData.productId ||
-          customerData.plan ||
-          customerData.active === true ||
-          ["active", "trialing", "paid"].includes(status) ||
-          hasStripeCustomer
-        );
-
-        if (!hasPaidSignal) return;
-
-        await persistPlan(pendingPlan, pendingInterval, {
-          pendingStripePlan: "free",
-          pendingStripeBillingInterval: "monthly",
-          pendingStripeStartedAt: "",
-          stripePaymentLinkActivatedAt: new Date().toISOString(),
-          stripeActivationSource: "firestore_customer_pending_plan_sync"
-        });
-      } catch (error) {
-        console.warn("Pending Stripe Firestore activation check failed:", error);
-      }
-    };
-
-    activateFromCustomerDoc();
-    const timer = setTimeout(activateFromCustomerDoc, 2500);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [currentUser?.id, currentUser?.pendingStripePlan, currentUser?.pendingStripeBillingInterval, plan]);
+    // Do not activate a paid plan just because a Stripe customer record exists.
+    // A customer can be created before checkout is paid. The plan is upgraded only
+    // after /api/confirm-checkout-session verifies a paid Checkout Session or after
+    // the Stripe webhook writes an active subscription under customers/{uid}/subscriptions.
+  }, [currentUser?.id, currentUser?.pendingStripePlan, plan]);
 
   const bestDates = useMemo(() => {
     return Object.entries(availability)
@@ -2471,13 +2425,6 @@ export default function DungeonCalendarApp() {
       } catch (error) {
         setBillingMessage(profileSaveErrorMessage(error));
       }
-      return;
-    }
-
-    const paymentLink = getStripePaymentLink(activatedPlan, activatedInterval);
-
-    if (!paymentLink) {
-      setBillingMessage("No Stripe payment link is configured for that plan and billing cycle.");
       return;
     }
 

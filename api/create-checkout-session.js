@@ -38,6 +38,144 @@ const priceEnvByPlan = {
   }
 };
 
+
+function initFirebaseAdmin() {
+  if (admin.apps.length) return admin.firestore();
+
+  const rawJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const rawBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+
+  if (!rawJson && !rawBase64) {
+    return null;
+  }
+
+  try {
+    const jsonText = rawJson || Buffer.from(rawBase64, 'base64').toString('utf8');
+    const serviceAccount = JSON.parse(jsonText);
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    return admin.firestore();
+  } catch (error) {
+    console.warn('Firebase Admin unavailable in create-checkout-session:', error.message);
+    return null;
+  }
+}
+
+function normalizeEmail(email = '') {
+  return String(email || '').trim().toLowerCase();
+}
+
+async function findStripeCustomerByFirebaseUid(userId) {
+  try {
+    const result = await stripe.customers.search({
+      query: `metadata['firebaseUID']:'${userId}' OR metadata['firebaseUid']:'${userId}' OR metadata['userId']:'${userId}' OR metadata['uid']:'${userId}'`,
+      limit: 10
+    });
+    return result.data?.[0] || null;
+  } catch (error) {
+    console.warn('Stripe customer metadata search failed; continuing:', error.message);
+    return null;
+  }
+}
+
+async function getOrCreateLinkedStripeCustomer({ userId, email, name }) {
+  const db = initFirebaseAdmin();
+  const normalizedEmail = normalizeEmail(email);
+  let existingCustomerId = '';
+
+  if (db) {
+    const [userSnap, customerSnap] = await Promise.all([
+      db.collection('users').doc(userId).get(),
+      db.collection('customers').doc(userId).get()
+    ]);
+    const userData = userSnap.exists ? userSnap.data() || {} : {};
+    const customerData = customerSnap.exists ? customerSnap.data() || {} : {};
+    existingCustomerId = userData.stripeCustomerId || userData.stripeId || customerData.stripeCustomerId || customerData.stripeId || '';
+  }
+
+  if (existingCustomerId) {
+    try {
+      const existing = await stripe.customers.retrieve(existingCustomerId);
+      if (existing && !existing.deleted) {
+        await stripe.customers.update(existingCustomerId, {
+          email: normalizedEmail || existing.email || undefined,
+          name: name || existing.name || undefined,
+          metadata: {
+            ...(existing.metadata || {}),
+            userId,
+            uid: userId,
+            firebaseUID: userId,
+            firebaseUid: userId
+          }
+        });
+        return existingCustomerId;
+      }
+    } catch (error) {
+      console.warn(`Stored Stripe customer ${existingCustomerId} could not be reused; searching/creating instead:`, error.message);
+    }
+  }
+
+  const metadataMatch = await findStripeCustomerByFirebaseUid(userId);
+  if (metadataMatch?.id) {
+    existingCustomerId = metadataMatch.id;
+  }
+
+  if (!existingCustomerId && normalizedEmail) {
+    const byEmail = await stripe.customers.list({ email: normalizedEmail, limit: 10 });
+    const withFirebaseUid = byEmail.data?.find((customer) =>
+      customer.metadata?.firebaseUID === userId ||
+      customer.metadata?.firebaseUid === userId ||
+      customer.metadata?.userId === userId ||
+      customer.metadata?.uid === userId
+    );
+    existingCustomerId = withFirebaseUid?.id || byEmail.data?.[0]?.id || '';
+  }
+
+  if (!existingCustomerId) {
+    const created = await stripe.customers.create({
+      email: normalizedEmail || undefined,
+      name: name || undefined,
+      metadata: {
+        userId,
+        uid: userId,
+        firebaseUID: userId,
+        firebaseUid: userId
+      }
+    });
+    existingCustomerId = created.id;
+  } else {
+    const existing = await stripe.customers.retrieve(existingCustomerId);
+    if (existing && !existing.deleted) {
+      await stripe.customers.update(existingCustomerId, {
+        email: normalizedEmail || existing.email || undefined,
+        name: name || existing.name || undefined,
+        metadata: {
+          ...(existing.metadata || {}),
+          userId,
+          uid: userId,
+          firebaseUID: userId,
+          firebaseUid: userId
+        }
+      });
+    }
+  }
+
+  if (db && existingCustomerId) {
+    const data = {
+      email: normalizedEmail || email || '',
+      stripeId: existingCustomerId,
+      stripeCustomerId: existingCustomerId,
+      stripeLink: `https://dashboard.stripe.com/customers/${existingCustomerId}`,
+      updatedAt: new Date().toISOString()
+    };
+    await Promise.all([
+      db.collection('users').doc(userId).set(data, { merge: true }),
+      db.collection('customers').doc(userId).set(data, { merge: true })
+    ]);
+  }
+
+  return existingCustomerId;
+}
+
 function getBaseUrl(req) {
   const configured = process.env.PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_SITE_URL;
   if (configured) return configured.replace(/\/$/, '');
@@ -60,110 +198,6 @@ function safeReturnUrl(req, returnUrl) {
   }
 
   return fallback;
-}
-
-
-function initFirebaseAdmin() {
-  if (admin.apps.length) return admin.firestore();
-
-  const rawJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  const rawBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
-
-  if (!rawJson && !rawBase64) return null;
-
-  try {
-    const jsonText = rawJson || Buffer.from(rawBase64, 'base64').toString('utf8');
-    const serviceAccount = JSON.parse(jsonText);
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-    return admin.firestore();
-  } catch (error) {
-    console.warn('Could not initialize Firebase Admin for Stripe customer reuse:', error.message);
-    return null;
-  }
-}
-
-async function getExistingStripeCustomerId(db, userId) {
-  if (!db || !userId) return '';
-
-  const [userSnap, customerSnap] = await Promise.all([
-    db.collection('users').doc(userId).get(),
-    db.collection('customers').doc(userId).get()
-  ]);
-
-  const userData = userSnap.exists ? userSnap.data() || {} : {};
-  const customerData = customerSnap.exists ? customerSnap.data() || {} : {};
-  return customerData.stripeCustomerId || customerData.customerId || customerData.stripeId || userData.stripeCustomerId || userData.customerId || userData.stripeId || '';
-}
-
-async function verifyStripeCustomer(customerId) {
-  if (!customerId) return '';
-  try {
-    const customer = await stripe.customers.retrieve(customerId);
-    return customer && !customer.deleted ? customer.id : '';
-  } catch (error) {
-    console.warn(`Stored Stripe customer ${customerId} could not be retrieved; creating/reusing another customer.`, error.message);
-    return '';
-  }
-}
-
-async function findStripeCustomerByFirebaseUid(userId) {
-  if (!userId) return '';
-  const matches = await stripe.customers.search({
-    query: `metadata['firebaseUid']:'${String(userId).replace(/'/g, "\\'")}'`,
-    limit: 1
-  });
-  return matches.data?.[0]?.id || '';
-}
-
-async function findStripeCustomerByEmail(email) {
-  if (!email) return '';
-  const matches = await stripe.customers.list({ email, limit: 10 });
-  const customer = (matches.data || []).find((item) => !item.deleted);
-  return customer?.id || '';
-}
-
-async function getOrCreateStripeCustomer({ db, userId, email, name }) {
-  let customerId = await verifyStripeCustomer(await getExistingStripeCustomerId(db, userId));
-  if (!customerId) customerId = await findStripeCustomerByFirebaseUid(userId);
-  if (!customerId) customerId = await findStripeCustomerByEmail(email);
-
-  if (customerId) {
-    await stripe.customers.update(customerId, {
-      email: email || undefined,
-      name: name || undefined,
-      metadata: {
-        userId,
-        uid: userId,
-        firebaseUid: userId
-      }
-    });
-  } else {
-    const customer = await stripe.customers.create({
-      email: email || undefined,
-      name: name || undefined,
-      metadata: {
-        userId,
-        uid: userId,
-        firebaseUid: userId
-      }
-    });
-    customerId = customer.id;
-  }
-
-  if (db && customerId) {
-    const update = {
-      stripeCustomerId: customerId,
-      customerId,
-      stripeCustomerLinkedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    await Promise.all([
-      db.collection('users').doc(userId).set(update, { merge: true }),
-      db.collection('customers').doc(userId).set({ ...update, email: email || '' }, { merge: true })
-    ]);
-  }
-
-  return customerId;
 }
 
 module.exports = async function handler(req, res) {
@@ -209,14 +243,13 @@ module.exports = async function handler(req, res) {
     cancelUrl.searchParams.set('stripe_cancelled', 'true');
     cancelUrl.searchParams.set('checkout_cancelled', 'true');
 
-    const db = initFirebaseAdmin();
-    const customerId = await getOrCreateStripeCustomer({ db, userId, email, name });
+    const stripeCustomerId = await getOrCreateLinkedStripeCustomer({ userId, email, name });
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
       allow_promotion_codes: true,
-      customer: customerId,
+      customer: stripeCustomerId,
       client_reference_id: userId,
       metadata: {
         userId,
@@ -235,7 +268,7 @@ module.exports = async function handler(req, res) {
       cancel_url: cancelUrl.toString()
     });
 
-    return res.status(200).json({ url: session.url, stripeCustomerId: customerId });
+    return res.status(200).json({ url: session.url });
   } catch (error) {
     console.error('Stripe checkout session error:', error);
     return res.status(500).json({ error: error.message || 'Unable to start Stripe Checkout.' });

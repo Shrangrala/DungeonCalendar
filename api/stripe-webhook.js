@@ -2,7 +2,7 @@ const Stripe = require('stripe');
 const admin = require('firebase-admin');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2025-11-17.clover'
+  apiVersion: '2024-06-20'
 });
 
 function readRawBody(req) {
@@ -34,10 +34,6 @@ function initFirebaseAdmin() {
 
   admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
   return admin.firestore();
-}
-
-function normalizeEmail(email = '') {
-  return String(email || '').trim().toLowerCase();
 }
 
 function normalizePlan(value) {
@@ -92,45 +88,60 @@ async function resolveUserIdFromStripeCustomer(customerId) {
   try {
     const customer = await stripe.customers.retrieve(customerId);
     if (!customer || customer.deleted) return '';
-
-    const metadataUserId = customer.metadata?.userId || customer.metadata?.uid || customer.metadata?.firebaseUID || customer.metadata?.firebaseUid || '';
-    if (metadataUserId) return metadataUserId;
-
-    const email = normalizeEmail(customer.email || '');
-    if (!email) return '';
-
-    const db = initFirebaseAdmin();
-    const customerByEmail = await db.collection('customers').where('email', '==', email).limit(1).get();
-    if (!customerByEmail.empty) return customerByEmail.docs[0].id;
-
-    const userByEmail = await db.collection('users').where('email', '==', email).limit(1).get();
-    if (!userByEmail.empty) return userByEmail.docs[0].id;
-
-    return '';
+    return customer.metadata?.userId || customer.metadata?.uid || customer.metadata?.firebaseUid || customer.metadata?.firebaseUID || customer.metadata?.firebaseUserId || '';
   } catch (error) {
     console.warn(`Stripe webhook: could not resolve Firebase UID from customer ${customerId}.`, error.message);
     return '';
   }
 }
 
-async function stampStripeCustomerWithFirebaseUid(customerId, userId) {
-  if (!customerId || !userId) return;
+
+function normalizeEmail(email = '') {
+  return String(email || '').trim().toLowerCase();
+}
+
+async function resolveUserIdFromFirestoreByEmail(email) {
+  const safeEmail = normalizeEmail(email);
+  if (!safeEmail) return '';
+
+  const db = initFirebaseAdmin();
+  const collections = ['customers', 'users'];
+
+  for (const collectionName of collections) {
+    const snap = await db.collection(collectionName).where('email', '==', safeEmail).limit(1).get().catch(() => null);
+    if (snap && !snap.empty) return snap.docs[0].id;
+  }
+
+  return '';
+}
+
+async function resolveUserIdFromStripeCustomerOrEmail(customerId) {
+  if (!customerId) return '';
 
   try {
     const customer = await stripe.customers.retrieve(customerId);
-    if (!customer || customer.deleted) return;
-    await stripe.customers.update(customerId, {
-      metadata: {
-        ...(customer.metadata || {}),
-        userId,
-        uid: userId,
-        firebaseUID: userId,
-        firebaseUid: userId
-      }
-    });
+    if (!customer || customer.deleted) return '';
+
+    const metadataUid = customer.metadata?.userId || customer.metadata?.uid || customer.metadata?.firebaseUid || customer.metadata?.firebaseUID || customer.metadata?.firebaseUserId || '';
+    if (metadataUid) return metadataUid;
+
+    const uidByEmail = await resolveUserIdFromFirestoreByEmail(customer.email || '');
+    if (uidByEmail) {
+      await stripe.customers.update(customerId, {
+        metadata: {
+          userId: uidByEmail,
+          uid: uidByEmail,
+          firebaseUid: uidByEmail,
+          firebaseUID: uidByEmail
+        }
+      }).catch((error) => console.warn(`Stripe webhook: could not stamp metadata on customer ${customerId}.`, error.message));
+      return uidByEmail;
+    }
   } catch (error) {
-    console.warn(`Stripe webhook: could not stamp Firebase UID on customer ${customerId}.`, error.message);
+    console.warn(`Stripe webhook: could not resolve Firebase UID from customer/email ${customerId}.`, error.message);
   }
+
+  return '';
 }
 
 async function updateUserAndCustomer(userId, data) {
@@ -141,18 +152,13 @@ async function updateUserAndCustomer(userId, data) {
 
   const db = initFirebaseAdmin();
   const now = new Date().toISOString();
-  const stripeCustomerId = data.stripeCustomerId || data.stripeId || '';
-  const linkedData = {
-    ...data,
-    ...(stripeCustomerId ? {
-      stripeId: stripeCustomerId,
-      stripeCustomerId,
-      stripeLink: `https://dashboard.stripe.com/customers/${stripeCustomerId}`
-    } : {}),
-    updatedAt: now
-  };
+  const expandedData = { ...data, updatedAt: now };
+  if (expandedData.stripeCustomerId) {
+    expandedData.stripeId = expandedData.stripeCustomerId;
+    expandedData.stripeLink = `https://dashboard.stripe.com/customers/${expandedData.stripeCustomerId}`;
+  }
   const cleanData = Object.fromEntries(
-    Object.entries(linkedData).filter(([, value]) => value !== undefined)
+    Object.entries(expandedData).filter(([, value]) => value !== undefined)
   );
 
   await Promise.all([
@@ -170,10 +176,8 @@ async function handleCheckoutSessionCompleted(session) {
 
   let userId = session.client_reference_id || session.metadata?.userId || session.metadata?.uid || session.metadata?.firebaseUid || '';
   if (!userId) {
-    userId = await resolveUserIdFromStripeCustomer(session.customer || subscription?.customer || '');
+    userId = await resolveUserIdFromStripeCustomerOrEmail(session.customer || subscription?.customer || '');
   }
-
-  await stampStripeCustomerWithFirebaseUid(session.customer || subscription?.customer || '', userId);
 
   const firstItem = subscription?.items?.data?.[0];
   const active = subscription ? ['active', 'trialing'].includes(subscription.status) : true;
@@ -198,10 +202,8 @@ async function handleCheckoutSessionCompleted(session) {
 async function handleSubscriptionChanged(subscription) {
   let userId = subscription.metadata?.userId || subscription.metadata?.uid || subscription.metadata?.firebaseUid || '';
   if (!userId) {
-    userId = await resolveUserIdFromStripeCustomer(subscription.customer || '');
+    userId = await resolveUserIdFromStripeCustomerOrEmail(subscription.customer || '');
   }
-  await stampStripeCustomerWithFirebaseUid(subscription.customer || '', userId);
-
   const firstItem = subscription.items?.data?.[0];
   const active = ['active', 'trialing'].includes(subscription.status);
 
@@ -222,10 +224,8 @@ async function handleSubscriptionChanged(subscription) {
 async function handleSubscriptionDeleted(subscription) {
   let userId = subscription.metadata?.userId || subscription.metadata?.uid || subscription.metadata?.firebaseUid || '';
   if (!userId) {
-    userId = await resolveUserIdFromStripeCustomer(subscription.customer || '');
+    userId = await resolveUserIdFromStripeCustomerOrEmail(subscription.customer || '');
   }
-
-  await stampStripeCustomerWithFirebaseUid(subscription.customer || '', userId);
 
   await updateUserAndCustomer(userId, {
     plan: 'free',

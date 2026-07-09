@@ -2384,7 +2384,6 @@ export default function DungeonCalendarApp() {
       const expectedBillingInterval = normalizeBillingInterval(selectedBillingInterval || pendingForVerification?.billingInterval || currentUser?.pendingStripeBillingInterval || billingInterval || "monthly");
       const statusUrl = new URL("/api/stripe-subscription-status", window.location.origin);
       statusUrl.searchParams.set("email", email);
-      statusUrl.searchParams.set("userId", currentUser.id);
       if (expectedPlan !== "free") statusUrl.searchParams.set("expectedPlan", expectedPlan);
       statusUrl.searchParams.set("expectedBillingInterval", expectedBillingInterval);
 
@@ -2518,22 +2517,10 @@ export default function DungeonCalendarApp() {
           return;
         }
 
-        console.warn("Server Checkout Session was unavailable; falling back to configured Stripe Payment Link.", data?.error || response.status);
+        throw new Error(data?.error || "Server Checkout Session failed. Please try again.");
       } catch (sessionError) {
-        console.warn("Server Checkout Session failed; falling back to configured Stripe Payment Link.", sessionError);
-      }
-
-      const checkoutUrl = new URL(paymentLink);
-      if (email) checkoutUrl.searchParams.set("prefilled_email", email);
-      checkoutUrl.searchParams.set("client_reference_id", currentUser?.id || auth.currentUser?.uid || "guest");
-      checkoutUrl.searchParams.set("stripe_plan", activatedPlan);
-      checkoutUrl.searchParams.set("stripe_billing", activatedInterval);
-      checkoutUrl.searchParams.set("stripe_success", "true");
-      checkoutUrl.searchParams.set("success_url", `${window.location.origin}/subscription-complete?stripe_success=true&stripe_plan=${encodeURIComponent(activatedPlan)}&stripe_billing=${encodeURIComponent(activatedInterval)}`);
-      checkoutUrl.searchParams.set("cancel_url", `${window.location.origin}/?stripe_cancelled=true`);
-
-      if (typeof window !== "undefined") {
-        window.location.assign(checkoutUrl.toString());
+        console.error("Server Checkout Session failed:", sessionError);
+        throw new Error(sessionError?.message || "Server Checkout Session failed. Please try again.");
       }
     } catch (error) {
       setCheckoutLoading(false);

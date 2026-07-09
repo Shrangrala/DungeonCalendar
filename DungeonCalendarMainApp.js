@@ -925,7 +925,7 @@ function liveApplyPlanFromFirestore(input = {}, fallbackPlan = "free", fallbackB
     ? inferBillingIntervalFromStripeSubscription(safeSubscription, readProfileBillingInterval(safeCustomer, readProfileBillingInterval(safeProfile, fallbackBillingInterval)))
     : readProfileBillingInterval(safeCustomer, readProfileBillingInterval(safeProfile, fallbackBillingInterval));
   const status = safeSubscription.status || safeSubscription.stripeSubscriptionStatus || safeSubscription.subscriptionStatus || safeCustomer.stripeSubscriptionStatus || safeCustomer.subscriptionStatus || safeCustomer.status || safeProfile.stripeSubscriptionStatus || safeProfile.subscriptionStatus || "";
-  const active = nextPlan !== "free" || readBillingStatusActive(safeSubscription) || readBillingStatusActive(safeCustomer) || readBillingStatusActive(safeProfile);
+  const active = readBillingStatusActive(safeSubscription) || readBillingStatusActive(safeCustomer) || readBillingStatusActive(safeProfile);
   return {
     plan: active ? normalizePlan(nextPlan) : "free",
     billingInterval: normalizeBillingInterval(nextBillingInterval),
@@ -1887,17 +1887,13 @@ export default function DungeonCalendarApp() {
             }
           } else {
             console.warn("Checkout session confirmation failed.", data?.error || response.status);
-            setBillingMessage(data?.error || "Stripe checkout could not be confirmed yet. Your plan will update automatically after Stripe sends the subscription webhook.");
-            return;
           }
         } catch (confirmError) {
           console.warn("Checkout session confirmation failed.", confirmError);
-          setBillingMessage("Stripe checkout could not be confirmed yet. Your plan will update automatically after Stripe sends the subscription webhook.");
-          return;
         }
       }
 
-      setBillingMessage("Stripe checkout returned without a confirmed paid session. No plan changes were made.");
+      setBillingMessage("Stripe checkout was not confirmed yet. Your plan will update after Stripe confirms payment.");
     };
 
     finishStripeReturn()
@@ -2002,17 +1998,6 @@ export default function DungeonCalendarApp() {
 
     return () => clearTimeout(timer);
   }, [currentUser?.id, currentUser?.email, stripeLoginVerifyUserId]);
-
-  useEffect(() => {
-    if (!currentUser || auth.currentUser?.uid !== currentUser.id) return;
-    const pendingPlan = normalizePlan(currentUser.pendingStripePlan || "free");
-    if (pendingPlan === "free" || plan !== "free") return;
-
-    // Do not activate a paid plan just because a Stripe customer record exists.
-    // A customer can be created before checkout is paid. The plan is upgraded only
-    // after /api/confirm-checkout-session verifies a paid Checkout Session or after
-    // the Stripe webhook writes an active subscription under customers/{uid}/subscriptions.
-  }, [currentUser?.id, currentUser?.pendingStripePlan, plan]);
 
   const bestDates = useMemo(() => {
     return Object.entries(availability)
@@ -2441,34 +2426,26 @@ export default function DungeonCalendarApp() {
         items: [{ item_id: activatedPlan, item_name: planLimits[activatedPlan]?.name || activatedPlan, item_category: "subscription", item_variant: activatedInterval, price: checkoutValue, quantity: 1 }]
       });
 
-      // Use a server-created Stripe Checkout Session first. Payment Links do not reliably
-      // honor success_url/cancel_url query parameters on every account/browser, which can
-      // make checkout appear successful but never redirect back into Dungeon Calendar.
-      try {
-        const response = await fetch("/api/create-checkout-session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            planId: activatedPlan,
-            billingInterval: activatedInterval,
-            userId: currentUser?.id || auth.currentUser?.uid || "",
-            email,
-            name: currentUser?.name || currentUser?.username || "",
-            returnUrl: window.location.origin
-          })
-        });
+      const response = await fetch("/api/create-checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planId: activatedPlan,
+          billingInterval: activatedInterval,
+          userId: currentUser?.id || auth.currentUser?.uid || "",
+          email,
+          name: currentUser?.name || currentUser?.username || "",
+          returnUrl: window.location.origin
+        })
+      });
 
-        const data = await response.json().catch(() => ({}));
-        if (response.ok && data?.url) {
-          window.location.assign(data.url);
-          return;
-        }
-
-        throw new Error(data?.error || "Server Checkout Session failed. Please try again.");
-      } catch (sessionError) {
-        console.error("Server Checkout Session failed:", sessionError);
-        throw new Error(sessionError?.message || "Server Checkout Session failed. Please try again.");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.url) {
+        throw new Error(data?.error || "Server Checkout Session failed. Make sure Firebase Functions is deployed and /api/create-checkout-session is rewriting to it.");
       }
+
+      window.location.assign(data.url);
+      return;
     } catch (error) {
       setCheckoutLoading(false);
       setBillingMessage(error.message || "Unable to open Stripe Checkout.");

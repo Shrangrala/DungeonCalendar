@@ -311,4 +311,18 @@ async function applySubscription(subscription, extra = {}) {
   }, { merge: true });
 }
 
-exports.api = onRequest({ region: 'us-central1', secrets: [] }, app);
+exports.api = onRequest(
+  {
+    region: "us-central1",
+    secrets: [
+      "STRIPE_SECRET_KEY",
+      "STRIPE_WEBHOOK_SECRET",
+      "STRIPE_PRICE_ADVENTURER_MONTHLY",
+      "STRIPE_PRICE_ADVENTURER_YEARLY",
+      "STRIPE_PRICE_GUILDMASTER_MONTHLY",
+      "STRIPE_PRICE_GUILDMASTER_YEARLY",
+      "PUBLIC_SITE_URL"
+    ]
+  },
+  app
+);

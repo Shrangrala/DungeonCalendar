@@ -81,6 +81,20 @@ async function resolveSubscription(subscriptionId) {
   });
 }
 
+
+async function resolveUserIdFromStripeCustomer(customerId) {
+  if (!customerId) return '';
+
+  try {
+    const customer = await stripe.customers.retrieve(customerId);
+    if (!customer || customer.deleted) return '';
+    return customer.metadata?.userId || customer.metadata?.uid || customer.metadata?.firebaseUid || '';
+  } catch (error) {
+    console.warn(`Stripe webhook: could not resolve Firebase UID from customer ${customerId}.`, error.message);
+    return '';
+  }
+}
+
 async function updateUserAndCustomer(userId, data) {
   if (!userId) {
     console.warn('Stripe webhook: missing userId; skipped Firestore update.');
@@ -100,11 +114,15 @@ async function updateUserAndCustomer(userId, data) {
 }
 
 async function handleCheckoutSessionCompleted(session) {
-  const userId = session.client_reference_id || session.metadata?.userId || session.metadata?.uid || '';
   let subscription = null;
 
   if (session.subscription) {
     subscription = await resolveSubscription(session.subscription);
+  }
+
+  let userId = session.client_reference_id || session.metadata?.userId || session.metadata?.uid || session.metadata?.firebaseUid || '';
+  if (!userId) {
+    userId = await resolveUserIdFromStripeCustomer(session.customer || subscription?.customer || '');
   }
 
   const firstItem = subscription?.items?.data?.[0];
@@ -128,7 +146,10 @@ async function handleCheckoutSessionCompleted(session) {
 }
 
 async function handleSubscriptionChanged(subscription) {
-  const userId = subscription.metadata?.userId || subscription.metadata?.uid || subscription.metadata?.firebaseUid || '';
+  let userId = subscription.metadata?.userId || subscription.metadata?.uid || subscription.metadata?.firebaseUid || '';
+  if (!userId) {
+    userId = await resolveUserIdFromStripeCustomer(subscription.customer || '');
+  }
   const firstItem = subscription.items?.data?.[0];
   const active = ['active', 'trialing'].includes(subscription.status);
 
@@ -147,7 +168,10 @@ async function handleSubscriptionChanged(subscription) {
 }
 
 async function handleSubscriptionDeleted(subscription) {
-  const userId = subscription.metadata?.userId || subscription.metadata?.uid || subscription.metadata?.firebaseUid || '';
+  let userId = subscription.metadata?.userId || subscription.metadata?.uid || subscription.metadata?.firebaseUid || '';
+  if (!userId) {
+    userId = await resolveUserIdFromStripeCustomer(subscription.customer || '');
+  }
 
   await updateUserAndCustomer(userId, {
     plan: 'free',

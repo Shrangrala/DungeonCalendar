@@ -66,7 +66,7 @@ module.exports = async function handler(req, res) {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!secretKey) {
     res.statusCode = 500;
-    res.end(JSON.stringify({ error: 'STRIPE_SECRET_KEY is not configured in Vercel.' }));
+    res.end(JSON.stringify({ error: 'STRIPE_SECRET_KEY is not configured.' }));
     return;
   }
 

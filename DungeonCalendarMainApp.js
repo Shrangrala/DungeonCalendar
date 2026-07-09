@@ -2398,7 +2398,7 @@ export default function DungeonCalendarApp() {
       const contentType = response.headers.get("content-type") || "";
 
       if (!contentType.includes("application/json")) {
-        throw new Error("Stripe verification API did not return JSON. Check that /api/stripe-subscription-status is deployed and Vercel is not rewriting /api routes to the web app.");
+        throw new Error("Stripe verification API did not return JSON. Check that /api/stripe-subscription-status is deployed and Firebase Hosting is correctly rewriting /api routes.");
       }
 
       const data = await response.json();
@@ -2448,7 +2448,7 @@ export default function DungeonCalendarApp() {
         if (error?.name === "AbortError") {
           setBillingMessage("Stripe verification is taking too long. Confirm the billing email is correct, then try again in a moment.");
         } else {
-          setBillingMessage(profileSaveErrorMessage(error) || error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is set in Vercel.");
+          setBillingMessage(profileSaveErrorMessage(error) || error.message || "Could not verify Stripe subscription. Make sure STRIPE_SECRET_KEY is configured.");
         }
       }
     } finally {

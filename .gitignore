@@ -3,7 +3,7 @@ dist
 .expo
 .env.local
 
-.vercel
+# .vercel removed
 .env*
 
 # Do not keep generated/exported duplicate app sources in public
@@ -20,6 +20,6 @@ public/package.json
 public/package-lock.json
 public/app.json
 public/babel.config.js
-public/vercel.json
+# public/vercel.json removed
 public/request.json
 public/DungeonCalendar

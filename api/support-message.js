@@ -3,11 +3,11 @@ const admin = require('firebase-admin');
 const allowedOrigins = [
   'https://www.dungeoncalendar.com',
   'https://www.dungeoncalendar.com',
-  'https://dungeoncalendarmobile.vercel.app'
+  'https://dungeon-calendar-app.web.app'
 ];
 
 function isAllowedOrigin(origin = '') {
-  return allowedOrigins.includes(origin) || /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
+  return allowedOrigins.includes(origin) ;
 }
 
 function setCors(req, res) {

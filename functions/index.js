@@ -28,7 +28,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.post('/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+app.post(['/stripe-webhook', '/api/stripe-webhook'], express.raw({ type: 'application/json' }), async (req, res) => {
   const stripe = getStripe();
   let event;
   try {
@@ -153,7 +153,20 @@ async function saveCustomerLink(uid, customer, { email, name } = {}) {
   await db.collection('users').doc(uid).set({ stripeCustomerId: customer.id, updatedAt: now }, { merge: true });
 }
 
-app.post('/create-checkout-session', async (req, res) => {
+
+app.get(['/debug-env', '/api/debug-env'], (req, res) => {
+  return res.json({
+    ok: true,
+    stripeSecretKeyConfigured: Boolean(process.env.STRIPE_SECRET_KEY),
+    adventurerMonthlyConfigured: Boolean(process.env.STRIPE_PRICE_ADVENTURER_MONTHLY),
+    adventurerYearlyConfigured: Boolean(process.env.STRIPE_PRICE_ADVENTURER_YEARLY),
+    guildmasterMonthlyConfigured: Boolean(process.env.STRIPE_PRICE_GUILDMASTER_MONTHLY),
+    guildmasterYearlyConfigured: Boolean(process.env.STRIPE_PRICE_GUILDMASTER_YEARLY),
+    publicSiteUrl: process.env.PUBLIC_SITE_URL || ''
+  });
+});
+
+app.post(['/create-checkout-session', '/api/create-checkout-session'], async (req, res) => {
   try {
     const stripe = getStripe();
     const { planId, billingInterval, userId, email, name, returnUrl } = req.body || {};
@@ -199,7 +212,7 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-app.get('/confirm-checkout-session', async (req, res) => {
+app.get(['/confirm-checkout-session', '/api/confirm-checkout-session'], async (req, res) => {
   try {
     const stripe = getStripe();
     const sessionId = String(req.query.session_id || '').trim();

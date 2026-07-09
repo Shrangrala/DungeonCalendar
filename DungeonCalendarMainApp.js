@@ -2439,9 +2439,16 @@ export default function DungeonCalendarApp() {
         })
       });
 
-      const data = await response.json().catch(() => ({}));
+      const responseText = await response.text();
+      let data = {};
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        data = { error: responseText };
+      }
       if (!response.ok || !data?.url) {
-        throw new Error(data?.error || "Server Checkout Session failed. Make sure Firebase Functions is deployed and /api/create-checkout-session is rewriting to it.");
+        const serverMessage = data?.error || responseText || `HTTP ${response.status}`;
+        throw new Error(`Server Checkout Session failed: ${serverMessage}`);
       }
 
       window.location.assign(data.url);

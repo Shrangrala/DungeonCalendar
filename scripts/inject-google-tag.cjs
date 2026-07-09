@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const TAG_ID = 'GT-TWZ2NDFP';
+const TAG_ID = 'G-D3BQVGC6BV';
 const DIST_DIR = path.join(process.cwd(), 'dist');
 const snippet = `<!-- Google tag (gtag.js) -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=${TAG_ID}"></script>

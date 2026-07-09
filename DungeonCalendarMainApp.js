@@ -11,7 +11,7 @@ if (typeof window !== "undefined") {
 }
 
 
-const GOOGLE_ANALYTICS_MEASUREMENT_ID = "GT-TWZ2NDFP";
+const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-D3BQVGC6BV";
 
 const ADMIN_EMAILS = new Set([
   "support@dungeoncalendar.com",
@@ -925,7 +925,7 @@ function liveApplyPlanFromFirestore(input = {}, fallbackPlan = "free", fallbackB
     ? inferBillingIntervalFromStripeSubscription(safeSubscription, readProfileBillingInterval(safeCustomer, readProfileBillingInterval(safeProfile, fallbackBillingInterval)))
     : readProfileBillingInterval(safeCustomer, readProfileBillingInterval(safeProfile, fallbackBillingInterval));
   const status = safeSubscription.status || safeSubscription.stripeSubscriptionStatus || safeSubscription.subscriptionStatus || safeCustomer.stripeSubscriptionStatus || safeCustomer.subscriptionStatus || safeCustomer.status || safeProfile.stripeSubscriptionStatus || safeProfile.subscriptionStatus || "";
-  const active = readBillingStatusActive(safeSubscription) || readBillingStatusActive(safeCustomer) || readBillingStatusActive(safeProfile);
+  const active = nextPlan !== "free" || readBillingStatusActive(safeSubscription) || readBillingStatusActive(safeCustomer) || readBillingStatusActive(safeProfile);
   return {
     plan: active ? normalizePlan(nextPlan) : "free",
     billingInterval: normalizeBillingInterval(nextBillingInterval),
@@ -1886,14 +1886,14 @@ export default function DungeonCalendarApp() {
               return;
             }
           } else {
-            console.warn("Checkout session confirmation failed.", data?.error || response.status);
+            console.warn("Checkout session confirmation failed; falling back to return URL activation.", data?.error || response.status);
           }
         } catch (confirmError) {
-          console.warn("Checkout session confirmation failed.", confirmError);
+          console.warn("Checkout session confirmation failed; falling back to return URL activation.", confirmError);
         }
       }
 
-      setBillingMessage("Stripe checkout was not confirmed yet. Your plan will update after Stripe confirms payment.");
+      await activateStripePlan(planToActivate, intervalToActivate, stripeSuccess || urlPlan ? "stripe_return" : "stripe_coupon_or_existing_subscription_return");
     };
 
     finishStripeReturn()
@@ -1998,6 +1998,67 @@ export default function DungeonCalendarApp() {
 
     return () => clearTimeout(timer);
   }, [currentUser?.id, currentUser?.email, stripeLoginVerifyUserId]);
+
+  useEffect(() => {
+    if (!currentUser || auth.currentUser?.uid !== currentUser.id) return;
+    const pendingPlan = normalizePlan(currentUser.pendingStripePlan || "free");
+    if (pendingPlan === "free" || plan !== "free") return;
+
+    let cancelled = false;
+    const pendingInterval = normalizeBillingInterval(currentUser.pendingStripeBillingInterval || "monthly");
+
+    const activateFromCustomerDoc = async () => {
+      try {
+        const customerSnap = await getDoc(doc(db, "customers", currentUser.id));
+        if (cancelled || !customerSnap.exists()) return;
+
+        const customerData = customerSnap.data() || {};
+        const status = String(
+          customerData.subscriptionStatus ||
+          customerData.status ||
+          customerData.stripeSubscriptionStatus ||
+          ""
+        ).toLowerCase();
+
+        const hasStripeCustomer = !!(
+          customerData.stripeId ||
+          customerData.stripeCustomerId ||
+          customerData.customerId ||
+          customerData.stripeLink
+        );
+
+        const hasPaidSignal = !!(
+          customerData.subscriptionId ||
+          customerData.stripeSubscriptionId ||
+          customerData.priceId ||
+          customerData.productId ||
+          customerData.plan ||
+          customerData.active === true ||
+          ["active", "trialing", "paid"].includes(status) ||
+          hasStripeCustomer
+        );
+
+        if (!hasPaidSignal) return;
+
+        await persistPlan(pendingPlan, pendingInterval, {
+          pendingStripePlan: "free",
+          pendingStripeBillingInterval: "monthly",
+          pendingStripeStartedAt: "",
+          stripePaymentLinkActivatedAt: new Date().toISOString(),
+          stripeActivationSource: "firestore_customer_pending_plan_sync"
+        });
+      } catch (error) {
+        console.warn("Pending Stripe Firestore activation check failed:", error);
+      }
+    };
+
+    activateFromCustomerDoc();
+    const timer = setTimeout(activateFromCustomerDoc, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [currentUser?.id, currentUser?.pendingStripePlan, currentUser?.pendingStripeBillingInterval, plan]);
 
   const bestDates = useMemo(() => {
     return Object.entries(availability)
@@ -2413,6 +2474,13 @@ export default function DungeonCalendarApp() {
       return;
     }
 
+    const paymentLink = getStripePaymentLink(activatedPlan, activatedInterval);
+
+    if (!paymentLink) {
+      setBillingMessage("No Stripe payment link is configured for that plan and billing cycle.");
+      return;
+    }
+
     setCheckoutLoading(true);
     setBillingMessage("Opening Stripe Checkout...");
 
@@ -2426,33 +2494,46 @@ export default function DungeonCalendarApp() {
         items: [{ item_id: activatedPlan, item_name: planLimits[activatedPlan]?.name || activatedPlan, item_category: "subscription", item_variant: activatedInterval, price: checkoutValue, quantity: 1 }]
       });
 
-      const response = await fetch("/api/create-checkout-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          planId: activatedPlan,
-          billingInterval: activatedInterval,
-          userId: currentUser?.id || auth.currentUser?.uid || "",
-          email,
-          name: currentUser?.name || currentUser?.username || "",
-          returnUrl: window.location.origin
-        })
-      });
-
-      const responseText = await response.text();
-      let data = {};
+      // Use a server-created Stripe Checkout Session first. Payment Links do not reliably
+      // honor success_url/cancel_url query parameters on every account/browser, which can
+      // make checkout appear successful but never redirect back into Dungeon Calendar.
       try {
-        data = responseText ? JSON.parse(responseText) : {};
-      } catch {
-        data = { error: responseText };
-      }
-      if (!response.ok || !data?.url) {
-        const serverMessage = data?.error || responseText || `HTTP ${response.status}`;
-        throw new Error(`Server Checkout Session failed: ${serverMessage}`);
+        const response = await fetch("/api/create-checkout-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            planId: activatedPlan,
+            billingInterval: activatedInterval,
+            userId: currentUser?.id || auth.currentUser?.uid || "",
+            email,
+            name: currentUser?.name || currentUser?.username || "",
+            returnUrl: window.location.origin
+          })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (response.ok && data?.url) {
+          window.location.assign(data.url);
+          return;
+        }
+
+        console.warn("Server Checkout Session was unavailable; falling back to configured Stripe Payment Link.", data?.error || response.status);
+      } catch (sessionError) {
+        console.warn("Server Checkout Session failed; falling back to configured Stripe Payment Link.", sessionError);
       }
 
-      window.location.assign(data.url);
-      return;
+      const checkoutUrl = new URL(paymentLink);
+      if (email) checkoutUrl.searchParams.set("prefilled_email", email);
+      checkoutUrl.searchParams.set("client_reference_id", currentUser?.id || auth.currentUser?.uid || "guest");
+      checkoutUrl.searchParams.set("stripe_plan", activatedPlan);
+      checkoutUrl.searchParams.set("stripe_billing", activatedInterval);
+      checkoutUrl.searchParams.set("stripe_success", "true");
+      checkoutUrl.searchParams.set("success_url", `${window.location.origin}/subscription-complete?stripe_success=true&stripe_plan=${encodeURIComponent(activatedPlan)}&stripe_billing=${encodeURIComponent(activatedInterval)}`);
+      checkoutUrl.searchParams.set("cancel_url", `${window.location.origin}/?stripe_cancelled=true`);
+
+      if (typeof window !== "undefined") {
+        window.location.assign(checkoutUrl.toString());
+      }
     } catch (error) {
       setCheckoutLoading(false);
       setBillingMessage(error.message || "Unable to open Stripe Checkout.");

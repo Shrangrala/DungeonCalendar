@@ -2590,14 +2590,51 @@ export default function DungeonCalendarApp() {
       return;
     }
 
-    const confirmed = window.confirm("Cancel your current paid membership and switch to the Free plan?");
+    if (currentUser?.stripeCancelAtPeriodEnd) {
+      const endDate = currentUser?.stripeCurrentPeriodEnd
+        ? new Date(currentUser.stripeCurrentPeriodEnd).toLocaleDateString()
+        : "the end of your current billing period";
+      setAccountMessage(`Your membership is already scheduled to end on ${endDate}.`);
+      return;
+    }
+
+    const intervalLabel = billingInterval === "yearly" ? "yearly" : "monthly";
+    const confirmed = window.confirm(`Cancel renewal? Your ${intervalLabel} membership will remain active until the end of the current paid billing period and will not renew.`);
     if (!confirmed) return;
 
     try {
-      await persistPlan("free", "monthly");
+      const signedInUser = auth.currentUser;
+      if (!signedInUser || signedInUser.uid !== currentUser?.id) throw new Error("Sign in again before cancelling your membership.");
+      const token = await signedInUser.getIdToken(true);
+      const response = await fetch("/api/cancel-stripe-subscription", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          subscriptionId: currentUser?.stripeSubscriptionId || "",
+          customerId: currentUser?.stripeCustomerId || "",
+          email: currentUser?.email || signedInUser.email || ""
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Unable to schedule membership cancellation.");
+
+      const periodEndIso = data.currentPeriodEndIso || (data.currentPeriodEnd ? new Date(Number(data.currentPeriodEnd) * 1000).toISOString() : "");
+      await persistPlan(plan, billingInterval, {
+        stripeSubscriptionId: data.subscriptionId || currentUser?.stripeSubscriptionId || "",
+        stripeCustomerId: data.customerId || currentUser?.stripeCustomerId || "",
+        stripeSubscriptionStatus: data.status || "active",
+        stripeCancelAtPeriodEnd: true,
+        stripeCurrentPeriodEnd: periodEndIso,
+        stripeCancellationRequestedAt: new Date().toISOString()
+      });
+
+      const endDate = periodEndIso ? new Date(periodEndIso).toLocaleDateString() : "the end of your current billing period";
       setSelectedPaymentPlan("");
-      setBillingMessage("Membership cancelled. Free plan is now active.");
-      setAccountMessage("Membership cancelled. You are now on the Free plan.");
+      setBillingMessage(`Renewal cancelled. Your paid membership stays active until ${endDate}.`);
+      setAccountMessage(`Renewal cancelled. Your paid membership stays active until ${endDate}.`);
     } catch (error) {
       const message = profileSaveErrorMessage(error);
       setBillingMessage(message);
@@ -4354,8 +4391,13 @@ export default function DungeonCalendarApp() {
                   </Button>
                   {plan !== "free" && (
                     <Button onClick={cancelCurrentPlan} variant="ghost" className="rounded-xl border border-red-800 text-red-200 hover:bg-red-950 hover:text-white">
-                      Cancel Membership
+                      {currentUser?.stripeCancelAtPeriodEnd ? "Cancellation Scheduled" : "Cancel Membership"}
                     </Button>
+                  )}
+                  {plan !== "free" && currentUser?.stripeCancelAtPeriodEnd && (
+                    <p className="w-full text-sm text-amber-300">
+                      Your membership remains active until {currentUser?.stripeCurrentPeriodEnd ? new Date(currentUser.stripeCurrentPeriodEnd).toLocaleDateString() : "the end of the current billing period"}, then it will switch to Free and will not renew.
+                    </p>
                   )}
                 </div>
               </div>

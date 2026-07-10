@@ -1,17 +1,26 @@
 const fs = require('fs');
 const path = require('path');
 
-const TAG_ID = 'G-D3BQVGC6BV';
+const GOOGLE_TAG_ID = 'GT-TWZ2NDFP';
+const MEASUREMENT_ID = 'G-D3BQVGC6BV';
 const DIST_DIR = path.join(process.cwd(), 'dist');
-const snippet = `<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=${TAG_ID}"></script>
+const START_MARKER = '<!-- Dungeon Calendar Google tag: start -->';
+const END_MARKER = '<!-- Dungeon Calendar Google tag: end -->';
+const snippet = `${START_MARKER}
+<script async id="google-analytics-gtag" src="https://www.googletagmanager.com/gtag/js?id=${GOOGLE_TAG_ID}"></script>
 <script>
   window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
+  window.gtag = window.gtag || function gtag(){window.dataLayer.push(arguments);};
+  window.gtag('js', new Date());
 
-  gtag('config', '${TAG_ID}');
-</script>`;
+  const debugMode = new URLSearchParams(window.location.search).get('debug_mode');
+  window.gtag('config', '${MEASUREMENT_ID}', {
+    send_page_view: false,
+    debug_mode: debugMode === 'true' || debugMode === '1'
+  });
+  window.__dungeonCalendarGoogleAnalyticsInitialized = true;
+</script>
+${END_MARKER}`;
 
 function walk(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -24,13 +33,23 @@ function walk(dir) {
 for (const file of walk(DIST_DIR)) {
   if (!file.endsWith('.html')) continue;
   let html = fs.readFileSync(file, 'utf8');
-  html = html.replace(/<!-- Google tag \(gtag\.js\) -->[\s\S]*?<\/script>\s*/g, '');
-  html = html.replace(/<script async src="https:\/\/www\.googletagmanager\.com\/gtag\/js\?id=[^"]+"><\/script>\s*<script>[\s\S]*?gtag\('config',\s*'[^']+'[\s\S]*?<\/script>\s*/g, '');
+
+  // Remove a prior marker-delimited injection.
+  html = html.replace(new RegExp(`${START_MARKER}[\\s\\S]*?${END_MARKER}\\s*`, 'g'), '');
+
+  // Remove the older two-script snippet used by previous builds. The previous
+  // cleanup removed only the external script and could leave a duplicate inline
+  // gtag config block behind.
+  html = html.replace(
+    /<!-- Google tag \(gtag\.js\) -->[\s\S]*?<script[^>]*src=["']https:\/\/www\.googletagmanager\.com\/gtag\/js\?id=[^"']+["'][^>]*><\/script>[\s\S]*?<script>[\s\S]*?gtag\(["']config["'][\s\S]*?<\/script>\s*/g,
+    ''
+  );
+
   if (html.includes('</head>')) {
     html = html.replace('</head>', `${snippet}\n</head>`);
   } else {
     html = `${snippet}\n${html}`;
   }
   fs.writeFileSync(file, html);
-  console.log(`Injected ${TAG_ID} into ${path.relative(process.cwd(), file)}`);
+  console.log(`Injected ${GOOGLE_TAG_ID} -> ${MEASUREMENT_ID} into ${path.relative(process.cwd(), file)}`);
 }

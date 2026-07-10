@@ -102,17 +102,20 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const canceled = await stripe.subscriptions.cancel(subscription.id);
+    const canceled = await stripe.subscriptions.update(subscription.id, { cancel_at_period_end: true });
 
     try {
       const db = firebaseAdmin.firestore();
+      const periodEndIso = canceled.current_period_end
+        ? new Date(canceled.current_period_end * 1000).toISOString()
+        : '';
       const update = {
-        plan: 'free',
-        billingInterval: 'monthly',
         stripeSubscriptionId: canceled.id,
         stripeCustomerId: canceled.customer || body.customerId || '',
-        stripeSubscriptionStatus: canceled.status || 'canceled',
-        stripeCancelledAt: new Date().toISOString(),
+        stripeSubscriptionStatus: canceled.status || 'active',
+        stripeCancelAtPeriodEnd: Boolean(canceled.cancel_at_period_end),
+        stripeCurrentPeriodEnd: periodEndIso,
+        stripeCancellationRequestedAt: new Date().toISOString(),
         stripeCancellationSource: 'app_cancel_button',
         updatedAt: new Date().toISOString()
       };
@@ -126,10 +129,12 @@ module.exports = async function handler(req, res) {
 
     res.statusCode = 200;
     res.end(JSON.stringify({
-      cancelled: true,
+      cancelled: false,
+      cancelAtPeriodEnd: Boolean(canceled.cancel_at_period_end),
+      currentPeriodEnd: canceled.current_period_end || null,
       subscriptionId: canceled.id,
       customerId: canceled.customer || '',
-      status: canceled.status || 'canceled'
+      status: canceled.status || 'active'
     }));
   } catch (error) {
     console.error('Stripe cancellation failed:', error);

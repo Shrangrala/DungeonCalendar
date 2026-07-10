@@ -212,6 +212,82 @@ app.post(['/create-checkout-session', '/api/create-checkout-session'], async (re
   }
 });
 
+app.post(['/cancel-stripe-subscription', '/api/cancel-stripe-subscription'], async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const idToken = String(authHeader).startsWith('Bearer ') ? String(authHeader).slice(7) : '';
+    if (!idToken) return res.status(401).json({ error: 'Missing Firebase ID token.' });
+
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const uid = decoded.uid;
+    const stripe = getStripe();
+    const body = req.body || {};
+
+    const [userSnap, customerSnap] = await Promise.all([
+      db.collection('users').doc(uid).get(),
+      db.collection('customers').doc(uid).get()
+    ]);
+    const userData = userSnap.exists ? userSnap.data() || {} : {};
+    const customerData = customerSnap.exists ? customerSnap.data() || {} : {};
+    const subscriptionId = String(body.subscriptionId || userData.stripeSubscriptionId || customerData.stripeSubscriptionId || '').trim();
+    const customerId = String(body.customerId || userData.stripeCustomerId || customerData.stripeCustomerId || customerData.stripeId || '').trim();
+
+    let subscription = null;
+    if (subscriptionId) {
+      subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    } else if (customerId) {
+      const list = await stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 20 });
+      subscription = (list.data || []).find((item) => ['active', 'trialing', 'past_due', 'unpaid'].includes(item.status)) || null;
+    }
+
+    if (!subscription) return res.status(404).json({ error: 'No active Stripe subscription found for this account.' });
+    if (['canceled', 'incomplete_expired'].includes(subscription.status)) {
+      return res.status(409).json({ error: 'This Stripe subscription has already ended.' });
+    }
+
+    const updated = subscription.cancel_at_period_end
+      ? subscription
+      : await stripe.subscriptions.update(subscription.id, { cancel_at_period_end: true });
+    const periodEndIso = updated.current_period_end ? new Date(updated.current_period_end * 1000).toISOString() : '';
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    const cancellationUpdate = {
+      stripeSubscriptionId: updated.id,
+      stripeCustomerId: typeof updated.customer === 'string' ? updated.customer : customerId,
+      stripeSubscriptionStatus: updated.status,
+      stripeCancelAtPeriodEnd: Boolean(updated.cancel_at_period_end),
+      stripeCurrentPeriodEnd: periodEndIso,
+      stripeCancellationRequestedAt: now,
+      stripeCancellationSource: 'app_cancel_button',
+      updatedAt: now
+    };
+
+    await Promise.all([
+      db.collection('users').doc(uid).set(cancellationUpdate, { merge: true }),
+      db.collection('customers').doc(uid).set(cancellationUpdate, { merge: true }),
+      db.collection('customers').doc(uid).collection('subscriptions').doc(updated.id).set({
+        ...cancellationUpdate,
+        id: updated.id,
+        cancelAtPeriodEnd: Boolean(updated.cancel_at_period_end),
+        currentPeriodEnd: periodEndIso
+      }, { merge: true })
+    ]);
+
+    return res.json({
+      scheduled: true,
+      cancelled: false,
+      cancelAtPeriodEnd: Boolean(updated.cancel_at_period_end),
+      currentPeriodEnd: updated.current_period_end || null,
+      currentPeriodEndIso: periodEndIso,
+      subscriptionId: updated.id,
+      customerId: typeof updated.customer === 'string' ? updated.customer : customerId,
+      status: updated.status
+    });
+  } catch (error) {
+    console.error('Schedule subscription cancellation failed:', error);
+    return res.status(500).json({ error: error.message || 'Unable to schedule subscription cancellation.' });
+  }
+});
+
 app.get(['/confirm-checkout-session', '/api/confirm-checkout-session'], async (req, res) => {
   try {
     const stripe = getStripe();
@@ -344,6 +420,8 @@ async function applySubscription(subscription, extra = {}) {
     plan,
     billingInterval,
     active,
+    stripeCancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+    stripeCurrentPeriodEnd: subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toISOString() : '',
     updatedAt: now
   }, { merge: true });
 
@@ -355,6 +433,8 @@ async function applySubscription(subscription, extra = {}) {
     plan,
     billingInterval,
     active,
+    stripeCancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+    stripeCurrentPeriodEnd: subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toISOString() : '',
     updatedAt: now
   }, { merge: true });
 
@@ -364,6 +444,8 @@ async function applySubscription(subscription, extra = {}) {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscription.id,
     stripeSubscriptionStatus: subscription.status,
+    stripeCancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+    stripeCurrentPeriodEnd: subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toISOString() : '',
     pendingStripePlan: 'free',
     pendingStripeBillingInterval: 'monthly',
     pendingStripeStartedAt: '',

@@ -94,11 +94,16 @@ module.exports = async function handler(req, res) {
     }
 
     const appReturnUrl = safeReturnUrl(req, returnUrl);
+    // Stripe only substitutes {CHECKOUT_SESSION_ID} when the placeholder remains
+    // literal in success_url. URLSearchParams percent-encodes the braces, which
+    // returns users with session_id={CHECKOUT_SESSION_ID} and makes confirmation fail.
     const successUrl = new URL('/subscription-complete', appReturnUrl);
-    successUrl.searchParams.set('stripe_success', 'true');
-    successUrl.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
-    successUrl.searchParams.set('stripe_plan', safePlan);
-    successUrl.searchParams.set('stripe_billing', safeInterval);
+    successUrl.search = [
+      'stripe_success=true',
+      'session_id={CHECKOUT_SESSION_ID}',
+      `stripe_plan=${encodeURIComponent(safePlan)}`,
+      `stripe_billing=${encodeURIComponent(safeInterval)}`
+    ].join('&');
 
     const cancelUrl = new URL(appReturnUrl);
     cancelUrl.searchParams.set('stripe_cancelled', 'true');

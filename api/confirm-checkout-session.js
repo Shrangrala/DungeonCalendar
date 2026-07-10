@@ -19,7 +19,7 @@ module.exports = async function handler(req, res) {
     if (!sessionId) return res.status(400).json({ error: 'Missing session ID.' });
 
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ['subscription', 'customer']
+      expand: ['subscription', 'customer', 'line_items.data.price.product']
     });
 
     const subscription = session.subscription;
@@ -36,7 +36,9 @@ module.exports = async function handler(req, res) {
       stripeCustomerId: typeof session.customer === 'string' ? session.customer : session.customer?.id || '',
       stripeSubscriptionId: typeof subscription === 'string' ? subscription : subscription?.id || '',
       stripeSubscriptionStatus: typeof subscription === 'string' ? '' : subscription?.status || '',
-      stripeCheckoutSessionId: session.id
+      stripeCheckoutSessionId: session.id,
+      value: Number(session.amount_total || 0) / 100,
+      currency: String(session.currency || 'usd').toUpperCase()
     });
   } catch (error) {
     console.error('Stripe checkout confirmation error:', error);

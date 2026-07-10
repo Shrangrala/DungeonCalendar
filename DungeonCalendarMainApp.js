@@ -76,10 +76,55 @@ function trackGoogleAnalyticsEvent(eventName, params = {}) {
   ensureGoogleAnalytics();
   if (typeof window.gtag === "function") {
     window.gtag("event", eventName, {
+      send_to: GOOGLE_ANALYTICS_MEASUREMENT_ID,
       app_name: "Dungeon Calendar",
       ...params
     });
   }
+}
+
+function trackStripePurchaseOnce({ transactionId, planId, billingInterval = "monthly", value, currency = "USD", source = "stripe_checkout" }) {
+  if (typeof window === "undefined" || !transactionId) return false;
+
+  const storageKey = `dc_ga4_purchase_${transactionId}`;
+  try {
+    if (window.localStorage.getItem(storageKey) === "sent") return false;
+  } catch {
+    // Analytics should still be sent when storage is unavailable.
+  }
+
+  const safePlan = normalizePlan(planId);
+  const safeInterval = normalizeBillingInterval(billingInterval);
+  const purchaseValue = Number.isFinite(Number(value)) ? Number(value) : getPlanAnalyticsValue(safePlan, safeInterval);
+
+  trackGoogleAnalyticsEvent("purchase", {
+    transaction_id: String(transactionId),
+    affiliation: source,
+    currency: String(currency || "USD").toUpperCase(),
+    value: purchaseValue,
+    items: [{
+      item_id: safePlan,
+      item_name: ({ adventurer: "Adventurer", guildmaster: "Guildmaster" })[safePlan] || safePlan,
+      item_category: "subscription",
+      item_variant: safeInterval,
+      price: purchaseValue,
+      quantity: 1
+    }]
+  });
+  trackGoogleAnalyticsEvent("subscribe", {
+    plan: safePlan,
+    billing_interval: safeInterval,
+    value: purchaseValue,
+    currency: String(currency || "USD").toUpperCase(),
+    source
+  });
+
+  try {
+    window.localStorage.setItem(storageKey, "sent");
+  } catch {
+    // Ignore storage failures. Stripe's transaction_id still provides GA4 deduplication.
+  }
+  return true;
 }
 
 function getPlanAnalyticsValue(planId, interval = "monthly") {
@@ -1871,15 +1916,14 @@ export default function DungeonCalendarApp() {
                 stripeActivationSource: "stripe_checkout_session_confirmed",
                 stripeVerifiedAt: new Date().toISOString()
               });
-              const purchaseValue = getPlanAnalyticsValue(confirmedPlan, confirmedInterval);
-              trackGoogleAnalyticsEvent("purchase", {
-                transaction_id: data.stripeCheckoutSessionId || sessionId || `${currentUser.id}-${confirmedPlan}-${confirmedInterval}-${Date.now()}`,
-                affiliation: "stripe_checkout_session_confirmed",
-                currency: "USD",
-                value: purchaseValue,
-                items: [{ item_id: confirmedPlan, item_name: planLimits[confirmedPlan]?.name || confirmedPlan, item_category: "subscription", item_variant: confirmedInterval, price: purchaseValue, quantity: 1 }]
+              trackStripePurchaseOnce({
+                transactionId: data.stripeCheckoutSessionId || sessionId,
+                planId: confirmedPlan,
+                billingInterval: confirmedInterval,
+                value: data.value,
+                currency: data.currency,
+                source: "stripe_checkout_session_confirmed"
               });
-              trackGoogleAnalyticsEvent("subscribe", { plan: confirmedPlan, billing_interval: confirmedInterval, value: purchaseValue, currency: "USD", source: "stripe_checkout_session_confirmed" });
               setPendingStripeActivation(null);
               setSelectedPaymentPlan("");
               setBillingMessage(`${planLimits[confirmedPlan]?.name || "Paid"} plan activated from Stripe checkout.`);
@@ -5401,6 +5445,40 @@ export default function DungeonCalendarApp() {
         window.scrollTo({ top: 0, behavior: "smooth" });
       }
     }
+
+    useEffect(() => {
+      const sessionId = params.get("session_id") || params.get("checkout_session_id");
+      if (!sessionId) return undefined;
+
+      let cancelled = false;
+      const confirmAndTrackPurchase = async () => {
+        try {
+          const confirmUrl = new URL("/api/confirm-checkout-session", window.location.origin);
+          confirmUrl.searchParams.set("session_id", sessionId);
+          const response = await fetch(confirmUrl.toString(), { headers: { Accept: "application/json" } });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || cancelled) return;
+
+          const confirmedPlan = normalizePlan(data.planId || completedPlan);
+          const confirmedInterval = normalizeBillingInterval(data.billingInterval || completedBilling);
+          if (confirmedPlan === "free") return;
+
+          trackStripePurchaseOnce({
+            transactionId: data.stripeCheckoutSessionId || sessionId,
+            planId: confirmedPlan,
+            billingInterval: confirmedInterval,
+            value: data.value,
+            currency: data.currency,
+            source: "subscription_complete_page"
+          });
+        } catch (error) {
+          console.warn("Unable to confirm purchase analytics on the subscription-complete page.", error);
+        }
+      };
+
+      confirmAndTrackPurchase();
+      return () => { cancelled = true; };
+    }, []);
 
     useEffect(() => {
       const countdown = window.setInterval(() => {

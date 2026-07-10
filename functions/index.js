@@ -242,7 +242,9 @@ app.get(['/confirm-checkout-session', '/api/confirm-checkout-session'], async (r
       stripeCustomerId: typeof session.customer === 'string' ? session.customer : session.customer?.id || '',
       stripeSubscriptionId: subscription.id,
       stripeSubscriptionStatus: subscription.status,
-      stripeCheckoutSessionId: session.id
+      stripeCheckoutSessionId: session.id,
+      value: Number(session.amount_total || 0) / 100,
+      currency: String(session.currency || 'usd').toUpperCase()
     });
   } catch (error) {
     console.error('Confirm checkout session failed:', error);

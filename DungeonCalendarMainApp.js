@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
+import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
 import { addDoc, collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
@@ -39,48 +39,30 @@ const PROMO_EMAIL_HTML = `
   </div>
 </div>`;
 
-function ensureGoogleAnalytics() {
-  if (typeof window === "undefined" || typeof document === "undefined") return;
+function googleAnalyticsReady() {
+  if (typeof window === "undefined") return false;
   window.dataLayer = window.dataLayer || [];
   window.gtag = window.gtag || function gtag(){ window.dataLayer.push(arguments); };
-
-  if (!document.getElementById("google-analytics-gtag")) {
-    const script = document.createElement("script");
-    script.id = "google-analytics-gtag";
-    script.async = true;
-    script.src = `https://www.googletagmanager.com/gtag/js?id=${GOOGLE_ANALYTICS_MEASUREMENT_ID}`;
-    document.head.appendChild(script);
-  }
-
-  if (!window.__dungeonCalendarGoogleAnalyticsInitialized) {
-    window.gtag("js", new Date());
-    window.gtag("config", GOOGLE_ANALYTICS_MEASUREMENT_ID, { send_page_view: false });
-    window.__dungeonCalendarGoogleAnalyticsInitialized = true;
-  }
+  return typeof window.gtag === "function";
 }
 
 function trackGoogleAnalyticsPageView(path) {
-  if (typeof window === "undefined") return;
-  ensureGoogleAnalytics();
-  if (typeof window.gtag === "function") {
-    window.gtag("config", GOOGLE_ANALYTICS_MEASUREMENT_ID, {
-      page_path: path || `${window.location.pathname}${window.location.search || ""}`,
-      page_location: window.location.href,
-      page_title: document.title || "Dungeon Calendar"
-    });
-  }
+  if (!googleAnalyticsReady()) return;
+  window.gtag("event", "page_view", {
+    send_to: GOOGLE_ANALYTICS_MEASUREMENT_ID,
+    page_path: path || `${window.location.pathname}${window.location.search || ""}`,
+    page_location: window.location.href,
+    page_title: document.title || "Dungeon Calendar"
+  });
 }
 
 function trackGoogleAnalyticsEvent(eventName, params = {}) {
-  if (typeof window === "undefined") return;
-  ensureGoogleAnalytics();
-  if (typeof window.gtag === "function") {
-    window.gtag("event", eventName, {
-      send_to: GOOGLE_ANALYTICS_MEASUREMENT_ID,
-      app_name: "Dungeon Calendar",
-      ...params
-    });
-  }
+  if (!googleAnalyticsReady()) return;
+  window.gtag("event", eventName, {
+    send_to: GOOGLE_ANALYTICS_MEASUREMENT_ID,
+    app_name: "Dungeon Calendar",
+    ...params
+  });
 }
 
 function trackStripePurchaseOnce({ transactionId, planId, billingInterval = "monthly", value, currency = "USD", source = "stripe_checkout" }) {
@@ -142,6 +124,7 @@ function PromoMarqueeBanner() {
   const promoMessages = [
     "ACT NOW: 10% OFF YEARLY SUBSCRIPTIONS",
     "PROMO CODE 10OFFYEAR",
+    "Dungeon Calendar is Coming Soon to Google Play!",
     "PLAN BETTER CAMPAIGNS",
     "KEEP EVERY PLAYER ON SCHEDULE",
     "SYNC QUESTS, SESSIONS, AND AVAILABILITY",
@@ -413,30 +396,64 @@ function campaignContentKey(campaign = {}) {
   return JSON.stringify(stable);
 }
 
-async function saveCampaignToFirestore(campaign) {
-  if (!campaign?.id) return false;
-  try {
-    await setDoc(doc(db, "campaigns", campaign.id), {
-      ...normalizeCampaignForSync(campaign),
-      dungeonMasterId: canonicalDungeonMasterId(campaign),
-      dmIds: deleteField(),
-      dmUIDs: deleteField(),
-      members: deleteField(),
-      players: deleteField(),
-      playerIds: deleteField(),
-      participantIds: deleteField(),
-      participants: deleteField(),
-      playerEmails: deleteField(),
-      campaignCharacterNames: deleteField(),
-      firestoreId: deleteField(),
-      storedCampaignId: deleteField(),
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
-    return true;
-  } catch (error) {
-    console.warn("Campaign Firestore save failed:", error);
-    return false;
+const campaignSaveQueues = new Map();
+const campaignLastSavedKeys = new Map();
+
+function saveCampaignToFirestore(campaign) {
+  if (!campaign?.id) return Promise.resolve(false);
+
+  const normalized = normalizeCampaignForSync(campaign);
+  const contentKey = campaignContentKey(normalized);
+  if (campaignLastSavedKeys.get(campaign.id) === contentKey) {
+    return Promise.resolve(true);
   }
+
+  const previous = campaignSaveQueues.get(campaign.id) || Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      if (campaignLastSavedKeys.get(campaign.id) === contentKey) return true;
+      const campaignRef = doc(db, "campaigns", campaign.id);
+      await setDoc(campaignRef, {
+        ...normalized,
+        // Firestore recursively merges nested maps with setDoc({ merge: true }).
+        // Remove these fields here, then replace them atomically at the top level
+        // below so deleted calendar dates do not survive synchronization.
+        availability: deleteField(),
+        unavailable: deleteField(),
+        dungeonMasterId: canonicalDungeonMasterId(normalized),
+        dmIds: deleteField(),
+        dmUIDs: deleteField(),
+        members: deleteField(),
+        players: deleteField(),
+        playerIds: deleteField(),
+        participantIds: deleteField(),
+        participants: deleteField(),
+        playerEmails: deleteField(),
+        campaignCharacterNames: deleteField(),
+        firestoreId: deleteField(),
+        storedCampaignId: deleteField(),
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+      await updateDoc(campaignRef, {
+        availability: normalized.availability || {},
+        unavailable: normalized.unavailable || {},
+      });
+      campaignLastSavedKeys.set(campaign.id, contentKey);
+      return true;
+    })
+    .catch((error) => {
+      console.warn("Campaign Firestore save failed:", error);
+      return false;
+    })
+    .finally(() => {
+      if (campaignSaveQueues.get(campaign.id) === next) {
+        campaignSaveQueues.delete(campaign.id);
+      }
+    });
+
+  campaignSaveQueues.set(campaign.id, next);
+  return next;
 }
 
 function campaignPlayerRecord(player = {}, campaignId = "") {
@@ -1133,16 +1150,8 @@ function authErrorMessage(error) {
   if (code === "auth/popup-blocked") return "Your browser blocked the Google sign-in popup. Allow popups for this site and try again.";
   if (code === "auth/unauthorized-domain") return "This domain is not authorized for Firebase login. Add dungeoncalendar.com and www.dungeoncalendar.com in Firebase Authentication > Settings > Authorized domains.";
   if (code === "auth/operation-not-allowed") return "Google sign-in is not enabled. Open Firebase Console > Authentication > Sign-in method and enable Google.";
+  if (code === "auth/argument-error") return "Google sign-in could not start correctly. Refresh the page and try again. If the browser blocks the sign-in window, allow popups for dungeoncalendar.com.";
   return error?.message || "Authentication failed.";
-}
-
-function shouldUseRedirectGoogleLogin() {
-  if (typeof window === "undefined") return false;
-  const userAgent = window.navigator?.userAgent || "";
-  const isAndroid = /Android/i.test(userAgent);
-  const isSmallTouchScreen = window.matchMedia?.("(max-width: 900px)")?.matches && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
-  const isReactNativeWebView = !!window.ReactNativeWebView;
-  return isReactNativeWebView || isAndroid || isSmallTouchScreen;
 }
 
 function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
@@ -1234,18 +1243,22 @@ export default function DungeonCalendarApp() {
   const [stripeLoginVerifyUserId, setStripeLoginVerifyUserId] = useState("");
   const [promoEmailSending, setPromoEmailSending] = useState(false);
   const [promoEmailStatus, setPromoEmailStatus] = useState("");
-  const [publicRoute, setPublicRoute] = useState(() => typeof window !== "undefined" ? window.location.pathname : "/");
-
-  useEffect(() => {
-    ensureGoogleAnalytics();
-  }, []);
+  const [testerEmail, setTesterEmail] = useState("");
+  const [testerAccessBusy, setTesterAccessBusy] = useState(false);
+  const [testerAccessStatus, setTesterAccessStatus] = useState("");
+  const [testerAccessList, setTesterAccessList] = useState([]);
+  const normalizePublicRoute = (path) => {
+    if (!path || path === "/") return "/";
+    return path.replace(/\/+$/, "") || "/";
+  };
+  const [publicRoute, setPublicRoute] = useState(() =>
+    typeof window !== "undefined" ? normalizePublicRoute(window.location.pathname) : "/"
+  );
 
   useEffect(() => {
     const trackedPath = publicRoute && publicRoute !== "/" ? publicRoute : `/${page || "dashboard"}`;
     trackGoogleAnalyticsPageView(trackedPath);
   }, [publicRoute, page]);
-  const lastSavedCampaignContentKeyRef = useRef("");
-  const loadingCampaignsFromFirestoreRef = useRef(false);
 
   const planOrder = ["free", "adventurer", "guildmaster"];
 
@@ -1566,8 +1579,9 @@ export default function DungeonCalendarApp() {
   }
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setAuthProfileLoaded(false);
+    let cancelled = false;
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) {
         setCurrentUserId("");
         setActivePlayerId("");
@@ -1575,46 +1589,56 @@ export default function DungeonCalendarApp() {
         return;
       }
 
-      try {
-        const profile = await loadUserProfile(user.uid);
-        const localMatch = safePlayerList(players).find((player) =>
+      // Enter the app immediately after Firebase confirms authentication.
+      // Mobile browsers can leave Firestore profile reads pending for several
+      // seconds, so login must not wait for loadUserProfile() to finish.
+      const immediatePlayer = buildAuthFallbackPlayer(user, {}, "");
+      setPlayers((current) => {
+        const localMatch = safePlayerList(current).find((player) =>
           player.id === user.uid || normalizeEmail(player.email) === normalizeEmail(user.email || "")
         );
-        const fallbackPlayer = buildAuthFallbackPlayer(user, localMatch || {}, activeCampaign?.id || "");
-        const firebasePlayer = firebaseProfileToPlayer(user.uid, profile || fallbackPlayer, user.email || "");
-        const safePlayer = { ...fallbackPlayer, ...firebasePlayer, id: user.uid, email: normalizeEmail(firebasePlayer.email || fallbackPlayer.email || user.email || "") };
-        setPlan(readProfilePlan(profile || localMatch || safePlayer, safePlayer.plan || "free"));
-        setBillingInterval(readProfileBillingInterval(profile || localMatch || safePlayer, safePlayer.billingInterval || "monthly"));
+        const fallbackPlayer = buildAuthFallbackPlayer(user, localMatch || {}, "");
+        const withoutDuplicate = current.filter((player) =>
+          player.id !== user.uid && normalizeEmail(player.email) !== normalizeEmail(fallbackPlayer.email)
+        );
+        return [...withoutDuplicate, fallbackPlayer];
+      });
+      setCurrentUserId(user.uid);
+      setActivePlayerId(user.uid);
+      setPage("calendar");
+      setAuthProfileLoaded(true);
 
-        setPlayers((current) => {
-          const withoutDuplicate = current.filter((player) =>
-            player.id !== user.uid && normalizeEmail(player.email) !== normalizeEmail(safePlayer.email)
-          );
-          return [...withoutDuplicate, safePlayer];
-        });
+      // Hydrate the fallback user in the background when Firestore responds.
+      Promise.resolve(loadUserProfile(user.uid))
+        .then((profile) => {
+          if (cancelled || !profile) return;
+          const firebasePlayer = firebaseProfileToPlayer(user.uid, profile, user.email || "");
+          const safePlayer = {
+            ...immediatePlayer,
+            ...firebasePlayer,
+            id: user.uid,
+            email: normalizeEmail(firebasePlayer.email || immediatePlayer.email || user.email || "")
+          };
 
-        setCurrentUserId(user.uid);
-        setActivePlayerId(user.uid);
-        if (safePlayer.campaignIds?.[0]) setActiveCampaignId(safePlayer.campaignIds[0]);
-        setPage("calendar");
-      } catch (error) {
-        console.error("Failed to restore Firebase login; continuing with Firebase Auth user only:", error);
-        const fallbackPlayer = buildAuthFallbackPlayer(user, {}, activeCampaign?.id || "");
-        setPlayers((current) => {
-          const withoutDuplicate = current.filter((player) =>
-            player.id !== user.uid && normalizeEmail(player.email) !== normalizeEmail(fallbackPlayer.email)
-          );
-          return [...withoutDuplicate, fallbackPlayer];
+          setPlan(readProfilePlan(profile, safePlayer.plan || "free"));
+          setBillingInterval(readProfileBillingInterval(profile, safePlayer.billingInterval || "monthly"));
+          setPlayers((current) => {
+            const withoutDuplicate = current.filter((player) =>
+              player.id !== user.uid && normalizeEmail(player.email) !== normalizeEmail(safePlayer.email)
+            );
+            return [...withoutDuplicate, safePlayer];
+          });
+          if (safePlayer.campaignIds?.[0]) setActiveCampaignId(safePlayer.campaignIds[0]);
+        })
+        .catch((error) => {
+          console.error("Failed to load Firebase profile after login; using Firebase Auth user:", error);
         });
-        setCurrentUserId(user.uid);
-        setActivePlayerId(user.uid);
-        setPage("calendar");
-      } finally {
-        setAuthProfileLoaded(true);
-      }
     });
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -1650,7 +1674,6 @@ export default function DungeonCalendarApp() {
     if (!currentUserId || !currentUser) return undefined;
 
     const unsubscribeCampaigns = onSnapshot(collection(db, "campaigns"), (snapshot) => {
-      loadingCampaignsFromFirestoreRef.current = true;
       snapshot.docs.forEach((item) => {
         const raw = campaignSnapshotPayload(item);
         const normalized = normalizeCampaignForSync(raw);
@@ -1705,22 +1728,10 @@ export default function DungeonCalendarApp() {
           });
         }
       }
-      setTimeout(() => { loadingCampaignsFromFirestoreRef.current = false; }, 0);
     }, (error) => console.warn("Campaign live sync failed:", error));
 
     return () => unsubscribeCampaigns();
   }, [currentUserId, currentUser?.email, currentUser?.campaignIds]);
-
-  useEffect(() => {
-    if (!currentUserId || loadingCampaignsFromFirestoreRef.current) return;
-    const contentKey = JSON.stringify(campaigns.map(campaignContentKey).sort());
-    if (contentKey === lastSavedCampaignContentKeyRef.current) return;
-    lastSavedCampaignContentKeyRef.current = contentKey;
-    campaigns.map(normalizeCampaignForSync).forEach((campaign) => {
-      if (campaign.id) saveCampaignToFirestore(campaign);
-    });
-  }, [campaigns, currentUserId]);
-
 
 
 
@@ -2210,21 +2221,6 @@ export default function DungeonCalendarApp() {
   }
 
 
-  useEffect(() => {
-    let cancelled = false;
-    getRedirectResult(auth)
-      .then((result) => {
-        if (!result || cancelled) return;
-        setLoginError("");
-      })
-      .catch((error) => {
-        if (!cancelled) setLoginError(authErrorMessage(error));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   async function loginWithGoogle() {
     if (authBusy) return;
     setAuthBusy(true);
@@ -2234,11 +2230,10 @@ export default function DungeonCalendarApp() {
       await setFirebaseAuthPersistenceSafe();
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
-      if (shouldUseRedirectGoogleLogin()) {
-        await signInWithRedirect(auth, provider);
-        return;
-      }
 
+      // Use popup sign-in on every web browser. The previous mobile redirect
+      // flow was returning to the login page and could throw auth/argument-error
+      // when the custom OAuth redirect handler was not fully configured.
       const credential = await signInWithPopup(auth, provider);
       const user = credential.user;
       const uid = user.uid;
@@ -3455,6 +3450,18 @@ export default function DungeonCalendarApp() {
   const calendarEvent = buildCalendarEvent();
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const requestedAuthMode = new URLSearchParams(window.location.search).get("auth");
+    if (requestedAuthMode === "create") {
+      setAuthMode("create");
+      setPage("dashboard");
+    } else if (requestedAuthMode === "login") {
+      setAuthMode("login");
+      setPage("dashboard");
+    }
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const normalizeRoute = () => {
       const path = window.location.pathname || "/";
@@ -3538,12 +3545,13 @@ export default function DungeonCalendarApp() {
 
 
   function LegalLinks({ className = "" } = {}) {
+    const linkClass = "relative z-20 inline-flex min-h-8 items-center cursor-pointer touch-manipulation px-1 underline-offset-4 hover:text-zinc-200 hover:underline";
     return (
-      <div className={classNames("flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-zinc-500", className)}>
-        <a href="/privacy" className="underline-offset-4 hover:text-zinc-200 hover:underline">Privacy Policy</a>
+      <nav aria-label="Legal" className={classNames("relative z-20 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs text-zinc-500", className)}>
+        <a href="/privacy/" className={linkClass}>Privacy Policy</a>
         <span aria-hidden="true">•</span>
-        <a href="/terms" className="underline-offset-4 hover:text-zinc-200 hover:underline">Terms of Service</a>
-      </div>
+        <a href="/terms/" className={linkClass}>Terms of Service</a>
+      </nav>
     );
   }
 
@@ -3618,8 +3626,8 @@ export default function DungeonCalendarApp() {
               D&D Campaign Scheduling & Session Planning
             </p>
             <div className="mt-6 flex flex-wrap justify-center gap-3">
-              <Button onClick={() => navigateTo("/")} variant="ghost" className="rounded-xl border border-zinc-700 hover:bg-zinc-900">Log In</Button>
-              <Button onClick={() => navigateTo("/")} className="rounded-xl bg-red-700 hover:bg-red-600">Create Free Account</Button>
+              <a href="/?auth=login" className="inline-flex min-h-11 touch-manipulation items-center justify-center rounded-xl border border-zinc-700 px-4 py-2 font-semibold hover:bg-zinc-900">Log In</a>
+              <a href="/?auth=create" className="inline-flex min-h-11 touch-manipulation items-center justify-center rounded-xl bg-red-700 px-4 py-2 font-semibold text-white hover:bg-red-600">Create Free Account</a>
             </div>
             <LegalLinks className="mt-5" />
           </header>
@@ -4024,11 +4032,12 @@ export default function DungeonCalendarApp() {
                 const key = dateKey(date);
                 const generatedOnly = isGeneratedOnlyDate(activeCampaign, key);
                 const showOnlyFinal = !!chosenDate && key !== chosenDate;
-                const ids = (generatedOnly || showOnlyFinal) ? [] : (availability[key] ?? []);
+                const dmSelectedDate = isDungeonMasterSelectedDate(activeCampaign, key);
+                const ids = (generatedOnly || showOnlyFinal || !dmSelectedDate) ? [] : (availability[key] ?? []);
                 const hasDungeonMasterAvailable = ids.some((id) => isDungeonMasterResponse(id));
                 const isChosenDate = key === chosenDate;
                 const selectedByActive = ids.includes(activePlayerId);
-                const unavailableIds = (generatedOnly || showOnlyFinal) ? [] : (unavailable[key] ?? []);
+                const unavailableIds = (generatedOnly || showOnlyFinal || !dmSelectedDate) ? [] : (unavailable[key] ?? []);
                 const hasDungeonMasterUnavailable = unavailableIds.some((id) => isDungeonMasterResponse(id));
                 const unavailableByActive = unavailableIds.includes(activePlayerId);
                 const visibleAvailableIds = visibleResponseIds(ids);
@@ -5146,6 +5155,140 @@ export default function DungeonCalendarApp() {
     }
   }
 
+  async function loadTesterAccessList() {
+    if (!isAppAdmin) return;
+    setTesterAccessBusy(true);
+    setTesterAccessStatus("Loading approved testers...");
+    try {
+      const snapshot = await getDocs(collection(db, "testerAccess"));
+      const rows = snapshot.docs
+        .map((testerDoc) => ({ id: testerDoc.id, ...testerDoc.data() }))
+        .sort((a, b) => String(a.email || a.id).localeCompare(String(b.email || b.id)));
+      setTesterAccessList(rows);
+      setTesterAccessStatus(rows.length ? `${rows.length} tester${rows.length === 1 ? "" : "s"} found.` : "No testers have been added yet.");
+    } catch (error) {
+      console.error("Unable to load tester access:", error);
+      setTesterAccessStatus(error?.code === "permission-denied"
+        ? "Firestore denied access. Your rules must allow only admin accounts to manage testerAccess."
+        : (error?.message || "Unable to load tester access."));
+    } finally {
+      setTesterAccessBusy(false);
+    }
+  }
+
+  async function grantTesterAccess(event) {
+    event?.preventDefault?.();
+    if (!isAppAdmin) {
+      setTesterAccessStatus("Only a Dungeon Calendar admin can grant tester access.");
+      return;
+    }
+
+    const email = normalizeEmail(testerEmail);
+    if (!email || !email.includes("@")) {
+      setTesterAccessStatus("Enter a valid tester email address.");
+      return;
+    }
+
+    setTesterAccessBusy(true);
+    setTesterAccessStatus(`Granting Guildmaster tester access to ${email}...`);
+    try {
+      await setDoc(doc(db, "testerAccess", email), {
+        email,
+        active: true,
+        plan: "guildmaster",
+        source: "google-play-closed-test",
+        approvedAt: serverTimestamp(),
+        approvedBy: signedInAdminEmail || auth.currentUser?.uid || "admin",
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+      setTesterEmail("");
+      setTesterAccessStatus(`${email} now has Guildmaster tester access.`);
+      await loadTesterAccessList();
+    } catch (error) {
+      console.error("Unable to grant tester access:", error);
+      setTesterAccessStatus(error?.code === "permission-denied"
+        ? "Firestore denied the change. Update your rules so only admin accounts can write testerAccess."
+        : (error?.message || "Unable to grant tester access."));
+    } finally {
+      setTesterAccessBusy(false);
+    }
+  }
+
+  async function revokeTesterAccess(email) {
+    const normalized = normalizeEmail(email);
+    if (!isAppAdmin || !normalized) return;
+    const confirmed = typeof window === "undefined" ? true : window.confirm(`Remove Guildmaster tester access for ${normalized}?`);
+    if (!confirmed) return;
+
+    setTesterAccessBusy(true);
+    setTesterAccessStatus(`Removing tester access for ${normalized}...`);
+    try {
+      await deleteDoc(doc(db, "testerAccess", normalized));
+      setTesterAccessList((current) => current.filter((item) => normalizeEmail(item.email || item.id) !== normalized));
+      setTesterAccessStatus(`${normalized} no longer has tester access.`);
+    } catch (error) {
+      console.error("Unable to revoke tester access:", error);
+      setTesterAccessStatus(error?.code === "permission-denied"
+        ? "Firestore denied the change. Update your rules so only admin accounts can write testerAccess."
+        : (error?.message || "Unable to revoke tester access."));
+    } finally {
+      setTesterAccessBusy(false);
+    }
+  }
+
+  function AdminTesterAccessPanel() {
+    if (!isAppAdmin) return null;
+    return (
+      <Card className="border-emerald-700 bg-emerald-950/20 text-zinc-100 backdrop-blur">
+        <CardContent className="space-y-5 p-6">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-300">Admin Only</p>
+            <h2 className="mt-1 text-2xl font-bold">Google Play Tester Access</h2>
+            <p className="mt-1 max-w-3xl text-sm text-emerald-100/80">Add an approved tester's sign-in email. The app can use <span className="font-mono">testerAccess/{'{email}'}</span> to grant the Guildmaster plan without a Stripe subscription.</p>
+          </div>
+
+          <form onSubmit={grantTesterAccess} className="flex flex-col gap-3 md:flex-row">
+            <input
+              type="email"
+              value={testerEmail}
+              onChange={(event) => setTesterEmail(event.target.value)}
+              placeholder="approved.tester@gmail.com"
+              autoComplete="off"
+              className="min-w-0 flex-1 rounded-xl border border-zinc-700 bg-black/50 px-4 py-3 text-zinc-100 outline-none focus:border-emerald-500"
+            />
+            <Button type="submit" disabled={testerAccessBusy} className="rounded-xl bg-emerald-700 px-5 py-3 text-white hover:bg-emerald-600 disabled:opacity-60">
+              <UserCheck className="mr-2 h-4 w-4" /> Grant Guildmaster Access
+            </Button>
+            <Button type="button" onClick={loadTesterAccessList} disabled={testerAccessBusy} variant="ghost" className="rounded-xl border border-zinc-700 px-5 py-3 hover:bg-zinc-900">
+              Refresh List
+            </Button>
+          </form>
+
+          {testerAccessStatus && <p className="rounded-xl border border-emerald-700/50 bg-black/30 p-3 text-sm text-emerald-100">{testerAccessStatus}</p>}
+
+          <div className="space-y-2">
+            {testerAccessList.length === 0 ? (
+              <p className="text-sm text-zinc-400">Click Refresh List to view current tester grants.</p>
+            ) : testerAccessList.map((tester) => {
+              const email = normalizeEmail(tester.email || tester.id);
+              return (
+                <div key={tester.id} className="flex flex-col gap-3 rounded-xl border border-zinc-800 bg-black/35 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-zinc-100">{email}</p>
+                    <p className="text-xs text-zinc-400">{tester.active === false ? "Inactive" : "Active"} · {tester.plan || "guildmaster"} · {tester.source || "tester access"}</p>
+                  </div>
+                  <Button type="button" onClick={() => revokeTesterAccess(email)} disabled={testerAccessBusy} variant="ghost" className="rounded-xl border border-red-800 px-4 py-2 text-red-300 hover:bg-red-950/50 hover:text-red-100">
+                    <Trash2 className="mr-2 h-4 w-4" /> Remove
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   function AdminPromoEmailPanel() {
     if (!isAppAdmin) return null;
     return (
@@ -5170,6 +5313,7 @@ export default function DungeonCalendarApp() {
   function AdminEmailPage() {
     return (
       <div className="space-y-5">
+        <AdminTesterAccessPanel />
         <AdminPromoEmailPanel />
         <Card className="border-zinc-700 bg-black/55 text-zinc-100 backdrop-blur">
           <CardContent className="space-y-3 p-6">
@@ -5187,7 +5331,7 @@ export default function DungeonCalendarApp() {
       { label: "Calendar", description: "Open the calendar and mark availability.", icon: CalendarDays, target: "calendar" },
       { label: "View all Results", description: "Compare every proposed date.", icon: BarChart3, target: "results" },
       ...(isDungeonMaster ? [{ label: "Campaign Settings", description: "Edit campaign and reminder settings.", icon: Settings, target: "settings" }] : []),
-      ...(isAppAdmin ? [{ label: "Admin Email", description: "Send the 10OFFYEAR promotion to all customers.", icon: Mail, target: "adminEmail" }] : [])
+      ...(isAppAdmin ? [{ label: "Admin Tools", description: "Manage closed testers and customer email campaigns.", icon: Shield, target: "adminEmail" }] : [])
     ];
 
     return (
@@ -5473,7 +5617,19 @@ export default function DungeonCalendarApp() {
   }
 
   function SubscriptionCompletePage() {
-    const [secondsLeft, setSecondsLeft] = useState(10);
+    const REDIRECT_DELAY_MS = 10000;
+    const redirectDeadlineRef = useRef(null);
+    if (redirectDeadlineRef.current === null && typeof window !== "undefined") {
+      const storageKey = "dc_subscription_complete_redirect_deadline";
+      const existing = Number(window.sessionStorage.getItem(storageKey));
+      const now = Date.now();
+      const deadline = Number.isFinite(existing) && existing > now ? existing : now + REDIRECT_DELAY_MS;
+      window.sessionStorage.setItem(storageKey, String(deadline));
+      redirectDeadlineRef.current = deadline;
+    }
+    const [secondsLeft, setSecondsLeft] = useState(() =>
+      Math.max(0, Math.ceil(((redirectDeadlineRef.current || Date.now()) - Date.now()) / 1000))
+    );
     const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
     const completedPlan = normalizePlan(params.get("stripe_plan") || currentUser?.pendingStripePlan || plan || "free");
     const completedBilling = normalizeBillingInterval(params.get("stripe_billing") || currentUser?.pendingStripeBillingInterval || billingInterval || "monthly");
@@ -5482,9 +5638,8 @@ export default function DungeonCalendarApp() {
     function goToDashboardNow() {
       setPage("dashboard");
       if (typeof window !== "undefined") {
-        window.history.replaceState({}, document.title, "/");
-        setPublicRoute("/");
-        window.scrollTo({ top: 0, behavior: "smooth" });
+        window.sessionStorage.removeItem("dc_subscription_complete_redirect_deadline");
+        window.location.replace("/");
       }
     }
 
@@ -5523,14 +5678,14 @@ export default function DungeonCalendarApp() {
     }, []);
 
     useEffect(() => {
-      const countdown = window.setInterval(() => {
-        setSecondsLeft((current) => Math.max(0, current - 1));
-      }, 1000);
-      const redirect = window.setTimeout(goToDashboardNow, 10000);
-      return () => {
-        window.clearInterval(countdown);
-        window.clearTimeout(redirect);
+      const updateCountdown = () => {
+        const remaining = Math.max(0, (redirectDeadlineRef.current || Date.now()) - Date.now());
+        setSecondsLeft(Math.ceil(remaining / 1000));
+        if (remaining <= 0) goToDashboardNow();
       };
+      updateCountdown();
+      const countdown = window.setInterval(updateCountdown, 250);
+      return () => window.clearInterval(countdown);
     }, []);
 
     return (
@@ -5584,7 +5739,7 @@ export default function DungeonCalendarApp() {
     return DashboardPage();
   }
 
-  const activePublicRoute = publicRoute || (typeof window !== "undefined" ? window.location.pathname : "/") || "/";
+  const activePublicRoute = normalizePublicRoute(publicRoute || (typeof window !== "undefined" ? window.location.pathname : "/") || "/");
 
   if (page === "about" || activePublicRoute === "/about" || activePublicRoute.startsWith("/about/")) {
     return (
@@ -5595,7 +5750,7 @@ export default function DungeonCalendarApp() {
     );
   }
 
-  if (publicRoute === "/subscription-complete") {
+  if (activePublicRoute === "/subscription-complete") {
     return (
       <div className="relative min-h-screen w-full overflow-x-hidden text-zinc-100">
         <PromoMarqueeBanner />

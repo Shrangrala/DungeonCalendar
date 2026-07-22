@@ -11,6 +11,26 @@ if (typeof window !== "undefined") {
 }
 
 
+
+const LAST_PAGE_STORAGE_PREFIX = "dc_last_page";
+const ACTIVE_CAMPAIGN_STORAGE_PREFIX = "dc_active_campaign";
+
+function userScopedStorageKey(prefix, userId = "") {
+  return userId ? `${prefix}:${userId}` : prefix;
+}
+
+function readStoredPage(userId = "") {
+  if (typeof window === "undefined") return "";
+  const allowedPages = new Set(["dashboard", "calendar", "campaigns", "players", "settings", "billing"]);
+  const stored = window.localStorage.getItem(userScopedStorageKey(LAST_PAGE_STORAGE_PREFIX, userId)) || "";
+  return allowedPages.has(stored) ? stored : "";
+}
+
+function readStoredCampaignId(userId = "") {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(userScopedStorageKey(ACTIVE_CAMPAIGN_STORAGE_PREFIX, userId)) || "";
+}
+
 const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-D3BQVGC6BV";
 
 const ADMIN_EMAILS = new Set([
@@ -1182,7 +1202,7 @@ function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
 
 export default function DungeonCalendarApp() {
   const today = new Date();
-  const [page, setPage] = useState("dashboard");
+  const [page, setPage] = useState(() => readStoredPage() || "dashboard");
 
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const dates = useMemo(() => buildMonth(viewDate.getFullYear(), viewDate.getMonth()), [viewDate]);
@@ -1607,9 +1627,12 @@ export default function DungeonCalendarApp() {
         );
         return [...withoutDuplicate, fallbackPlayer];
       });
+      const storedPage = readStoredPage(user.uid) || readStoredPage();
+      const storedCampaignId = readStoredCampaignId(user.uid);
       setCurrentUserId(user.uid);
       setActivePlayerId(user.uid);
-      setPage("calendar");
+      setPage(storedPage || "calendar");
+      if (storedCampaignId) setActiveCampaignId(storedCampaignId);
       setAuthProfileLoaded(true);
 
       // Hydrate the fallback user in the background when Firestore responds.
@@ -1632,7 +1655,10 @@ export default function DungeonCalendarApp() {
             );
             return [...withoutDuplicate, safePlayer];
           });
-          if (safePlayer.campaignIds?.[0]) setActiveCampaignId(safePlayer.campaignIds[0]);
+          const storedCampaignId = readStoredCampaignId(user.uid);
+          if (!storedCampaignId && safePlayer.campaignIds?.[0]) {
+            setActiveCampaignId(safePlayer.campaignIds[0]);
+          }
         })
         .catch((error) => {
           console.error("Failed to load Firebase profile after login; using Firebase Auth user:", error);
@@ -1644,6 +1670,20 @@ export default function DungeonCalendarApp() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!currentUserId || typeof window === "undefined") return;
+    window.localStorage.setItem(userScopedStorageKey(LAST_PAGE_STORAGE_PREFIX, currentUserId), page);
+    window.localStorage.setItem(LAST_PAGE_STORAGE_PREFIX, page);
+  }, [currentUserId, page]);
+
+  useEffect(() => {
+    if (!currentUserId || !activeCampaignId || typeof window === "undefined") return;
+    window.localStorage.setItem(
+      userScopedStorageKey(ACTIVE_CAMPAIGN_STORAGE_PREFIX, currentUserId),
+      activeCampaignId
+    );
+  }, [currentUserId, activeCampaignId]);
 
   useEffect(() => {
     if (!currentUserId || auth.currentUser?.uid !== currentUserId) return undefined;
@@ -1746,9 +1786,11 @@ export default function DungeonCalendarApp() {
       return;
     }
     if (!activeCampaignId || !visibleCampaigns.some((campaign) => campaign.id === activeCampaignId)) {
-      setActiveCampaignId(visibleCampaigns[0].id);
+      const storedCampaignId = readStoredCampaignId(currentUserId);
+      const storedCampaign = visibleCampaigns.find((campaign) => campaign.id === storedCampaignId);
+      setActiveCampaignId(storedCampaign?.id || visibleCampaigns[0].id);
     }
-  }, [activeCampaignId, currentUser, visibleCampaigns]);
+  }, [activeCampaignId, currentUser, currentUserId, visibleCampaigns]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

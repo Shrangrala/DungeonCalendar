@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
-import { addDoc, collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -644,7 +644,11 @@ function removeDateCompletelyFromCampaign(campaign = {}, key = "") {
     unavailable: nextUnavailable,
     manuallySelectedDates: (campaign.manuallySelectedDates || []).filter((dateKeyValue) => dateKeyValue !== key),
     generatedSessionDates: (campaign.generatedSessionDates || []).filter((dateKeyValue) => dateKeyValue !== key),
-    chosenDate: campaign.chosenDate === key ? "" : campaign.chosenDate
+    chosenDate: campaign.chosenDate === key ? "" : campaign.chosenDate,
+    sessionDate: campaign.sessionDate === key ? "" : campaign.sessionDate,
+    selectedDate: campaign.selectedDate === key ? "" : campaign.selectedDate,
+    finalDate: campaign.finalDate === key ? "" : campaign.finalDate,
+    nextSessionDate: campaign.nextSessionDate === key ? "" : campaign.nextSessionDate
   };
 }
 

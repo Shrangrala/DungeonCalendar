@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmailAuthProvider, GoogleAuthProvider, browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, sendPasswordResetEmail, updateEmail, updatePassword } from "firebase/auth";
-import { addDoc, collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { auth, db, storage } from "./firebase";
 import { BarChart3, CalendarCheck, CalendarDays, ChevronLeft, ChevronRight, Copy, Home, LogIn, LogOut, Mail, MessageSquare, Plus, Settings, Shield, Trash2, UserCheck, Users, Zap } from "lucide-react";
@@ -10,26 +10,6 @@ if (typeof window !== "undefined") {
   window.currentInfo.selectedLocation = window.currentInfo.selectedLocation || null;
 }
 
-
-
-const LAST_PAGE_STORAGE_PREFIX = "dc_last_page";
-const ACTIVE_CAMPAIGN_STORAGE_PREFIX = "dc_active_campaign";
-
-function userScopedStorageKey(prefix, userId = "") {
-  return userId ? `${prefix}:${userId}` : prefix;
-}
-
-function readStoredPage(userId = "") {
-  if (typeof window === "undefined") return "";
-  const allowedPages = new Set(["dashboard", "calendar", "campaigns", "players", "settings", "billing"]);
-  const stored = window.localStorage.getItem(userScopedStorageKey(LAST_PAGE_STORAGE_PREFIX, userId)) || "";
-  return allowedPages.has(stored) ? stored : "";
-}
-
-function readStoredCampaignId(userId = "") {
-  if (typeof window === "undefined") return "";
-  return window.localStorage.getItem(userScopedStorageKey(ACTIVE_CAMPAIGN_STORAGE_PREFIX, userId)) || "";
-}
 
 const GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-D3BQVGC6BV";
 
@@ -664,11 +644,7 @@ function removeDateCompletelyFromCampaign(campaign = {}, key = "") {
     unavailable: nextUnavailable,
     manuallySelectedDates: (campaign.manuallySelectedDates || []).filter((dateKeyValue) => dateKeyValue !== key),
     generatedSessionDates: (campaign.generatedSessionDates || []).filter((dateKeyValue) => dateKeyValue !== key),
-    chosenDate: campaign.chosenDate === key ? "" : campaign.chosenDate,
-    sessionDate: campaign.sessionDate === key ? "" : campaign.sessionDate,
-    selectedDate: campaign.selectedDate === key ? "" : campaign.selectedDate,
-    finalDate: campaign.finalDate === key ? "" : campaign.finalDate,
-    nextSessionDate: campaign.nextSessionDate === key ? "" : campaign.nextSessionDate
+    chosenDate: campaign.chosenDate === key ? "" : campaign.chosenDate
   };
 }
 
@@ -1200,9 +1176,23 @@ function firebaseProfileToPlayer(uid, profile = {}, fallbackEmail = "") {
   };
 }
 
+
+function parseDungeonCalendarPath(pathname = "", search = "") {
+  const parts = String(pathname || "").split("/").filter(Boolean);
+  const section = parts[0] || "";
+  const params = new URLSearchParams(search || "");
+  const campaignId = decodeURIComponent(parts[1] || params.get("campaign") || "");
+  if (!["invite", "campaign", "results", "calendar"].includes(section) || !campaignId) return null;
+  return {
+    section,
+    campaignId,
+    page: section === "results" ? "results" : section === "calendar" ? "calendar" : section === "campaign" ? "campaigns" : "campaignDetail"
+  };
+}
+
 export default function DungeonCalendarApp() {
   const today = new Date();
-  const [page, setPage] = useState(() => readStoredPage() || "dashboard");
+  const [page, setPage] = useState("dashboard");
 
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const dates = useMemo(() => buildMonth(viewDate.getFullYear(), viewDate.getMonth()), [viewDate]);
@@ -1627,12 +1617,9 @@ export default function DungeonCalendarApp() {
         );
         return [...withoutDuplicate, fallbackPlayer];
       });
-      const storedPage = readStoredPage(user.uid) || readStoredPage();
-      const storedCampaignId = readStoredCampaignId(user.uid);
       setCurrentUserId(user.uid);
       setActivePlayerId(user.uid);
-      setPage(storedPage || "calendar");
-      if (storedCampaignId) setActiveCampaignId(storedCampaignId);
+      setPage("calendar");
       setAuthProfileLoaded(true);
 
       // Hydrate the fallback user in the background when Firestore responds.
@@ -1655,10 +1642,7 @@ export default function DungeonCalendarApp() {
             );
             return [...withoutDuplicate, safePlayer];
           });
-          const storedCampaignId = readStoredCampaignId(user.uid);
-          if (!storedCampaignId && safePlayer.campaignIds?.[0]) {
-            setActiveCampaignId(safePlayer.campaignIds[0]);
-          }
+          if (safePlayer.campaignIds?.[0]) setActiveCampaignId(safePlayer.campaignIds[0]);
         })
         .catch((error) => {
           console.error("Failed to load Firebase profile after login; using Firebase Auth user:", error);
@@ -1670,20 +1654,6 @@ export default function DungeonCalendarApp() {
       unsubscribe();
     };
   }, []);
-
-  useEffect(() => {
-    if (!currentUserId || typeof window === "undefined") return;
-    window.localStorage.setItem(userScopedStorageKey(LAST_PAGE_STORAGE_PREFIX, currentUserId), page);
-    window.localStorage.setItem(LAST_PAGE_STORAGE_PREFIX, page);
-  }, [currentUserId, page]);
-
-  useEffect(() => {
-    if (!currentUserId || !activeCampaignId || typeof window === "undefined") return;
-    window.localStorage.setItem(
-      userScopedStorageKey(ACTIVE_CAMPAIGN_STORAGE_PREFIX, currentUserId),
-      activeCampaignId
-    );
-  }, [currentUserId, activeCampaignId]);
 
   useEffect(() => {
     if (!currentUserId || auth.currentUser?.uid !== currentUserId) return undefined;
@@ -1786,23 +1756,22 @@ export default function DungeonCalendarApp() {
       return;
     }
     if (!activeCampaignId || !visibleCampaigns.some((campaign) => campaign.id === activeCampaignId)) {
-      const storedCampaignId = readStoredCampaignId(currentUserId);
-      const storedCampaign = visibleCampaigns.find((campaign) => campaign.id === storedCampaignId);
-      setActiveCampaignId(storedCampaign?.id || visibleCampaigns[0].id);
+      setActiveCampaignId(visibleCampaigns[0].id);
     }
-  }, [activeCampaignId, currentUser, currentUserId, visibleCampaigns]);
+  }, [activeCampaignId, currentUser, visibleCampaigns]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const inviteCampaignId = params.get("campaign");
     const inviteName = params.get("name");
+    const deepLink = parseDungeonCalendarPath(window.location.pathname, window.location.search);
+    const legacyCampaignId = params.get("campaign");
+    const requestedCampaignId = deepLink?.campaignId || legacyCampaignId;
 
-    if (inviteName && !loginName) {
-      setLoginName(inviteName);
-    }
+    if (inviteName && !loginName) setLoginName(inviteName);
 
-    if (inviteCampaignId && campaigns.some((campaign) => campaign.id === inviteCampaignId)) {
-      setActiveCampaignId(inviteCampaignId);
+    if (requestedCampaignId && campaigns.some((campaign) => campaign.id === requestedCampaignId)) {
+      setActiveCampaignId(requestedCampaignId);
+      if (deepLink?.page) setPage(deepLink.page);
     }
   }, [campaigns, loginName]);
 
@@ -3402,13 +3371,10 @@ export default function DungeonCalendarApp() {
 
   function getLoginLink(playerName = "") {
     const baseUrl = "https://www.dungeoncalendar.com";
-    const params = new URLSearchParams({
-      role: "Player",
-      name: playerName,
-      campaign: activeCampaign?.id || ""
-    });
-
-    return `${baseUrl}/?${params.toString()}`;
+    const campaignId = encodeURIComponent(activeCampaign?.id || "");
+    const params = new URLSearchParams({ role: "Player" });
+    if (playerName) params.set("name", playerName);
+    return `${baseUrl}/invite/${campaignId}?${params.toString()}`;
   }
 
   function getInviteMessage(playerName) {
